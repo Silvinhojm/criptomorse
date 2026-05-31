@@ -12,7 +12,6 @@
     "@bigmi/client": "^0.8.0",
     "@bigmi/react": "^0.8.0",
     "@lifi/sdk": "^3.16.3",
-    "@lifi/widget": "^3.40.12",
     "ethers": "^6.0.0",
     "next": "16.2.6",
     "react": "^19.0.0",
