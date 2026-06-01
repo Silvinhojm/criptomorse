@@ -1,0 +1,12 @@
+{
+  "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+  "name": "CriptoMorse Agent",
+  "description": "Autonomous agent on the CriptoMorse-Arc platform.",
+  "services": [
+    { "name": "web", "endpoint": "https://criptomorse-arc.vercel.app" }
+  ],
+  "paymentAddress": "0x77f5C3A1079B86ef8490E7c5Ec1F9bcfbaAE5894",
+  "paymentTokens": ["USDC", "EURC"],
+  "chainId": 8453,
+  "version": "1.0.0"
+}
