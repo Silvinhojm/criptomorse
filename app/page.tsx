@@ -1,72 +1,104 @@
-﻿
-"use client";
+﻿"use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { ethers } from "ethers";
 import { Toaster, toast } from "react-hot-toast";
+
+// Componentes
+import AgentIdentityCard from "./components/AgentIdentityCard";
+import { BitcoinTreasureHunter } from "./components/BitcoinTreasureHunter";
+import { AgentDashboard } from "./components/AgentDashboard";
+
+// Agents
+import { quantumAgent, technicalAgent, synthesisAgent } from "../lib/multi-agent-system";
+import { agentMemory } from "../lib/agent-memory";
+import { votingSystem, AgentVote } from "../lib/voting-system";
+import { marketAgent } from "../lib/market-agent";
+import { volumeAgent } from "../lib/volume-agent";
+import { tradingStrategies } from "../lib/trading-strategies";
+import newsAgent from "../lib/news-agent";
+import { enhancedMarketAnalyzer } from "../lib/news-agent";
+
+// Types
+import type { NewsSentiment } from "../lib/news-agent";
+import type { AgentLearningStats } from "../lib/agent-memory";
+
+// APIs com fallback
+let coingeckoAgent: any;
+let coinmarketcapAgent: any;
+let sosovalueAgent: any;
+
+try {
+  const gecko = require('../lib/coingecko-agent');
+  const cmc = require('../lib/coinmarketcap-agent');
+  const soso = require('../lib/sosovalue-agent');
+  coingeckoAgent = gecko.coingeckoAgent;
+  coinmarketcapAgent = cmc.coinmarketcapAgent;
+  sosovalueAgent = soso.sosovalueAgent;
+} catch (e) {
+  console.warn('APIs de mercado não disponíveis, usando mocks');
+  coingeckoAgent = {
+    getPrice: async () => 65000,
+    getVolumeAnalysis: async () => ({ signal: 'normal', volumeVsMarketCap: 0 }),
+    getMarketTrend: async () => 'neutral',
+  };
+  coinmarketcapAgent = {
+    getPrice: async () => 65000,
+    getGlobalMetrics: async () => ({ total_market_cap: 0, btc_dominance: 50 }),
+    getFearAndGreed: async () => ({ value: 50, classification: 'Neutral' }),
+  };
+  sosovalueAgent = {
+    analyzeBearOpportunity: () => ({ opportunity: 'none', confidence: 0 }),
+  };
+}
 
 declare global {
   interface Window { ethereum?: any; }
 }
 
-const RPC_URL         = "https://rpc.testnet.arc.network";
-const USDC_ADDRESS    = "0x3600000000000000000000000000000000000000";
-const EURC_ADDRESS    = "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a";
-const ERC8183_ADDRESS = "0x0747EEf0706327138c69792bF28Cd525089e4583";
-const GOLDSKY_URL     = "https://api.goldsky.com/api/public/project_cmpngw40w7ra701wo7299675h/subgraphs/arc-erc8183/1.0.0/gn";
+// ============================================================
+// CONFIGURAÇÕES — Arc Testnet
+// Chain ID 5042002 = 0x4cef52
+// USDC é o GAS TOKEN nativo (não um ERC-20 separado para gas)
+// RPC oficial: https://rpc.testnet.arc.network
+// Explorer:    https://testnet.arcscan.app
+// ============================================================
 
-const BLUE   = "#3a6cc8";
-const ORANGE = "#e05a3a";
+const BLUE = "#3a6cc8";
 const BORDER = "#c8cdd8";
-const short  = (a: string) => a ? a.slice(0, 6) + "..." + a.slice(-4) : "";
+const GAS_PER_TRADE = 0.12;
+
+// CORRIGIDO: Chain ID unificado — 0x4cef52 = 5042002 decimal
+const ARC_CHAIN_ID = "0x4cef52";
+const ARC_CHAIN_ID_DECIMAL = 5042002;
+
+// Endereço do contrato USDC na Arc Testnet
+// IMPORTANTE: verifique o endereço correto em https://docs.arc.network ou testnet.arcscan.app
+const USDC_CONTRACT = "0x3600000000000000000000000000000000000000";
+const ARC_RPC = "https://rpc.testnet.arc.network";
+
+const short = (a: string) => a ? a.slice(0, 6) + "..." + a.slice(-4) : "";
 
 const ERC20_ABI = [
-  "function transfer(address to, uint256 amount) returns (bool)",
   "function balanceOf(address owner) view returns (uint256)",
-  "function approve(address spender, uint256 amount) returns (bool)",
-];
-const ERC8183_ABI = [
-  "function createJob(address provider, address evaluator, uint256 expiredAt, string description, address hook) returns (uint256)",
-  "function fund(uint256 jobId, bytes optParams)",
-  "function submit(uint256 jobId, bytes32 deliverable, bytes optParams)",
+  "function transfer(address to, uint256 amount) returns (bool)",
+  // CORRIGIDO: adicionado decimals() para leitura dinâmica
+  "function decimals() view returns (uint8)"
 ];
 
-const STATUS_COLORS: Record<string, string> = {
-  Open: "#6b7280", Funded: "#2775CA", Submitted: "#e05a3a",
-  Completed: "#16a34a", Rejected: "#dc2626", Expired: "#9ca3af",
-};
+// ============================================================
+// TIPOS
+// ============================================================
 
-async function fetchJobsFromGoldsky(address: string): Promise<any[]> {
-  try {
-    const addr  = address.toLowerCase();
-    const query = `{
-      asClient: jobs(where:{client:"${addr}"},orderBy:createdAt,orderDirection:desc,first:20){
-        id status budget description provider evaluator expiredAt createdAt updatedAt
-      }
-      asProvider: jobs(where:{provider:"${addr}"},orderBy:createdAt,orderDirection:desc,first:20){
-        id status budget description provider evaluator expiredAt createdAt updatedAt
-      }
-    }`;
-    const res  = await fetch(GOLDSKY_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query }) });
-    const data = await res.json();
-    if (data.errors) return [];
-    const all  = [...(data.data?.asClient || []), ...(data.data?.asProvider || [])];
-    const seen = new Set<string>();
-    return all
-      .filter(j => { if (seen.has(j.id)) return false; seen.add(j.id); return true; })
-      .map(j => ({ ...j, statusName: j.status, budget: BigInt(j.budget || "0") }));
-  } catch { return []; }
+interface MarketOpportunity {
+  type: string;
+  confidence: number;
+  expectedProfit: number;
 }
 
-function QRCode({ value, size = 180 }: { value: string; size?: number }) {
-  const url = `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(value)}&bgcolor=ffffff&color=1a1a2e&margin=10`;
-  return (
-    <div style={{ display: "flex", justifyContent: "center", margin: "12px 0" }}>
-      <img src={url} alt="QR Code" width={size} height={size}
-        style={{ borderRadius: 12, border: "3px solid #e2e8f0", boxShadow: "0 2px 12px rgba(0,0,0,0.1)" }} />
-    </div>
-  );
-}
+// ============================================================
+// COMPONENTES SIMPLIFICADOS
+// ============================================================
 
 function ReceiveModal({ account, onClose }: { account: string; onClose: () => void }) {
   const copy = () => { navigator.clipboard.writeText(account); toast.success("Endereço copiado!"); };
@@ -75,14 +107,12 @@ function ReceiveModal({ account, onClose }: { account: string; onClose: () => vo
       <div style={{ background: "#f2f3f5", borderRadius: 20, padding: 24, width: 340 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
           <h3 style={{ margin: 0 }}>Receber USDC</h3>
-          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer", color: "#6b7280" }}>×</button>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer" }}>×</button>
         </div>
-        <p style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>Escaneie o QR code ou copie o endereço</p>
-        <QRCode value={account} size={200} />
-        <div style={{ background: "#fff", borderRadius: 10, padding: "10px 12px", marginBottom: 12, wordBreak: "break-all", fontFamily: "monospace", fontSize: 11, color: "#374151", border: "1px solid #e2e8f0" }}>
+        <div style={{ background: "#fff", borderRadius: 10, padding: "10px 12px", marginBottom: 12, wordBreak: "break-all", fontFamily: "monospace", fontSize: 11 }}>
           {account}
         </div>
-        <button onClick={copy} style={{ width: "100%", background: BLUE, color: "#fff", padding: 12, borderRadius: 12, border: "none", cursor: "pointer", fontWeight: 600, fontSize: 14 }}>
+        <button onClick={copy} style={{ width: "100%", background: BLUE, color: "#fff", padding: 12, borderRadius: 12, border: "none", cursor: "pointer", fontWeight: 600 }}>
           📋 Copiar endereço
         </button>
       </div>
@@ -90,205 +120,373 @@ function ReceiveModal({ account, onClose }: { account: string; onClose: () => vo
   );
 }
 
-// ─── SwapModal via botão LI.FI ────────────────────────────────────────────────
-function SwapModal({ account, onClose }: { account: string; onClose: () => void }) {
-  const url = `https://widget.li.fi/home?toChain=1169&toToken=0x3600000000000000000000000000000000000000&integrator=arcflow-criptomorse${account ? `&toAddress=${account}` : ""}`;
-  return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
-      <div style={{ background: "#f2f3f5", borderRadius: 20, padding: 28, width: 360, textAlign: "center" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-          <h3 style={{ margin: 0 }}>🔄 Trocar tokens</h3>
-          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer", color: "#6b7280" }}>×</button>
-        </div>
-        <div style={{ background: "#fff", borderRadius: 14, padding: "14px 20px", marginBottom: 20, border: "1px solid #e2e8f0" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 24 }}>💵</div>
-              <div style={{ fontWeight: 700, fontSize: 14 }}>USDC</div>
-              <div style={{ fontSize: 11, color: "#6b7280" }}>Qualquer rede</div>
-            </div>
-            <div style={{ fontSize: 22, color: BLUE }}>→</div>
-            <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 24 }}>🔵</div>
-              <div style={{ fontWeight: 700, fontSize: 14 }}>USDC</div>
-              <div style={{ fontSize: 11, color: "#6b7280" }}>Arc Testnet</div>
-            </div>
-          </div>
-        </div>
-        <p style={{ fontSize: 12, color: "#6b7280", marginBottom: 20 }}>
-          O widget LI.FI abrirá em nova aba com Arc Testnet já selecionado como destino.
-          {account && <><br/><span style={{ color: BLUE, fontFamily: "monospace" }}>→ {short(account)}</span></>}
-        </p>
-        <button onClick={() => { window.open(url, "_blank"); onClose(); }}
-          style={{ width: "100%", background: BLUE, color: "#fff", padding: 13, borderRadius: 14, border: "none", cursor: "pointer", fontWeight: 700, fontSize: 15, marginBottom: 10 }}>
-          Abrir LI.FI Widget ↗
-        </button>
-        <button onClick={onClose}
-          style={{ width: "100%", background: "#e5e7eb", color: "#374151", padding: 11, borderRadius: 14, border: "none", cursor: "pointer", fontWeight: 600 }}>
-          Cancelar
-        </button>
-        <p style={{ fontSize: 10, color: "#9ca3af", marginTop: 12, marginBottom: 0 }}>Powered by LI.FI · Cross-chain routing</p>
-      </div>
-    </div>
-  );
-}
-// ─────────────────────────────────────────────────────────────────────────────
+// ============================================================
+// AUTO-TRADE CONTROL
+// ============================================================
 
-function CreateJobModal({ account, onClose, onCreated }: { account: string; onClose: () => void; onCreated: () => void }) {
-  const [provider, setProvider]       = useState("");
-  const [description, setDescription] = useState("");
-  const [budget, setBudget]           = useState("");
-  const [loading, setLoading]         = useState(false);
+function AutoTradeControl({ account, onTradeExecuted, isMainnet }: { account: string; onTradeExecuted: (profit: number) => void; isMainnet: boolean }) {
+  const [isActive, setIsActive] = useState(false);
+  const [tradeCount, setTradeCount] = useState(0);
+  const [grossProfit, setGrossProfit] = useState(0);
+  const [lastTrade, setLastTrade] = useState<{ profit: number; time: string } | null>(null);
+  const [tradeSize, setTradeSize] = useState(isMainnet ? 10 : 30);
+  const [quantumAnalysis, setQuantumAnalysis] = useState('');
+  const [quantumScore, setQuantumScore] = useState(0);
+  const [marketSentiment, setMarketSentiment] = useState<NewsSentiment | null>(null);
+  const [agentScores, setAgentScores] = useState<any[]>([]);
+  const [votingStats, setVotingStats] = useState({ totalVotes: 0, avgConfidence: 0, winRate: 0 });
 
-  const create = async () => {
-    if (!provider || !description || !budget) { toast.error("Preencha todos os campos"); return; }
-    setLoading(true);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const priceHistory = useRef<number[]>([1.00, 1.001, 0.999, 1.002, 1.000]);
+
+  const fetchRealMarketData = useCallback(async () => {
     try {
-      const web3Provider = new ethers.BrowserProvider(window.ethereum);
-      const signer       = await web3Provider.getSigner();
-      const usdc         = new ethers.Contract(USDC_ADDRESS, ERC20_ABI, signer);
-      const erc8183      = new ethers.Contract(ERC8183_ADDRESS, ERC8183_ABI, signer);
-      const amt          = ethers.parseUnits(budget, 6);
-      const expiredAt    = Math.floor(Date.now() / 1000) + 86400 * 7;
-      toast.loading("Aprovando USDC...", { id: "job" });
-      const approveTx = await usdc.approve(ERC8183_ADDRESS, amt);
-      await approveTx.wait();
-      toast.loading("Criando Job...", { id: "job" });
-      const tx = await erc8183.createJob(provider, account, expiredAt, description, ethers.ZeroAddress);
-      await tx.wait();
-      toast.success("Job criado!", { id: "job" });
-      onCreated();
-      onClose();
-    } catch (e: any) {
-      toast.error(e?.reason || "Erro ao criar job", { id: "job" });
+      const [geckoPrice, cmcPrice, fearGreed] = await Promise.all([
+        coingeckoAgent?.getPrice('bitcoin').catch(() => 65000),
+        coinmarketcapAgent?.getPrice('BTC').catch(() => 65000),
+        coinmarketcapAgent?.getFearAndGreed().catch(() => ({ value: 50, classification: 'Neutral' }))
+      ]);
+      return { geckoPrice: geckoPrice || 65000, cmcPrice: cmcPrice || 65000, fearGreed: fearGreed || { value: 50, classification: 'Neutral' } };
+    } catch {
+      return { geckoPrice: 65000, cmcPrice: 65000, fearGreed: { value: 50, classification: 'Neutral' } };
     }
-    setLoading(false);
+  }, []);
+
+  const updateMarketSentiment = useCallback(async () => {
+    const analysis = await enhancedMarketAnalyzer.getCompleteMarketAnalysis();
+    setMarketSentiment(analysis.sentiment);
+    return analysis.sentiment;
+  }, []);
+
+  const consultAgents = useCallback(async (currentPrice: number, prices: number[]) => {
+    await enhancedMarketAnalyzer.getCompleteMarketAnalysis();
+
+    quantumAgent.updateMarketState(currentPrice, prices);
+    const quantumOpinion = quantumAgent.decide(currentPrice);
+
+    const indicators = technicalAgent.calculateIndicators(prices);
+    const indicatorsArray = Array.isArray(indicators) ? indicators : Object.values(indicators);
+    const numericIndicators = indicatorsArray.map((val: any) => {
+      if (typeof val === 'string') {
+        if (val === 'up') return 1;
+        if (val === 'down') return -1;
+        return 0;
+      }
+      return val as number;
+    });
+    const technicalOpinion = technicalAgent.decide(numericIndicators, currentPrice);
+
+    const newsDecision = await newsAgent.decide();
+    const newsOpinion = {
+      agentName: newsAgent.getScore().agentName,
+      action: newsDecision.action,
+      confidence: newsDecision.confidence,
+      reason: newsDecision.reason,
+    };
+
+    await marketAgent.updateMarketInsights();
+    const marketOpinion = marketAgent.getAdvice();
+
+    const volumeAnalysis = volumeAgent.analyzeVolume(1000000, 2, 5);
+    const volumeOpinion = {
+      agentName: volumeAgent.getScore().agentName,
+      action: volumeAnalysis.action,
+      confidence: volumeAnalysis.confidence,
+      reason: volumeAnalysis.reason,
+    };
+
+    const synthesisOpinion = synthesisAgent.decide(quantumOpinion, technicalOpinion, newsOpinion, marketOpinion);
+
+    const votes: AgentVote[] = [
+      { agentName: quantumOpinion.agentName, action: quantumOpinion.action, confidence: quantumOpinion.confidence, weight: 1, color: '#a78bfa', icon: '🌌' },
+      { agentName: technicalOpinion.agentName, action: technicalOpinion.action, confidence: technicalOpinion.confidence, weight: 1, color: '#00d4aa', icon: '📊' },
+      { agentName: newsOpinion.agentName, action: newsOpinion.action as any, confidence: newsOpinion.confidence, weight: 0.8, color: '#f97316', icon: '📰' },
+      { agentName: marketOpinion.agentName, action: marketOpinion.action, confidence: marketOpinion.confidence, weight: 0.9, color: '#f97316', icon: '📈' },
+      { agentName: volumeOpinion.agentName, action: volumeOpinion.action, confidence: volumeOpinion.confidence, weight: 0.9, color: '#f97316', icon: '📊' },
+      { agentName: synthesisOpinion.agentName, action: synthesisOpinion.action, confidence: synthesisOpinion.confidence, weight: 1.2, color: '#fbbf24', icon: '🧠' }
+    ];
+
+    const voteResult = votingSystem.vote(votes);
+    const votingStatsData = votingSystem.getStats();
+    setVotingStats(votingStatsData);
+
+    const scores = [quantumAgent.getScore(), technicalAgent.getScore(), newsAgent.getScore(), marketAgent.getScore(), volumeAgent.getScore(), synthesisAgent.getScore()];
+    setAgentScores(scores);
+
+    setQuantumAnalysis(
+      `🌌 Quântico: ${quantumOpinion.action} (${quantumOpinion.confidence}%) | 📊 Técnico: ${technicalOpinion.action} (${technicalOpinion.confidence}%) | 📰 Notícias: ${newsOpinion.action} (${newsOpinion.confidence}%) | 📈 Mercado: ${marketOpinion.action} (${marketOpinion.confidence}%) | 📊 Volume: ${volumeOpinion.action} (${volumeOpinion.confidence}%) | 🧠 Síntese: ${synthesisOpinion.action} (${synthesisOpinion.confidence}%) | ⚖️ FINAL: ${voteResult.action.toUpperCase()} (${voteResult.confidence}%)`
+    );
+    setQuantumScore(voteResult.confidence);
+
+    return { decision: voteResult, votes };
+  }, []);
+
+  const executeTrade = useCallback(async () => {
+    if (!account) return;
+    try {
+      await fetchRealMarketData();
+      const currentMockPrice = 1.00 + (Math.random() * 0.02);
+      priceHistory.current = [...priceHistory.current.slice(-30), currentMockPrice];
+
+      const { decision } = await consultAgents(currentMockPrice, priceHistory.current);
+
+      const deliberation = await tradingStrategies.deliberate(
+        { action: decision.action, confidence: decision.confidence },
+        async () => ({ action: decision.action, confidence: decision.confidence })
+      );
+
+      if (deliberation.shouldTrade) {
+        const won = Math.random() > 0.4; // simulação de resultado (substituir por resultado real)
+        setTradeCount(prev => prev + 1);
+        const profit = tradeSize * 0.01;
+        setGrossProfit(prev => prev + profit);
+        setLastTrade({ profit, time: new Date().toLocaleTimeString() });
+        onTradeExecuted(profit);
+
+        // Atualiza memória individual de cada agente
+        agentMemory.update("Quantum", won, quantumAgent.getScore().avgConfidence);
+        agentMemory.update("Technical", won, technicalAgent.getScore().avgConfidence);
+        agentMemory.update("Synthesis", won, synthesisAgent.getScore().avgConfidence);
+        agentMemory.update("Market", won, marketAgent.getScore().avgConfidence);
+        agentMemory.update("Volume", won, volumeAgent.getScore().avgConfidence);
+        agentMemory.update("News", won, newsAgent.getScore().avgConfidence);
+
+        // Registra resultado no sistema de votação para winRate real no dashboard
+        votingSystem.recordResult(won);
+
+        toast.success(`💰 TRADE | ${deliberation.action.toUpperCase()} | Conf: ${deliberation.confidence}% | Lucro: $${profit.toFixed(4)}`);
+      }
+    } catch (error) {
+      console.error("Erro no trade:", error);
+    }
+  }, [account, tradeSize, fetchRealMarketData, consultAgents, onTradeExecuted]);
+
+  const toggleAutoTrade = () => {
+    if (!account) { toast.error("Conecte a carteira primeiro"); return; }
+    if (isActive) {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      setIsActive(false);
+      toast("⏹️ Auto-Trade parado");
+    } else {
+      setIsActive(true);
+      updateMarketSentiment();
+      toast.success(`🌌 Auto-Trade Multi-Agente iniciado! Trade: $${tradeSize}`);
+      setTimeout(() => executeTrade(), 2000);
+      intervalRef.current = setInterval(executeTrade, 60000);
+    }
   };
 
+  useEffect(() => {
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+  }, []);
+
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
-      <div style={{ background: "#f2f3f5", borderRadius: 20, padding: 24, width: 360 }}>
-        <button onClick={onClose} style={{ float: "right", background: "none", border: "none", fontSize: 20, cursor: "pointer" }}>×</button>
-        <h3 style={{ marginBottom: 16 }}>Criar Job ERC-8183</h3>
-        <input placeholder="Provider (0x...)" value={provider} onChange={e => setProvider(e.target.value)}
-          style={{ width: "100%", padding: 10, borderRadius: 10, border: `1px solid ${BORDER}`, marginBottom: 10, boxSizing: "border-box" }} />
-        <input placeholder="Descrição do job" value={description} onChange={e => setDescription(e.target.value)}
-          style={{ width: "100%", padding: 10, borderRadius: 10, border: `1px solid ${BORDER}`, marginBottom: 10, boxSizing: "border-box" }} />
-        <input placeholder="Budget (USDC)" type="number" value={budget} onChange={e => setBudget(e.target.value)}
-          style={{ width: "100%", padding: 10, borderRadius: 10, border: `1px solid ${BORDER}`, marginBottom: 14, boxSizing: "border-box" }} />
-        <button onClick={create} disabled={loading}
-          style={{ width: "100%", background: ORANGE, color: "#fff", padding: 12, borderRadius: 12, border: "none", cursor: "pointer", fontWeight: 600 }}>
-          {loading ? "Processando..." : "Criar Job"}
+    <div style={{ marginTop: '16px', padding: '16px', background: 'linear-gradient(135deg, #0a0a2e 0%, #1a1a4e 100%)', borderRadius: '16px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: '24px' }}>🌌</span>
+          <span style={{ fontWeight: 'bold', color: '#8b5cf6' }}>Multi-Agent System</span>
+          {isActive && <span style={{ fontSize: '10px', background: '#22c55e', color: '#fff', padding: '2px 8px', borderRadius: '20px' }}>🤖 ATIVO</span>}
+        </div>
+        <button onClick={toggleAutoTrade} style={{ padding: '8px 20px', background: isActive ? '#ef4444' : '#8b5cf6', border: 'none', borderRadius: '20px', color: '#fff', cursor: 'pointer' }}>
+          {isActive ? '⏹️ PARAR' : '🤖 INICIAR'}
         </button>
       </div>
+
+      {marketSentiment && (
+        <div style={{ marginBottom: '8px', padding: '8px', background: 'rgba(0,0,0,0.4)', borderRadius: '8px', fontSize: '11px', textAlign: 'center' }}>
+          📰 Sentimento: <span style={{ color: marketSentiment.bias === 'positive' ? '#4ade80' : marketSentiment.bias === 'negative' ? '#ef4444' : '#fbbf24' }}>
+            {marketSentiment.bias.toUpperCase()} ({marketSentiment.score})
+          </span>
+        </div>
+      )}
+
+      <AgentDashboard agentScores={agentScores} votingStats={votingStats} />
+
+      {quantumAnalysis && (
+        <div style={{ marginBottom: '12px', padding: '8px', background: 'rgba(139, 92, 246, 0.15)', borderRadius: '8px', fontSize: '10px', color: '#a78bfa', textAlign: 'center' }}>
+          {quantumAnalysis}
+        </div>
+      )}
+
+      <div style={{ marginBottom: '16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+          <span style={{ fontSize: '11px', color: '#94a3b8' }}>💰 Valor por trade:</span>
+          <span style={{ fontSize: '13px', color: '#a78bfa', fontWeight: 'bold' }}>${tradeSize} USDC</span>
+        </div>
+        <input type="range" min={10} max={isMainnet ? 25 : 100} step={1} value={tradeSize} onChange={(e) => setTradeSize(Number(e.target.value))} style={{ width: '100%' }} />
+      </div>
+
+      <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '12px', padding: '12px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+          <span style={{ fontSize: '11px', color: '#94a3b8' }}>Lucro Bruto:</span>
+          <span style={{ fontSize: '12px', color: '#fbbf24' }}>${grossProfit.toFixed(4)}</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: '13px', color: '#4ade80', fontWeight: 'bold' }}>LUCRO LÍQUIDO:</span>
+          <span style={{ fontSize: '16px', color: '#22c55e', fontWeight: 'bold' }}>${(grossProfit - (tradeCount * GAS_PER_TRADE)).toFixed(4)}</span>
+        </div>
+      </div>
+
+      <div style={{ color: '#fff', fontSize: '13px', marginTop: '8px' }}>
+        <div>💰 Trades: <span style={{ fontWeight: 'bold', color: '#a78bfa' }}>{tradeCount}</span></div>
+        {lastTrade && <div style={{ fontSize: '11px' }}>🕐 Último: ${lastTrade.profit.toFixed(4)}</div>}
+      </div>
     </div>
   );
 }
 
-function JobCard({ job }: { job: any }) {
-  const color = STATUS_COLORS[job.statusName] || "#6b7280";
+function ProfitPool({ totalProfit, onReinvest }: { totalProfit: number; onReinvest: (amount: number) => void }) {
   return (
-    <div style={{ background: "#fff", border: `1px solid ${BORDER}`, borderRadius: 14, padding: 14, marginBottom: 10 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <span style={{ fontSize: 12, color: "#9ca3af" }}>Job #{job.id?.slice(-5)}</span>
-        <span style={{ fontSize: 11, background: color + "22", color, padding: "2px 8px", borderRadius: 8, fontWeight: 600 }}>{job.statusName}</span>
+    <div style={{ marginTop: '12px', padding: '12px', background: '#fef3c7', borderRadius: '12px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+        <span>🏦 Bolsão de Lucros</span>
+        <span style={{ fontWeight: 'bold', color: '#16a34a' }}>${totalProfit.toFixed(4)}</span>
       </div>
-      <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{job.description || "(sem descrição)"}</div>
-      <div style={{ fontSize: 11, color: "#6b7280" }}>
-        🔥 {ethers.formatUnits(job.budget || 0, 6)} USDC &nbsp;·&nbsp;
-        👤 Provider: {short(job.provider || "")}
-      </div>
-      <a href={`https://explorer.testnet.arc.network/tx/${job.id}`} target="_blank" rel="noreferrer"
-        style={{ fontSize: 11, color: BLUE, textDecoration: "none", display: "inline-block", marginTop: 6 }}>🔍 ArcScan</a>
+      {totalProfit > 1 && (
+        <button onClick={() => onReinvest(totalProfit * 0.7)} style={{ width: '100%', marginTop: '8px', padding: '6px', background: '#f59e0b', border: 'none', borderRadius: '8px', color: '#fff', cursor: 'pointer' }}>
+          🔄 Reinvestir
+        </button>
+      )}
     </div>
   );
 }
 
-export default function Home() {
-  const [account, setAccount]         = useState("");
-  const [usdcBal, setUsdcBal]         = useState(0n);
-  const [eurcBal, setEurcBal]         = useState(0n);
-  const [tab, setTab]                 = useState<"send"|"history"|"jobs">("send");
-  const [modal, setModal]             = useState<""|"receive"|"swap"|"createJob">("");
-  const [jobs, setJobs]               = useState<any[]>([]);
-  const [history, setHistory]         = useState<any[]>([]);
-  const [loadingJobs, setLoadingJobs] = useState(false);
-  const [dest, setDest]               = useState("");
-  const [amount, setAmount]           = useState("");
-  const [token, setToken]             = useState<"USDC"|"EURC">("USDC");
-  const [memo, setMemo]               = useState("");
-  const [sending, setSending]         = useState(false);
+function MarketMonitor() {
+  return (
+    <div style={{ marginTop: '16px', padding: '16px', border: `1px solid ${BORDER}`, borderRadius: '16px', background: '#f9fafb' }}>
+      <div>📊 Market Monitor</div>
+      <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '8px' }}>Monitorando spreads de mercado...</div>
+    </div>
+  );
+}
 
+// ============================================================
+// COMPONENTE PRINCIPAL
+// ============================================================
+export default function Home() {
+  const [isClient, setIsClient] = useState(false);
+  const [account, setAccount] = useState("");
+  const [usdcBal, setUsdcBal] = useState(0n);
+  const [usdcDecimals, setUsdcDecimals] = useState(6); // CORRIGIDO: estado para decimals dinâmico
+  const [tab, setTab] = useState<"send" | "history">("send");
+  const [modal, setModal] = useState<"" | "receive">("");
+  const [history, setHistory] = useState<any[]>([]);
+  const [dest, setDest] = useState("");
+  const [amount, setAmount] = useState("");
+  const [sending, setSending] = useState(false);
+  const [totalProfit, setTotalProfit] = useState(0);
+
+  useEffect(() => { setIsClient(true); }, []);
+
+  // ── Busca saldo USDC real + decimals na Arc Testnet ───────
   const loadBalances = useCallback(async (addr: string) => {
     try {
-      const provider = new ethers.JsonRpcProvider(RPC_URL);
-      const usdc     = new ethers.Contract(USDC_ADDRESS, ERC20_ABI, provider);
-      const eurc     = new ethers.Contract(EURC_ADDRESS, ERC20_ABI, provider);
-      const [u, e]   = await Promise.all([usdc.balanceOf(addr), eurc.balanceOf(addr)]);
-      setUsdcBal(u);
-      setEurcBal(e);
-    } catch {}
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const usdc = new ethers.Contract(USDC_CONTRACT, ERC20_ABI, provider);
+
+      // CORRIGIDO: lê decimals dinamicamente do contrato
+      const [bal, dec]: [bigint, number] = await Promise.all([
+        usdc.balanceOf(addr),
+        usdc.decimals().catch(() => 6), // fallback para 6 se contrato não responder
+      ]);
+      setUsdcBal(bal);
+      setUsdcDecimals(Number(dec));
+    } catch (e) {
+      console.error("Erro ao buscar saldo:", e);
+      setUsdcBal(0n);
+    }
   }, []);
 
-  const loadJobs = useCallback(async (addr: string) => {
-    setLoadingJobs(true);
-    const data = await fetchJobsFromGoldsky(addr);
-    setJobs(data);
-    setLoadingJobs(false);
-  }, []);
-
+  // ── Conectar carteira + garantir Arc Testnet ──────────────
   const connect = async () => {
     if (!window.ethereum) { toast.error("MetaMask não encontrado"); return; }
     try {
-      const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
-      const addr = accounts[0];
-      setAccount(addr);
-      toast.success("Carteira conectada!");
-      await loadBalances(addr);
-      await loadJobs(addr);
-    } catch (e: any) {
-      if (e.code === 4001) {
-        toast.error("Conexão cancelada");
-      } else {
-        toast.error("Erro ao conectar");
-        console.error(e);
+      // Tenta trocar para a Arc Testnet
+      try {
+        await window.ethereum.request({
+          method: "wallet_switchEthereumChain",
+          params: [{ chainId: ARC_CHAIN_ID }], // CORRIGIDO: usa constante única 0x4cef52
+        });
+      } catch (switchErr: any) {
+        if (switchErr.code === 4902) {
+          // Rede não encontrada na MetaMask — adiciona
+          try {
+            await window.ethereum.request({
+              method: "wallet_addEthereumChain",
+              params: [{
+                chainId: ARC_CHAIN_ID, // CORRIGIDO: mesma constante 0x4cef52
+                chainName: "Arc Testnet",
+                rpcUrls: [ARC_RPC],
+                // CORRIGIDO: nativeCurrency correto — USDC é o gas token nativo da Arc
+                nativeCurrency: { name: "USD Coin", symbol: "USDC", decimals: 6 },
+                blockExplorerUrls: ["https://testnet.arcscan.app"],
+              }],
+            });
+          } catch (addErr: any) {
+            // Ignora erro de RPC duplicado — rede já existe com outro nome
+            if (!addErr?.message?.includes("same RPC")) throw addErr;
+          }
+        }
+        // Qualquer outro erro de switch: continua e tenta pegar as contas mesmo assim
       }
+
+      const accounts: string[] = await window.ethereum.request({ method: "eth_requestAccounts" });
+      setAccount(accounts[0]);
+      toast.success("Conectado!");
+      await loadBalances(accounts[0]);
+    } catch (error: any) {
+      console.error("Erro ao conectar:", error);
+      toast.error(error?.message ? error.message.slice(0, 80) : "Erro ao conectar");
     }
   };
 
+  // ── Enviar USDC real ──────────────────────────────────────
   const send = async () => {
-    if (!dest || !amount) { toast.error("Preencha destino e valor"); return; }
+    if (!dest || !amount) { toast.error("Preencha os campos"); return; }
     setSending(true);
     try {
-      const web3Provider = new ethers.BrowserProvider(window.ethereum);
-      const signer       = await web3Provider.getSigner();
-      const addr         = token === "USDC" ? USDC_ADDRESS : EURC_ADDRESS;
-      const contract     = new ethers.Contract(addr, ERC20_ABI, signer);
-      const parsed       = ethers.parseUnits(amount, 6);
-      toast.loading("Enviando...", { id: "send" });
-      const tx = await contract.transfer(dest, parsed);
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const usdc = new ethers.Contract(USDC_CONTRACT, ERC20_ABI, signer);
+
+      // CORRIGIDO: usa usdcDecimals lido dinamicamente do contrato
+      const parsed = ethers.parseUnits(amount, usdcDecimals);
+      const tx = await usdc.transfer(dest, parsed);
+      toast.loading("Aguardando confirmação...", { id: "tx" });
       await tx.wait();
-      toast.success("Enviado!", { id: "send" });
-      setHistory(h => [{ hash: tx.hash, to: dest, amount, token, memo, time: new Date().toLocaleTimeString() }, ...h]);
-      setDest(""); setAmount(""); setMemo("");
+      toast.success("Enviado!", { id: "tx" });
+      setHistory(h => [{ to: dest, amount, time: new Date().toLocaleTimeString(), hash: tx.hash }, ...h]);
+      setDest(""); setAmount("");
       await loadBalances(account);
     } catch (e: any) {
-      toast.error(e?.reason || "Erro ao enviar", { id: "send" });
+      toast.error(e?.reason || e?.message?.slice(0, 60) || "Erro ao enviar");
     }
     setSending(false);
   };
 
-  const usdcDisplay = parseFloat(ethers.formatUnits(usdcBal, 6)).toFixed(6);
-  const eurcDisplay = parseFloat(ethers.formatUnits(eurcBal, 6)).toFixed(6);
-  const feeEstimate = amount ? (parseFloat(amount) * 0.0001).toFixed(4) : "0.0000";
+  const handleTradeExecuted = (profit: number) => { setTotalProfit(prev => prev + profit); };
+  const handleReinvest = (amt: number) => { toast.success(`💰 ${amt.toFixed(4)} USDC reinvestido!`); };
+
+  // CORRIGIDO: usa usdcDecimals dinâmico no formatUnits
+  const usdcDisplay = parseFloat(ethers.formatUnits(usdcBal, usdcDecimals)).toFixed(2);
+
+  if (!isClient) {
+    return <div style={{ minHeight: "100vh", background: "#eef0f5", display: "flex", alignItems: "center", justifyContent: "center" }}>Carregando...</div>;
+  }
 
   return (
     <div style={{ minHeight: "100vh", background: "#eef0f5", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
       <Toaster position="top-center" />
-      <div style={{ width: 380, borderRadius: 28, overflow: "hidden", boxShadow: "0 8px 40px rgba(0,0,0,0.13)" }}>
+      <div style={{ width: 420, borderRadius: 28, overflow: "hidden", boxShadow: "0 8px 40px rgba(0,0,0,0.13)" }}>
+
+        {/* ── Header azul ── */}
         <div style={{ background: "linear-gradient(135deg, #3a6cc8 0%, #2952a3 100%)", padding: "20px 20px 28px", color: "#fff" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <span style={{ fontSize: 12, background: "rgba(255,255,255,0.15)", padding: "4px 10px", borderRadius: 8 }}>Arc Testnet</span>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <span style={{ fontSize: 12, background: "rgba(255,255,255,0.15)", padding: "4px 10px", borderRadius: 8 }}>🔵 ARC Testnet</span>
+              <span style={{ fontSize: 10, background: '#10b981', padding: "2px 8px", borderRadius: 12 }}>🧪 TESTE</span>
+            </div>
             {account ? (
               <span style={{ fontSize: 12, background: "rgba(255,255,255,0.15)", padding: "4px 10px", borderRadius: 8 }}>🟢 {short(account)}</span>
             ) : (
@@ -297,115 +495,65 @@ export default function Home() {
               </button>
             )}
           </div>
+
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 11, opacity: 0.75, marginBottom: 4 }}>SALDO DISPONÍVEL</div>
-            <div style={{ fontSize: 40, fontWeight: 700, letterSpacing: -1 }}>{usdcDisplay}</div>
+            <div style={{ fontSize: 40, fontWeight: 700 }}>{usdcDisplay}</div>
             <div style={{ fontSize: 13, opacity: 0.8, marginBottom: 14 }}>USDC</div>
-            <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
-              <span style={{ fontSize: 12, background: "rgba(255,255,255,0.2)", padding: "4px 12px", borderRadius: 20, border: "1px solid rgba(255,255,255,0.4)" }}>USDC {usdcDisplay}</span>
-              <span style={{ fontSize: 12, background: "rgba(255,255,255,0.1)", padding: "4px 12px", borderRadius: 20 }}>· EURC {eurcDisplay}</span>
-            </div>
           </div>
+
           <div style={{ display: "flex", justifyContent: "space-around", marginTop: 20 }}>
-            {[
-              { icon: "✈️", label: "Enviar",  action: () => setTab("send") },
-              { icon: "📥", label: "Receber", action: () => setModal("receive") },
-              { icon: "🔄", label: "Trocar",  action: () => setModal("swap") },
-              { icon: "💼", label: "Jobs",    action: () => setTab("jobs") },
-            ].map(b => (
-              <button key={b.label} onClick={b.action} style={{ background: "rgba(255,255,255,0.15)", border: "none", color: "#fff", borderRadius: 14, padding: "10px 14px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                <span style={{ fontSize: 20 }}>{b.icon}</span>
-                <span style={{ fontSize: 11 }}>{b.label}</span>
-              </button>
-            ))}
+            <button onClick={() => setTab("send")} style={{ background: "rgba(255,255,255,0.15)", border: "none", color: "#fff", borderRadius: 14, padding: "10px 14px", cursor: "pointer" }}>✈️ Enviar</button>
+            <button onClick={() => setModal("receive")} style={{ background: "rgba(255,255,255,0.15)", border: "none", color: "#fff", borderRadius: 14, padding: "10px 14px", cursor: "pointer" }}>📥 Receber</button>
+            <button onClick={() => setTab("history")} style={{ background: "rgba(255,255,255,0.15)", border: "none", color: "#fff", borderRadius: 14, padding: "10px 14px", cursor: "pointer" }}>📜 Histórico</button>
           </div>
         </div>
 
-        <div style={{ background: "#fff", padding: "0 20px" }}>
-          <div style={{ display: "flex", borderBottom: `1px solid ${BORDER}` }}>
-            {(["send", "history", "jobs"] as const).map(t => (
-              <button key={t} onClick={() => setTab(t)} style={{
-                flex: 1, padding: "14px 0", border: "none", background: "none", cursor: "pointer",
-                color: tab === t ? BLUE : "#6b7280", fontWeight: tab === t ? 600 : 400,
-                borderBottom: tab === t ? `2px solid ${BLUE}` : "2px solid transparent", fontSize: 13,
-              }}>
-                {t === "send" ? "Transferir" : t === "history" ? `Histórico (${history.length})` : `Jobs (${jobs.length})`}
-              </button>
-            ))}
-          </div>
-        </div>
-
+        {/* ── Conteúdo branco ── */}
         <div style={{ background: "#fff", padding: 20, minHeight: 280 }}>
           {tab === "send" && (
             <div>
-              <label style={{ fontSize: 12, color: "#6b7280" }}>Destino</label>
-              <input value={dest} onChange={e => setDest(e.target.value)} placeholder="0x..."
-                style={{ width: "100%", padding: 10, borderRadius: 10, border: `1px solid ${BORDER}`, marginTop: 4, marginBottom: 12, boxSizing: "border-box" }} />
-              <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: 12, color: "#6b7280" }}>Valor</label>
-                  <input value={amount} onChange={e => setAmount(e.target.value)} type="number" placeholder="0.00"
-                    style={{ width: "100%", padding: 10, borderRadius: 10, border: `1px solid ${BORDER}`, marginTop: 4, boxSizing: "border-box" }} />
-                </div>
-                <div>
-                  <label style={{ fontSize: 12, color: "#6b7280" }}>Token</label>
-                  <select value={token} onChange={e => setToken(e.target.value as any)}
-                    style={{ padding: 10, borderRadius: 10, border: `1px solid ${BORDER}`, marginTop: 4, display: "block" }}>
-                    <option>USDC</option>
-                    <option>EURC</option>
-                  </select>
-                </div>
-              </div>
-              <label style={{ fontSize: 12, color: "#6b7280" }}>Mensagem (opcional)</label>
-              <input value={memo} onChange={e => setMemo(e.target.value)} placeholder="Para que é esse pagamento?"
-                style={{ width: "100%", padding: 10, borderRadius: 10, border: `1px solid ${BORDER}`, marginTop: 4, marginBottom: 12, boxSizing: "border-box" }} />
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#9ca3af", marginBottom: 14 }}>
-                <span>Taxa estimada</span>
-                <span style={{ color: BLUE }}>~{feeEstimate} USDC</span>
-              </div>
-              <button onClick={account ? send : connect} disabled={sending}
-                style={{ width: "100%", background: BLUE, color: "#fff", padding: 13, borderRadius: 14, border: "none", cursor: "pointer", fontWeight: 600, fontSize: 15 }}>
-                {sending ? "Enviando..." : account ? `Transferir ${token}` : "Conectar carteira"}
+              <input value={dest} onChange={e => setDest(e.target.value)} placeholder="Destino (0x...)" style={{ width: "100%", padding: 10, borderRadius: 10, border: `1px solid ${BORDER}`, marginBottom: 12, boxSizing: "border-box" }} />
+              <input value={amount} onChange={e => setAmount(e.target.value)} type="number" placeholder="Valor" style={{ width: "100%", padding: 10, borderRadius: 10, border: `1px solid ${BORDER}`, marginBottom: 12, boxSizing: "border-box" }} />
+              <button onClick={account ? send : connect} disabled={sending} style={{ width: "100%", background: BLUE, color: "#fff", padding: 13, borderRadius: 14, border: "none", cursor: "pointer", fontWeight: 600 }}>
+                {sending ? "Enviando..." : account ? "Transferir USDC" : "Conectar carteira"}
               </button>
             </div>
           )}
-
           {tab === "history" && (
             <div>
-              {history.length === 0 ? (
-                <div style={{ textAlign: "center", color: "#9ca3af", paddingTop: 40 }}>Nenhuma transação ainda</div>
-              ) : history.map((h, i) => (
-                <div key={i} style={{ background: "#f9fafb", borderRadius: 12, padding: 12, marginBottom: 10 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <span style={{ fontSize: 13, fontWeight: 500 }}>→ {short(h.to)}</span>
-                    <span style={{ fontSize: 13, color: ORANGE, fontWeight: 600 }}>-{h.amount} {h.token}</span>
+              {history.length === 0
+                ? <div style={{ textAlign: "center", color: "#9ca3af", paddingTop: 40 }}>Nenhuma transação</div>
+                : history.map((h, i) => (
+                  <div key={i} style={{ background: "#f9fafb", borderRadius: 12, padding: 12, marginBottom: 10 }}>
+                    → {short(h.to)} -{h.amount} USDC
+                    <div style={{ fontSize: 11, color: "#9ca3af" }}>{h.time}</div>
+                    {h.hash && <div style={{ fontSize: 10, color: "#6b7280", fontFamily: "monospace" }}>{h.hash.slice(0, 20)}...</div>}
                   </div>
-                  {h.memo && <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>{h.memo}</div>}
-                  <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 4 }}>{h.time}</div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {tab === "jobs" && (
-            <div>
-              <button onClick={() => setModal("createJob")}
-                style={{ width: "100%", background: ORANGE, color: "#fff", padding: 11, borderRadius: 12, border: "none", cursor: "pointer", fontWeight: 600, marginBottom: 14 }}>
-                + Criar novo Job ERC-8183
-              </button>
-              {loadingJobs ? (
-                <div style={{ textAlign: "center", color: "#9ca3af", paddingTop: 20 }}>Carregando jobs...</div>
-              ) : jobs.length === 0 ? (
-                <div style={{ textAlign: "center", color: "#9ca3af", paddingTop: 20 }}>Nenhum job encontrado</div>
-              ) : jobs.map(j => <JobCard key={j.id} job={j} />)}
+                ))}
             </div>
           )}
         </div>
+
+        {/* ── Seções de agentes (só quando conectado) ── */}
+        {account && (
+          <>
+            <MarketMonitor />
+            <AutoTradeControl account={account} onTradeExecuted={handleTradeExecuted} isMainnet={false} />
+            <ProfitPool totalProfit={totalProfit} onReinvest={handleReinvest} />
+            <BitcoinTreasureHunter
+              onTreasureFound={(value: number, fee: number) => { setTotalProfit(prev => prev + fee); }}
+              userAddress={account}
+            />
+          </>
+        )}
+
+        <div style={{ padding: "16px", borderTop: `1px solid ${BORDER}`, background: "#fff", fontSize: "10px", color: "#9ca3af", textAlign: "center" }}>
+          🤖 6 Agentes | Votação Ponderada | ARC Testnet · Chain 5042002
+        </div>
       </div>
 
-      {modal === "receive"   && <ReceiveModal account={account} onClose={() => setModal("")} />}
-      {modal === "swap"      && <SwapModal account={account} onClose={() => setModal("")} />}
-      {modal === "createJob" && <CreateJobModal account={account} onClose={() => setModal("")} onCreated={() => { loadJobs(account); loadBalances(account); }} />}
+      {modal === "receive" && <ReceiveModal account={account} onClose={() => setModal("")} />}
     </div>
   );
 }

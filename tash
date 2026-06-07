@@ -1,0 +1,10 @@
+[33meff6da9[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m fix: agent-card route + dotenv + remappings
+[33mbcac174[m fix: agent-card API route working
+[33m814cd89[m[33m ([m[1;33mtag: [m[1;33mv1.2.0[m[33m)[m feat: ERC-8004 AgentIdentity deployed - Agent ID 1
+[33maff236c[m[33m ([m[1;33mtag: [m[1;33mv1.1.0[m[33m, [m[1;33mtag: [m[1;33mv1.0.0[m[33m)[m fix: remove unused lifi lib files
+[33md8fbec8[m fix: lifi.ts integrator typo
+[33m0553464[m fix: remove all lifi dependencies
+[33m6af947d[m fix: remove @lifi/widget dependency
+[33mdf6072c[m feat: LiFi swap button modal + full UI working
+[33ma0c844f[m feat: LiFi swap widget modal
+[33mce3f148[m feat: LiFi swap integration + wallet modal

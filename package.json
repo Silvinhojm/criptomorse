@@ -9,13 +9,13 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@lifi/sdk": "^3.16.3",
+    "@lifi/sdk": "^4.0.0",
     "@openzeppelin/contracts": "^5.6.1",
     "dotenv": "^17.4.2",
-    "ethers": "^6.0.0",
-    "next": "16.2.6",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
+    "ethers": "^6.16.0",
+    "next": "^15.5.19",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "react-hot-toast": "^2.4.1",
     "viem": "^2.51.3",
     "wagmi": "^3.6.16"
