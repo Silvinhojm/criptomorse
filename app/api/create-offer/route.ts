@@ -1,7 +1,7 @@
 // app/api/create-offer/route.ts
 
 import { NextRequest, NextResponse } from 'next/server';
-import { psbtOfferSystem } from '../../../lib/bitcoin-psbt-offer';
+import { PSBTOfferSystem } from '../../../lib/bitcoin-psbt-offer';
 
 export async function POST(request: NextRequest) {
   try {
@@ -16,8 +16,11 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // Criar oferta
-    const offer = await psbtOfferSystem.createOffer(
+    // Instanciar o sistema de ofertas PSBT do Bitcoin
+    const psbtSystem = new PSBTOfferSystem();
+    
+    // Criar oferta utilizando a instância e o método correto do sistema
+    const offer = await psbtSystem.createOffer(
       treasure.txid,
       treasure.vout,
       treasure.address,
