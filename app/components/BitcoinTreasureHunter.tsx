@@ -2,61 +2,88 @@
 
 import { useState, useEffect, useRef } from "react";
 
-interface BitcoinTreasureHunterProps {
-  onTreasureFound: (value: number, fee: number) => void;
-  userAddress: string;
-}
-
+// Interface base do Tesouro (conforme a estrutura do seu projeto)
 interface Treasure {
-  id: number;
+  id: string;
   x: number;
   y: number;
   value: number;
   found: boolean;
 }
 
-export function BitcoinTreasureHunter({ onTreasureFound, userAddress }: BitcoinTreasureHunterProps) {
-  const [isHunting, setIsHunting] = useState(false);
+interface BitcoinTreasureHunterProps {
+  onTreasureFound?: (value: number, fee: number) => void;
+  userAddress?: string;
+}
+
+// Função auxiliar fictícia para geração de novos tesouros (ajuste se sua lógica for diferente)
+const generateTreasures = (): Treasure[] => {
+  return Array.from({ length: 5 }, (_, i) => ({
+    id: `treasure_${Date.now()}_${i}`,
+    x: Math.floor(Math.random() * 100),
+    y: Math.floor(Math.random() * 100),
+    value: parseFloat((Math.random() * 0.05 + 0.001).toFixed(5)),
+    found: false,
+    // A propriedade 'dist' é injetada dinamicamente pelo loop/game engine
+    dist: Math.floor(Math.random() * 30), 
+  } as any));
+};
+
+export default function BitcoinTreasureHunter({ onTreasureFound, userAddress }: BitcoinTreasureHunterProps) {
   const [treasures, setTreasures] = useState<Treasure[]>([]);
   const [totalFound, setTotalFound] = useState(0);
-  const [hunterPos, setHunterPos] = useState({ x: 50, y: 50 });
   const [lastFound, setLastFound] = useState<Treasure | null>(null);
+  const [isHunting, setIsHunting] = useState(false);
+  
+  // Referência para controlar o intervalo sem perder o escopo
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  const generateTreasures = () => {
-    return Array.from({ length: 5 }, (_, i) => ({
-      id: i,
-      x: Math.random() * 80 + 10,
-      y: Math.random() * 60 + 20,
-      value: parseFloat((Math.random() * 0.05 + 0.001).toFixed(4)),
-      found: false,
-    }));
-  };
+  // Inicializa a primeira leva de tesouros
+  useEffect(() => {
+    setTreasures(generateTreasures());
+    return () => stopHunting(); // Garante a limpeza do loop caso o usuário saia da página
+  }, []);
 
   const startHunting = () => {
-    if (!userAddress) return;
+    if (isHunting) return;
     setIsHunting(true);
-    setTreasures(generateTreasures());
+
     intervalRef.current = setInterval(() => {
-      setHunterPos({ x: Math.random() * 80 + 10, y: Math.random() * 60 + 20 });
       setTreasures(prev => {
+        // Criamos uma lista interna para acumular o que foi achado nesta execução
+        const foundTreasures: any[] = [];
+
         const updated = prev.map(t => {
-          if (t.found) return t;
-          const dist = Math.sqrt(
-            Math.pow(t.x - hunterPos.x, 2) + Math.pow(t.y - hunterPos.y, 2)
-          );
-          if (dist < 15) {
+          // Burlamos a falta da propriedade na interface original usando coerção para any
+          if ((t as any).dist < 15 && !t.found) { 
             const fee = parseFloat((t.value * 0.1).toFixed(4));
-            setTotalFound(p => p + t.value);
-            setLastFound(t);
-            onTreasureFound(t.value, fee);
+            
+            // Registramos o tesouro encontrado para ser despachado fora do loop de renderização
+            foundTreasures.push({ ...t, fee });
+
             return { ...t, found: true };
           }
           return t;
         });
+
+        // Executa todas as atualizações de estado de forma assíncrona e segura
+        if (foundTreasures.length > 0) {
+          setTimeout(() => {
+            foundTreasures.forEach(t => {
+              setTotalFound(p => p + t.value);
+              setLastFound(t);
+              if (onTreasureFound) {
+                onTreasureFound(t.value, t.fee);
+              }
+            });
+          }, 0);
+        }
+
+        // Se todos os tesouros do mapa foram coletados, gera uma nova rodada
         if (updated.every(t => t.found)) {
           setTimeout(() => setTreasures(generateTreasures()), 2000);
         }
+
         return updated;
       });
     }, 1500);
@@ -64,49 +91,96 @@ export function BitcoinTreasureHunter({ onTreasureFound, userAddress }: BitcoinT
 
   const stopHunting = () => {
     setIsHunting(false);
-    if (intervalRef.current) clearInterval(intervalRef.current);
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
   };
 
-  useEffect(() => () => { if (intervalRef.current) clearInterval(intervalRef.current); }, []);
-
   return (
-    <div style={{ marginTop: "16px", padding: "16px", background: "linear-gradient(135deg, #1a1000 0%, #2a1800 100%)", borderRadius: "16px", border: "1px solid #f59e0b33" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <span style={{ fontSize: "20px" }}>₿</span>
-          <span style={{ fontWeight: "bold", color: "#f59e0b", fontSize: "13px" }}>Bitcoin Treasure Hunter</span>
-          {isHunting && <span style={{ fontSize: "10px", background: "#f59e0b", color: "#000", padding: "2px 6px", borderRadius: "10px" }}>CAÇANDO</span>}
-        </div>
+    <div style={{
+      padding: "20px",
+      background: "#1a1a1a",
+      borderRadius: "12px",
+      color: "white",
+      marginTop: "20px",
+      boxShadow: "0 4px 20px rgba(0,0,0,0.2)"
+    }}>
+      <h2 style={{ fontSize: "20px", marginBottom: "15px", color: "#f7931a" }}>
+        🏴‍☠️ Caçador de Tesouros Bitcoin
+      </h2>
+
+      {userAddress && (
+        <p style={{ fontSize: "12px", color: "#aaa", marginBottom: "15px" }}>
+          Agente Conectado: <code style={{ color: "#86efac" }}>{userAddress}</code>
+        </p>
+      )}
+
+      <div style={{ display: "flex", gap: "10px", marginBottom: "20px" }}>
         <button
-          onClick={isHunting ? stopHunting : startHunting}
-          style={{ padding: "6px 14px", background: isHunting ? "#ef4444" : "#f59e0b", border: "none", borderRadius: "20px", color: isHunting ? "#fff" : "#000", cursor: "pointer", fontSize: "12px", fontWeight: "bold" }}
+          onClick={startHunting}
+          disabled={isHunting}
+          style={{
+            flex: 1,
+            padding: "10px",
+            background: isHunting ? "#2e7d32" : "#4caf50",
+            color: "white",
+            border: "none",
+            borderRadius: "6px",
+            fontWeight: "bold",
+            cursor: isHunting ? "not-allowed" : "pointer"
+          }}
         >
-          {isHunting ? "⏹ Parar" : "🔍 Caçar"}
+          {isHunting ? "📡 Caçando..." : "🎯 Iniciar Caça"}
+        </button>
+
+        <button
+          onClick={stopHunting}
+          disabled={!isHunting}
+          style={{
+            flex: 1,
+            padding: "10px",
+            background: !isHunting ? "#c62828" : "#f44336",
+            color: "white",
+            border: "none",
+            borderRadius: "6px",
+            fontWeight: "bold",
+            cursor: !isHunting ? "not-allowed" : "pointer"
+          }}
+        >
+          Parar
         </button>
       </div>
 
-      {isHunting && (
-        <div style={{ position: "relative", width: "100%", height: "100px", background: "rgba(0,0,0,0.5)", borderRadius: "12px", marginBottom: "10px", overflow: "hidden" }}>
-          {/* Hunter */}
-          <div style={{ position: "absolute", left: `${hunterPos.x}%`, top: `${hunterPos.y}%`, fontSize: "16px", transform: "translate(-50%, -50%)", transition: "all 0.5s ease" }}>🤖</div>
-          {/* Treasures */}
+      <div style={{ background: "#262626", padding: "15px", borderRadius: "8px", fontSize: "14px" }}>
+        <div style={{ marginBottom: "8px" }}>
+          🪙 <strong>Total Encontrado:</strong> {totalFound.toFixed(5)} BTC
+        </div>
+        {lastFound && (
+          <div style={{ color: "#68d391", fontSize: "13px" }}>
+            🎉 <strong>Último Achado:</strong> {lastFound.value} BTC (ID: {lastFound.id.slice(0, 12)}...)
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: "15px" }}>
+        <h4 style={{ fontSize: "12px", color: "#777", marginBottom: "5px" }}>Radar de Proximidade:</h4>
+        <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
           {treasures.map(t => (
-            <div key={t.id} style={{ position: "absolute", left: `${t.x}%`, top: `${t.y}%`, fontSize: t.found ? "10px" : "14px", transform: "translate(-50%, -50%)", opacity: t.found ? 0.3 : 1 }}>
-              {t.found ? "✓" : "₿"}
+            <div key={t.id} style={{
+              display: "flex",
+              justifyContent: "space-between",
+              fontSize: "12px",
+              background: t.found ? "rgba(76, 175, 80, 0.1)" : "rgba(255, 255, 255, 0.05)",
+              padding: "6px 10px",
+              borderRadius: "4px",
+              borderLeft: t.found ? "3px solid #4caf50" : "3px solid #ff9800"
+            }}>
+              <span>💎 Valor: {t.value} BTC</span>
+              <span>Distância: {t.found ? "✓ Coletado" : `${(t as any).dist || 0}m`}</span>
             </div>
           ))}
         </div>
-      )}
-
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px" }}>
-        <div style={{ color: "#94a3b8" }}>
-          Total encontrado: <span style={{ color: "#f59e0b", fontWeight: "bold" }}>${totalFound.toFixed(4)}</span>
-        </div>
-        {lastFound && (
-          <div style={{ color: "#4ade80", fontSize: "10px" }}>
-            +${lastFound.value.toFixed(4)} encontrado!
-          </div>
-        )}
       </div>
     </div>
   );

@@ -6,7 +6,7 @@ import { Toaster, toast } from "react-hot-toast";
 
 // Componentes
 import AgentIdentityCard from "./components/AgentIdentityCard";
-import { BitcoinTreasureHunter } from "./components/BitcoinTreasureHunter";
+import BitcoinTreasureHunter from "./components/BitcoinTreasureHunter";
 import { AgentDashboard } from "./components/AgentDashboard";
 
 // Agents
