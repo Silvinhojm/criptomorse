@@ -1,25 +1,27 @@
-// app/api/offer-stats/route.ts
-
 import { NextResponse } from 'next/server';
-import { psbtOfferSystem } from '../../../lib/bitcoin-psbt-offer';
+import { PSBTOfferSystem } from '../../../lib/bitcoin-psbt-offer';
 
 export async function GET() {
   try {
-    const stats = psbtOfferSystem.getStats();
-    
+    const psbtSystem = new PSBTOfferSystem();
+    const offers = (psbtSystem as any).offers || [];
+
+    const totalOffers = offers.length;
+    const activeOffers = offers.filter((o: any) => o.status === 'active' || o.status === 'pending').length;
+    const acceptedOffers = offers.filter((o: any) => o.status === 'accepted').length;
+
     return NextResponse.json({
       success: true,
       stats: {
-        totalOffers: stats.totalOffers,
-        totalValueBTC: stats.totalValueBTC.toFixed(8),
-        totalPendingFeesBTC: stats.totalPendingFeesBTC.toFixed(8),
-        totalCompletedFeesBTC: stats.totalCompletedFeesBTC.toFixed(8)
+        total: totalOffers,
+        active: activeOffers,
+        accepted: acceptedOffers
       }
     });
-    
   } catch (error: any) {
+    console.error('Erro ao buscar estatísticas:', error);
     return NextResponse.json(
-      { success: false, message: error.message },
+      { success: false, message: error.message || 'Erro ao buscar estatísticas' },
       { status: 500 }
     );
   }

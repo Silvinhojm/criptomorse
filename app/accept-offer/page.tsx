@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { Toaster, toast } from "react-hot-toast";
 
-// Componente simplificado para aceitar oferta
 export default function AcceptOfferPage() {
   const [offerId, setOfferId] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -19,14 +18,16 @@ export default function AcceptOfferPage() {
     setResult(null);
 
     try {
-      // Verificar se a wallet está conectada
-      if (!window.ethereum) {
+      // Evita quebra de tipo no TypeScript injetando o objeto global de forma segura
+      const provider = typeof window !== "undefined" ? (window as any).ethereum : null;
+
+      if (!provider) {
         toast.error("MetaMask não encontrado. Instale a extensão.");
         return;
       }
 
       // Conectar à wallet
-      const accounts = await window.ethereum.request({ 
+      const accounts = await provider.request({ 
         method: "eth_requestAccounts" 
       });
       const walletAddress = accounts[0];
@@ -35,12 +36,12 @@ export default function AcceptOfferPage() {
       const message = `Accept offer ${offerId} from ${walletAddress}`;
       
       // Assinar a mensagem com a wallet
-      const signature = await window.ethereum.request({
+      const signature = await provider.request({
         method: "personal_sign",
         params: [message, walletAddress]
       });
 
-      // Enviar para a API (sem chave privada!)
+      // Enviar para a API
       const response = await fetch("/api/accept-offer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -54,11 +55,13 @@ export default function AcceptOfferPage() {
 
       const data = await response.json();
 
+      // Ajustado para capturar a propriedade 'message' vinda da API
       if (!response.ok) {
-        throw new Error(data.error || "Erro ao aceitar oferta");
+        throw new Error(data.message || "Erro ao aceitar oferta");
       }
 
-      setResult(data.data);
+      // Armazena a resposta completa para que txId e message fiquem acessíveis na árvore do componente
+      setResult(data);
       toast.success("Oferta aceita com sucesso!");
       
     } catch (error: any) {
@@ -159,10 +162,10 @@ export default function AcceptOfferPage() {
           }}>
             <h3 style={{ margin: "0 0 10px 0", color: "#166534" }}>✅ Sucesso!</h3>
             <p style={{ margin: "5px 0", fontSize: "14px", color: "#14532d" }}>
-              Transação: {result.txId}
+              <strong>Transação:</strong> {result.txId}
             </p>
             <p style={{ margin: "5px 0", fontSize: "14px", color: "#14532d" }}>
-              Mensagem: {result.message}
+              <strong>Mensagem:</strong> {result.message}
             </p>
           </div>
         )}

@@ -1,55 +1,54 @@
-// app/api/create-offer/route.ts
-
 import { NextRequest, NextResponse } from 'next/server';
 import { PSBTOfferSystem } from '../../../lib/bitcoin-psbt-offer';
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { treasure, yourAddress } = body;
-    
-    // Validar dados recebidos
-    if (!treasure || !yourAddress) {
+    const { offerId, acceptedBy, signature, walletAddress } = body;
+
+    if (!offerId || !acceptedBy || !signature || !walletAddress) {
       return NextResponse.json(
-        { success: false, message: 'Dados incompletos' },
+        { success: false, message: 'Parâmetros incompletos.' },
         { status: 400 }
       );
     }
-    
-    // Instanciar o sistema de ofertas PSBT do Bitcoin
+
     const psbtSystem = new PSBTOfferSystem();
+    const offer = await psbtSystem.getOffer(offerId);
     
-    // Criar oferta utilizando a instância e o método correto do sistema
-    const offer = await psbtSystem.createOffer(
-      treasure.txid,
-      treasure.vout,
-      treasure.address,
-      yourAddress,
-      treasure.amountBTC
+    if (!offer) {
+      return NextResponse.json(
+        { success: false, message: `Oferta ${offerId} não encontrada` },
+        { status: 404 }
+      );
+    }
+
+    const result = await psbtSystem.acceptOfferWithWalletSignature(
+      offerId,
+      acceptedBy,
+      signature,
+      walletAddress
     );
-    
-    // Criar link de aceite
-    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
-    const acceptLink = `${baseUrl}/accept-offer?id=${offer.id}`;
-    
+
     return NextResponse.json({
       success: true,
-      offer: {
+      message: result?.message || 'Oferta processada com sucesso',
+      txId: result?.txId || 'N/A',
+      data: {
         id: offer.id,
         amountBTC: offer.amountBTC,
         feeBTC: offer.feeBTC,
         returnBTC: offer.returnBTC,
         ownerAddress: offer.ownerAddress,
-        expiresAt: offer.expiresAt,
-        acceptLink: acceptLink
-      },
-      message: `Oferta criada com sucesso! Compartilhe: ${acceptLink}`
+        status: 'accepted',
+        expiresAt: offer.expiresAt
+      }
     });
-    
+
   } catch (error: any) {
-    console.error('Erro ao criar oferta:', error);
+    console.error('Erro ao aceitar oferta:', error);
     return NextResponse.json(
-      { success: false, message: error.message },
+      { success: false, message: error.message || 'Erro interno no servidor' },
       { status: 500 }
     );
   }
