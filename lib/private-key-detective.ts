@@ -1,5 +1,5 @@
 // lib/private-key-detective.ts
-// Detetive de Chaves Privadas Perdidas - Validação Local
+// ✅ VERSÃO SEGURA - Apenas validação de formato, SEM acesso à chave real
 
 export interface ValidationResult {
   isValid: boolean;
@@ -11,39 +11,47 @@ export interface ValidationResult {
 }
 
 class PrivateKeyDetectiveClass {
+  // ✅ Método seguro - Apenas valida formato, NÃO processa a chave
   async validatePrivateKey(privateKey: string, expectedAddress?: string): Promise<ValidationResult> {
-    // Simular tempo de processamento
-    await new Promise(resolve => setTimeout(resolve, 1000));
     
-    if (!privateKey || privateKey.length < 10) {
+    // ⚠️ NUNCA armazenar, logar ou enviar a privateKey para lugar nenhum
+    // ⚠️ NUNCA fazer requisições HTTP com a privateKey
+    
+    // Validação APENAS de formato
+    const cleanKey = privateKey.trim();
+    
+    // Verifica formato Ethereum
+    const isEthFormat = /^0x[a-fA-F0-9]{64}$/i.test(cleanKey);
+    
+    // Verifica formato WIF (Bitcoin)
+    const isWifFormat = /^[5KL][1-9A-HJ-NP-Za-km-z]{50,52}$/.test(cleanKey);
+    
+    if (!isEthFormat && !isWifFormat) {
       return {
         isValid: false,
         confidence: 0,
-        message: '❌ Chave muito curta ou formato inválido',
-        needsFullKey: true
+        message: '❌ Formato de chave inválido. Use formato WIF (Bitcoin) ou 0x... (Ethereum)',
+        needsFullKey: false
       };
     }
     
-    // Simular endereço gerado a partir da chave
-    const mockAddress = `0x${Math.random().toString(36).substring(2, 42)}`;
-    const mockBalance = Math.random() * 5;
-    
+    // ✅ Apenas retorna que o formato é válido
+    // NUNCA deriva endereço real ou verifica saldo
     return {
       isValid: true,
-      walletAddress: mockAddress,
-      balance: mockBalance,
-      confidence: 95,
-      message: `✅ Chave válida! Carteira: ${mockAddress.substring(0, 10)}...`,
-      needsFullKey: false
+      confidence: 100,
+      message: isEthFormat ? '✅ Formato Ethereum válido' : '✅ Formato Bitcoin (WIF) válido',
+      needsFullKey: false,
+      walletAddress: 'Não disponível por segurança',
+      balance: 0
     };
   }
   
-  registerKeyAttempt(key: string, source: string): void {
-    console.log(`🔑 Chave registrada para validação (fonte: ${source})`);
-  }
-  
-  getStats() {
-    return { totalAttempts: 0, validKeys: 0, totalBalanceFound: 0 };
+  // ⚠️ Método desabilitado por segurança
+  registerKeyAttempt(privateKey: string, source: string): void {
+    // 🔒 ESTE MÉTODO FOI DESABILITADO POR SEGURANÇA
+    console.warn('⚠️ Tentativa de registrar chave privada bloqueada por segurança');
+    return;
   }
 }
 
