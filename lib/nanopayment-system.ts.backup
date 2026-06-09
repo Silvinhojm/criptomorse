@@ -1,5 +1,3 @@
-﻿import { recordError } from './circuit-breaker';
-
 // lib/nanopayment-system.ts
 // Sistema de nanopagamentos TLAY para agentes de IA
 
@@ -58,13 +56,13 @@ class NanopaymentSystem {
       });
     });
 
-    // CatÃ¡logo de serviÃ§os
+    // Catálogo de serviços
     this.serviceCatalog = [
       { serviceId: 'market-data', agentProvider: 'MarketAgent', pricePerCall: 0.01, description: 'Dados de mercado' },
-      { serviceId: 'sentiment', agentProvider: 'NewsAgent', pricePerCall: 0.005, description: 'AnÃ¡lise de sentimento' },
-      { serviceId: 'quantum-forecast', agentProvider: 'QuantumAgent', pricePerCall: 0.02, description: 'PrevisÃ£o quÃ¢ntica' },
-      { serviceId: 'technical-indicators', agentProvider: 'TechnicalAgent', pricePerCall: 0.008, description: 'Indicadores tÃ©cnicos' },
-      { serviceId: 'volume-analysis', agentProvider: 'VolumeAgent', pricePerCall: 0.007, description: 'AnÃ¡lise de volume' }
+      { serviceId: 'sentiment', agentProvider: 'NewsAgent', pricePerCall: 0.005, description: 'Análise de sentimento' },
+      { serviceId: 'quantum-forecast', agentProvider: 'QuantumAgent', pricePerCall: 0.02, description: 'Previsão quântica' },
+      { serviceId: 'technical-indicators', agentProvider: 'TechnicalAgent', pricePerCall: 0.008, description: 'Indicadores técnicos' },
+      { serviceId: 'volume-analysis', agentProvider: 'VolumeAgent', pricePerCall: 0.007, description: 'Análise de volume' }
     ];
   }
 
@@ -94,16 +92,16 @@ class NanopaymentSystem {
     const paymentId = `pay_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
     if (!this.canSpend(fromAgent, amount)) {
-      // Tentar dar crÃ©dito automÃ¡tico
+      // Tentar dar crédito automático
       const wallet = this.agentWallets.get(fromAgent);
       if (wallet) {
         wallet.balance += 50;
         this.agentWallets.set(fromAgent, wallet);
-        console.log(`ðŸ’¸ CrÃ©dito automÃ¡tico de $50 para ${fromAgent}`);
+        console.log(`💸 Crédito automático de $50 para ${fromAgent}`);
       }
       
       if (!this.canSpend(fromAgent, amount)) {
-        throw new Error(`${fromAgent} nÃ£o tem saldo suficiente`);
+        throw new Error(`${fromAgent} não tem saldo suficiente`);
       }
     }
 
@@ -131,16 +129,16 @@ class NanopaymentSystem {
     };
     this.payments.push(payment);
 
-    console.log(`ðŸ’¸ Nanopagamento: ${fromAgent} pagou $${amount} para ${toAgent} - ${reason}`);
+    console.log(`💸 Nanopagamento: ${fromAgent} pagou $${amount} para ${toAgent} - ${reason}`);
     return payment;
   }
 
   async payForService(agentId: string, serviceId: string): Promise<Nanopayment> {
     const service = this.serviceCatalog.find(s => s.serviceId === serviceId);
     if (!service) {
-      throw new Error(`ServiÃ§o ${serviceId} nÃ£o encontrado`);
+      throw new Error(`Serviço ${serviceId} não encontrado`);
     }
-    return this.makePayment(agentId, service.agentProvider, service.pricePerCall, `ServiÃ§o: ${service.description}`);
+    return this.makePayment(agentId, service.agentProvider, service.pricePerCall, `Serviço: ${service.description}`);
   }
 
   getBalance(agentId: string): number {
@@ -183,7 +181,7 @@ class NanopaymentSystem {
         lastReset: Date.now()
       });
     }
-    console.log(`ðŸ’° CrÃ©dito adicionado: ${agentId} +$${amount}`);
+    console.log(`💰 Crédito adicionado: ${agentId} +$${amount}`);
   }
 
   getServiceCatalog(): ServicePricing[] {

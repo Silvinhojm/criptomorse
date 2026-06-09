@@ -1,0 +1,616 @@
+﻿=== .env.local ===
+cont address =***
+KIT_KEY=***
+PRIVATE_KEY=***
+BASE_RPC_URL=***
+NEXT_PUBLIC_AGENT_IDENTITY_ADDRESS=***
+LIFI_API_KEY=***
+=== real-swap-executor.ts ===
+// lib/real-swap-executor.ts
+// Executa SWAPS REAIS via LI.FI (sem contratos diretos)
+
+import { ethers } from "ethers";
+
+const ARC_TESTNET = {
+  usdc: "0x3600000000000000000000000000000000000000",
+  eurc: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+  chainId: 5042002,
+  explorer: "https://testnet.arcscan.app"
+};
+
+const ERC20_ABI = [
+  "function balanceOf(address owner) view returns (uint256)",
+  "function decimals() view returns (uint8)"
+];
+
+export interface SwapResult {
+  success: boolean;
+  txHash: string;
+  explorerUrl: string;
+  amount: number;
+  message: string;
+  timestamp: number;
+}
+
+class RealSwapExecutor {
+  private provider: ethers.BrowserProvider | null = null;
+  private userAddress: string = '';
+
+  async initialize(address: string): Promise<boolean> {
+    if (!window.ethereum) return false;
+    try {
+      this.userAddress = address;
+      this.provider = new ethers.BrowserProvider(window.ethereum);
+      console.log(`âœ… RealSwapExecutor inicializado`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async getBalance(token: 'USDC' | 'EURC'): Promise<number> {
+    if (!this.provider) return 0;
+    try {
+      const tokenAddress = token === 'USDC' ? ARC_TESTNET.usdc : ARC_TESTNET.eurc;
+      const contract = new ethers.Contract(tokenAddress, ERC20_ABI, this.provider);
+      const balance = await contract.balanceOf(this.userAddress);
+      const decimals = await contract.decimals();
+      return parseFloat(ethers.formatUnits(balance, decimals));
+    } catch {
+      return 0;
+    }
+  }
+
+  // ABRIR LI.FI PARA SWAP REAL (sem aprovaÃ§Ã£o prÃ©via)
+  openLiFiSwap(action: 'BUY' | 'SELL', amount: number): SwapResult {
+    let url = '';
+    
+    if (action === 'BUY') {
+      // USDC -> EURC
+      url = `https://jumper.exchange/?fromChain=${ARC_TESTNET.chainId}&fromToken=${ARC_TESTNET.usdc}&toChain=${ARC_TESTNET.chainId}&toToken=${ARC_TESTNET.eurc}&fromAmount=${Math.floor(amount * 1e6)}&toAddress=${this.userAddress}`;
+    } else {
+      // EURC -> USDC
+      url = `https://jumper.exchange/?fromChain=${ARC_TESTNET.chainId}&fromToken=${ARC_TESTNET.eurc}&toChain=${ARC_TESTNET.chainId}&toToken=${ARC_TESTNET.usdc}&fromAmount=${Math.floor(amount * 1e6)}&toAddress=${this.userAddress}`;
+    }
+    
+    console.log(`ðŸŒ‰ Abrindo LI.FI para swap ${action} de $${amount}`);
+    window.open(url, '_blank');
+    
+    return {
+      success: true,
+      txHash: `pending_${Date.now()}`,
+      explorerUrl: url,
+      amount: amount,
+      message: `ðŸŒ‰ Swap ${action} aberto no LI.FI! Complete a transaÃ§Ã£o para converter $${amount} USDC.`,
+      timestamp: Date.now()
+    };
+  }
+
+  // PARA TESTE: Simular swap (recomendado para Arc Testnet)
+  async simulateSwap(action: 'BUY' | 'SELL', amount: number): Promise<SwapResult> {
+    const mockHash = `sim_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    console.log(`ðŸ”® Simulando ${action}: $${amount} USDC`);
+    
+    return {
+      success: true,
+      txHash: mockHash,
+      explorerUrl: `${ARC_TESTNET.explorer}/tx/${mockHash}`,
+      amount: amount,
+      message: `ðŸ”® SIMULAÃ‡ÃƒO: ${action} de $${amount} USDC`,
+      timestamp: Date.now()
+    };
+  }
+
+  getExplorerUrl(txHash: string): string {
+    return `${ARC_TESTNET.explorer}/tx/${txHash}`;
+  }
+}
+
+export const realSwap = new RealSwapExecutor();
+=== real-automated-trader.ts ===
+// lib/real-automated-trader.ts
+import { realSwap } from "./real-swap-executor";
+
+declare global {
+  interface Window { ethereum?: any; }
+}
+
+export interface RealTradeResult {
+  success: boolean;
+  profit: number;
+  txHash?: string;
+  explorerUrl?: string;
+  message: string;
+  timestamp: number;
+}
+
+class RealAutomatedTrader {
+  private isRunning: boolean = false;
+  private intervalId: NodeJS.Timeout | null = null;
+  private tradeHistory: RealTradeResult[] = [];
+  private totalProfit: number = 0;
+  private userAddress: string = '';
+  private currentNetwork: string = 'arc';
+  private useRealSwaps: boolean = true;
+
+  initialize(userAddress: string, network: string = 'arc') {
+    this.userAddress = userAddress;
+    this.currentNetwork = network;
+    realSwap.initialize(userAddress);
+    console.log(`Real Automated Trader iniciado na rede ${network}`);
+  }
+
+  async getRealBalance(): Promise<number> {
+    return await realSwap.getBalance('USDC');
+  }
+
+  async runTradingCycle(tradeAmount: number = 10): Promise<RealTradeResult> {
+    const currentBalance = await this.getRealBalance();
+    
+    if (currentBalance < tradeAmount) {
+      return {
+        success: false,
+        profit: 0,
+        message: `Saldo insuficiente: ${currentBalance.toFixed(2)} < ${tradeAmount}`,
+        timestamp: Date.now()
+      };
+    }
+    
+    // DecisÃ£o do robÃ´
+    const actions = ['BUY', 'SELL', 'HOLD'];
+    const randomAction = actions[Math.floor(Math.random() * actions.length)];
+    
+    if (randomAction === 'HOLD') {
+      return {
+        success: true,
+        profit: 0,
+        message: `HOLD - Nenhum trade`,
+        timestamp: Date.now()
+      };
+    }
+    
+    // Abrir LI.FI para swap real
+    console.log(`\nðŸš€ ABRINDO LI.FI PARA SWAP REAL!`);
+    console.log(`   AÃ§Ã£o: ${randomAction} | Valor: $${tradeAmount}`);
+    
+    const result = realSwap.openLiFiSwap(randomAction as 'BUY' | 'SELL', tradeAmount);
+    
+    // Registrar tentativa (lucro serÃ¡ real apÃ³s confirmaÃ§Ã£o manual)
+    const profit = 0;
+    this.totalProfit += profit;
+    
+    return {
+      success: true,
+      profit: profit,
+      txHash: result.txHash,
+      explorerUrl: result.explorerUrl,
+      message: `${randomAction}: ${result.message}`,
+      timestamp: Date.now()
+    };
+  }
+
+  startAutomatedTrading(intervalSeconds: number = 30, tradeAmount: number = 10) {
+    if (this.isRunning) return;
+    this.isRunning = true;
+    console.log(`\nðŸš€ REAL AUTOMATED TRADER INICIADO!`);
+    console.log(`   Trade: $${tradeAmount} | Intervalo: ${intervalSeconds}s`);
+    
+    this.runTradingCycle(tradeAmount);
+    
+    this.intervalId = setInterval(async () => {
+      if (!this.isRunning) return;
+      await this.runTradingCycle(tradeAmount);
+    }, intervalSeconds * 1000);
+  }
+
+  stopAutomatedTrading() {
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+    }
+    this.isRunning = false;
+    console.log("\nâ¹ï¸ Trading parado");
+  }
+
+  getStats() {
+    const totalTrades = this.tradeHistory.length;
+    const winningTrades = this.tradeHistory.filter(t => t.profit > 0).length;
+    const winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0;
+    
+    return {
+      totalTrades,
+      winningTrades,
+      losingTrades: totalTrades - winningTrades,
+      winRate: winRate.toFixed(2),
+      totalProfit: this.totalProfit.toFixed(4),
+      avgProfit: totalTrades > 0 ? (this.totalProfit / totalTrades).toFixed(4) : '0',
+      isRunning: this.isRunning
+    };
+  }
+
+  getHistory() {
+    return this.tradeHistory;
+  }
+}
+
+export const realAutomatedTrader = new RealAutomatedTrader();
+=== RealAutomatedTrader.tsx ===
+// app/components/RealAutomatedTrader.tsx
+"use client";
+import { useState, useEffect } from "react";
+import { toast } from "react-hot-toast";
+import { realAutomatedTrader } from "@/lib/real-automated-trader";
+
+export function RealAutomatedTrader({ account, currentNetwork }: { account: string; currentNetwork: string }) {
+  const [isRunning, setIsRunning] = useState(false);
+  const [stats, setStats] = useState(realAutomatedTrader.getStats());
+  const [balance, setBalance] = useState(0);
+  const [tradeAmount, setTradeAmount] = useState(10);
+  const [intervalSec, setIntervalSec] = useState(30);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const refresh = async () => {
+    try {
+      const newStats = realAutomatedTrader.getStats();
+      setStats(newStats);
+      if (account) {
+        realAutomatedTrader.initialize(account, currentNetwork);
+        const bal = await realAutomatedTrader.getRealBalance();
+        setBalance(bal);
+      }
+    } catch (error) {
+      console.error("Erro ao atualizar:", error);
+    }
+  };
+
+  const startTrading = async () => {
+    if (balance < tradeAmount) {
+      toast.error(`Saldo insuficiente: $${balance.toFixed(2)}`);
+      return;
+    }
+    setIsLoading(true);
+    try {
+      realAutomatedTrader.initialize(account, currentNetwork);
+      realAutomatedTrader.startAutomatedTrading(intervalSec, tradeAmount);
+      setIsRunning(true);
+      toast.success(`🤖 Trading REAL iniciado em ${currentNetwork}!`);
+    } catch (error) {
+      toast.error("Erro ao iniciar trading");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const stopTrading = () => {
+    realAutomatedTrader.stopAutomatedTrading();
+    setIsRunning(false);
+    refresh();
+    toast.success("⏹️ Trading REAL parado");
+  };
+
+  const manualCycle = async () => {
+    if (balance < tradeAmount) {
+      toast.error(`Saldo insuficiente: $${balance.toFixed(2)}`);
+      return;
+    }
+    toast.loading("Executando ciclo manual...", { id: "manual" });
+    try {
+      realAutomatedTrader.initialize(account, currentNetwork);
+      const result = await realAutomatedTrader.runTradingCycle(tradeAmount);
+      await refresh();
+      if (result.profit > 0) {
+        toast.success(`✅ Lucro: $${result.profit.toFixed(4)}`, { id: "manual" });
+      } else if (result.profit < 0) {
+        toast.error(`📉 Prejuízo: $${result.profit.toFixed(4)}`, { id: "manual" });
+      } else {
+        toast.success(`⏸️ HOLD`, { id: "manual" });
+      }
+    } catch (error) {
+      toast.error("Erro no ciclo manual", { id: "manual" });
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    const interval = setInterval(refresh, 5000);
+    return () => clearInterval(interval);
+  }, [account, currentNetwork]);
+
+  const isMainnet = currentNetwork !== "arc";
+  const safeTradeAmount = isNaN(tradeAmount) ? 10 : tradeAmount;
+  const safeBalance = isNaN(balance) ? 0 : balance;
+
+  return (
+    <div style={{ marginTop: 16, padding: 16, background: "#0f172a", borderRadius: 16, border: isMainnet ? "2px solid #ef4444" : "2px solid #fbbf24" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+        <span style={{ fontSize: 24 }}>💰🤖</span>
+        <span style={{ fontWeight: "bold", color: isMainnet ? "#ef4444" : "#fbbf24" }}>REAL AUTOMATED TRADER</span>
+        <span style={{ fontSize: 9, background: isMainnet ? "#ef4444" : "#fbbf24", padding: "2px 8px", borderRadius: 10, color: "#0f172a", fontWeight: "bold" }}>
+          {isMainnet ? "💰 DINHEIRO REAL" : "🧪 TESTNET"}
+        </span>
+        {isRunning && <span style={{ fontSize: 9, background: "#22c55e", padding: "2px 8px", borderRadius: 10, color: "#fff" }}>🔴 LIVE</span>}
+      </div>
+
+      {isMainnet && (
+        <div style={{ background: "#ef4444", padding: 8, borderRadius: 8, marginBottom: 16, textAlign: "center" }}>
+          <span style={{ fontSize: 11, color: "#fff", fontWeight: "bold" }}>⚠️ DINHEIRO REAL - Comece com $5-10 apenas!</span>
+        </div>
+      )}
+
+      <div style={{ background: "#1e293b", padding: 12, borderRadius: 12, marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 10, color: "#94a3b8" }}>Seu Saldo REAL</div>
+            <div style={{ fontSize: 28, fontWeight: "bold", color: isMainnet ? "#ef4444" : "#4ade80" }}>
+              ${safeBalance.toFixed(2)} USDC
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 10, color: "#94a3b8" }}>Lucro Total</div>
+            <div style={{ fontSize: 24, fontWeight: "bold", color: parseFloat(stats.totalProfit) > 0 ? "#4ade80" : "#f97316" }}>
+              ${stats.totalProfit}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 10, color: "#94a3b8" }}>Win Rate</div>
+            <div style={{ fontSize: 24, fontWeight: "bold", color: "#fbbf24" }}>{stats.winRate}%</div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+        <div style={{ flex: 1 }}>
+          <label style={{ fontSize: 10, color: "#94a3b8" }}>💵 Trade ($)</label>
+          <input 
+            type="number" 
+            value={safeTradeAmount} 
+            onChange={(e) => {
+              const val = parseFloat(e.target.value);
+              setTradeAmount(isNaN(val) ? 10 : val);
+            }} 
+            min={5} 
+            max={isMainnet ? 25 : 100} 
+            step={1}
+            style={{ width: "100%", padding: 8, borderRadius: 8, background: "#1e293b", color: "#fff", border: "1px solid #334155" }} 
+          />
+        </div>
+        <div style={{ flex: 1 }}>
+          <label style={{ fontSize: 10, color: "#94a3b8" }}>⏱️ Intervalo (s)</label>
+          <input 
+            type="number" 
+            value={intervalSec} 
+            onChange={(e) => {
+              const val = parseInt(e.target.value);
+              setIntervalSec(isNaN(val) ? 30 : val);
+            }} 
+            min={30} 
+            max={300} 
+            step={5}
+            style={{ width: "100%", padding: 8, borderRadius: 8, background: "#1e293b", color: "#fff", border: "1px solid #334155" }} 
+          />
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {!isRunning ? (
+          <button 
+            onClick={startTrading} 
+            disabled={isLoading || safeBalance < safeTradeAmount}
+            style={{ 
+              flex: 2, 
+              background: (safeBalance >= safeTradeAmount ? (isMainnet ? "#ef4444" : "#10b981") : "#6b7280"), 
+              color: "#fff", 
+              padding: 12, 
+              borderRadius: 10, 
+              border: "none", 
+              cursor: (safeBalance >= safeTradeAmount) ? "pointer" : "not-allowed", 
+              fontWeight: "bold" 
+            }}
+          >
+            {isLoading ? "⏳ Carregando..." : `🤖 INICIAR TRADING REAL (${currentNetwork.toUpperCase()})`}
+          </button>
+        ) : (
+          <button onClick={stopTrading} style={{ flex: 2, background: "#ef4444", color: "#fff", padding: 12, borderRadius: 10, border: "none", cursor: "pointer", fontWeight: "bold" }}>
+            ⏹️ PARAR TRADING REAL
+          </button>
+        )}
+        <button 
+          onClick={manualCycle} 
+          disabled={isRunning || safeBalance < safeTradeAmount}
+          style={{ 
+            flex: 1, 
+            background: (safeBalance >= safeTradeAmount) ? "#8b5cf6" : "#6b7280", 
+            color: "#fff", 
+            padding: 12, 
+            borderRadius: 10, 
+            border: "none", 
+            cursor: (safeBalance >= safeTradeAmount) ? "pointer" : "not-allowed", 
+            fontWeight: "bold" 
+          }}
+        >
+          🔄 Ciclo Manual
+        </button>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 16 }}>
+        <div style={{ background: "#1e293b", padding: 8, borderRadius: 8, textAlign: "center" }}>
+          <div style={{ fontSize: 10, color: "#94a3b8" }}>Total Trades</div>
+          <div style={{ fontSize: 18, fontWeight: "bold", color: "#fbbf24" }}>{stats.totalTrades}</div>
+        </div>
+        <div style={{ background: "#1e293b", padding: 8, borderRadius: 8, textAlign: "center" }}>
+          <div style={{ fontSize: 10, color: "#94a3b8" }}>Wins / Losses</div>
+          <div style={{ fontSize: 14, fontWeight: "bold" }}>
+            <span style={{ color: "#4ade80" }}>{stats.winningTrades}</span> / <span style={{ color: "#f97316" }}>{stats.losingTrades}</span>
+          </div>
+        </div>
+        <div style={{ background: "#1e293b", padding: 8, borderRadius: 8, textAlign: "center" }}>
+          <div style={{ fontSize: 10, color: "#94a3b8" }}>Méd. por Trade</div>
+          <div style={{ fontSize: 14, fontWeight: "bold", color: "#a78bfa" }}>${stats.avgProfit}</div>
+        </div>
+      </div>
+
+      {stats.totalTrades > 0 && (
+        <div style={{ maxHeight: 120, overflowY: "auto", fontSize: 10, marginBottom: 12 }}>
+          <div style={{ color: "#94a3b8", marginBottom: 6 }}>📜 Últimos Trades:</div>
+          {realAutomatedTrader.getHistory().slice(-5).reverse().map((trade, i) => (
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: "1px solid #334155" }}>
+              <span style={{ color: trade.profit > 0 ? "#4ade80" : trade.profit < 0 ? "#f97316" : "#94a3b8" }}>
+                {trade.profit > 0 ? "📈 LUCRO REAL" : trade.profit < 0 ? "📉 PREJUÍZO REAL" : "⏸️ HOLD"}
+              </span>
+              <span>${trade.profit.toFixed(4)}</span>
+              <span>{new Date(trade.timestamp).toLocaleTimeString()}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ fontSize: 9, color: "#475569", textAlign: "center" }}>
+        💡 <strong>Sistema usa SEU SALDO REAL da carteira!</strong>
+        <br />
+        {isMainnet ? (
+          <span style={{ color: "#ef4444", display: "block", marginTop: 4 }}>
+            ⚠️ DINHEIRO REAL - Monitore cada transação!
+          </span>
+        ) : (
+          <span style={{ color: "#fbbf24", display: "block", marginTop: 4 }}>
+            🧪 TESTNET - USDC grátis para testes! Seu saldo: ${safeBalance.toFixed(2)}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+=== RealTradingDashboard.tsx ===
+// app/components/RealTradingDashboard.tsx
+"use client";
+
+import { useState, useEffect } from "react";
+import { toast } from "react-hot-toast";
+
+interface RealTradingDashboardProps {
+  account: string;
+}
+
+export function RealTradingDashboard({ account }: RealTradingDashboardProps) {
+  const [balance, setBalance] = useState(0);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isRunning, setIsRunning] = useState(false);
+  const [profit, setProfit] = useState(0);
+  const [trades, setTrades] = useState(0);
+
+  // Simular carregamento de saldo real
+  useEffect(() => {
+    if (account) {
+      // Em produÃ§Ã£o, buscar saldo real da blockchain
+      const mockBalance = 25.50 + Math.random() * 10;
+      setBalance(mockBalance);
+    }
+  }, [account]);
+
+  const startTrading = () => {
+    if (balance < 5) {
+      toast.error(`Saldo insuficiente! VocÃª tem $${balance.toFixed(2)} USDC. Adicione fundos no faucet.`);
+      return;
+    }
+    
+    setIsRunning(true);
+    toast.success(`ðŸ¤– Trading REAL iniciado! Saldo: $${balance.toFixed(2)} USDC`);
+    
+    // Simular trades automÃ¡ticos
+    const interval = setInterval(() => {
+      if (Math.random() > 0.7) {
+        const tradeProfit = (Math.random() * 0.5).toFixed(4);
+        setProfit(prev => prev + parseFloat(tradeProfit));
+        setTrades(prev => prev + 1);
+        setBalance(prev => prev + parseFloat(tradeProfit));
+        toast.success(`ðŸ’° Trade executado! Lucro: $${tradeProfit}`, { icon: 'ðŸ’°' });
+      }
+    }, 15000);
+    
+    return () => clearInterval(interval);
+  };
+
+  const stopTrading = () => {
+    setIsRunning(false);
+    toast.success("â¹ï¸ Trading REAL parado");
+  };
+
+  const addMockFunds = () => {
+    const newBalance = balance + 10;
+    setBalance(newBalance);
+    toast.success(`ðŸ’° $10 adicionados Ã  sua carteira! Novo saldo: $${newBalance.toFixed(2)}`);
+  };
+
+  return (
+    <div style={{ marginTop: 16, padding: 16, background: '#0f172a', borderRadius: 16, border: '2px solid #10b981' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+        <span style={{ fontSize: 24 }}>ðŸ’°ðŸ¤–</span>
+        <span style={{ fontWeight: 'bold', color: '#10b981' }}>TRADING REAL - Saldo da Carteira</span>
+        {isRunning && <span style={{ fontSize: 9, background: '#22c55e', padding: '2px 8px', borderRadius: 10, color: '#fff' }}>ATIVO</span>}
+      </div>
+
+      {/* Saldo REAL */}
+      <div style={{ background: '#1e293b', padding: 16, borderRadius: 12, marginBottom: 16, textAlign: 'center' }}>
+        <div style={{ fontSize: 11, color: '#94a3b8' }}>SEU SALDO REAL (USDC na Arc Testnet)</div>
+        <div style={{ fontSize: 32, fontWeight: 'bold', color: balance > 0 ? '#4ade80' : '#f97316' }}>
+          ${balance.toFixed(4)}
+        </div>
+        {balance < 5 && (
+          <div style={{ fontSize: 10, color: '#fbbf24', marginTop: 8 }}>
+            âš ï¸ Saldo baixo! Consiga USDC grÃ¡tis no faucet da Arc Testnet
+          </div>
+        )}
+      </div>
+
+      {/* EstatÃ­sticas */}
+      {trades > 0 && (
+        <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
+          <div style={{ flex: 1, background: '#1e293b', padding: 8, borderRadius: 8, textAlign: 'center' }}>
+            <div style={{ fontSize: 10, color: '#94a3b8' }}>Trades</div>
+            <div style={{ fontSize: 20, fontWeight: 'bold', color: '#fbbf24' }}>{trades}</div>
+          </div>
+          <div style={{ flex: 1, background: '#1e293b', padding: 8, borderRadius: 8, textAlign: 'center' }}>
+            <div style={{ fontSize: 10, color: '#94a3b8' }}>Lucro</div>
+            <div style={{ fontSize: 20, fontWeight: 'bold', color: '#4ade80' }}>${profit.toFixed(4)}</div>
+          </div>
+        </div>
+      )}
+
+      {/* BotÃµes */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        {!isRunning ? (
+          <button 
+            onClick={startTrading}
+            style={{ flex: 2, background: '#10b981', color: '#fff', padding: 12, borderRadius: 10, border: 'none', cursor: 'pointer', fontWeight: 'bold' }}
+          >
+            ðŸ¤– Iniciar Trading REAL
+          </button>
+        ) : (
+          <button 
+            onClick={stopTrading}
+            style={{ flex: 2, background: '#ef4444', color: '#fff', padding: 12, borderRadius: 10, border: 'none', cursor: 'pointer', fontWeight: 'bold' }}
+          >
+            â¹ï¸ Parar Trading
+          </button>
+        )}
+        <button 
+          onClick={addMockFunds}
+          style={{ flex: 1, background: '#f59e0b', color: '#0f172a', padding: 12, borderRadius: 10, border: 'none', cursor: 'pointer', fontWeight: 'bold' }}
+        >
+          +$10 (Mock)
+        </button>
+      </div>
+
+      {/* InformaÃ§Ã£o */}
+      <div style={{ fontSize: 10, color: '#475569', textAlign: 'center' }}>
+        ðŸ’¡ Para obter USDC grÃ¡tis na Arc Testnet, use o faucet oficial:
+        <br />
+        <a href="https://faucet.arc.network" target="_blank" style={{ color: '#3a6cc8' }}>https://faucet.arc.network</a>
+        <br />
+        <span style={{ fontSize: 9, color: '#6b7280', marginTop: 4, display: 'block' }}>
+          âš ï¸ Modo demonstraÃ§Ã£o - Trades sÃ£o simulados para teste
+        </span>
+      </div>
+    </div>
+  );
+}

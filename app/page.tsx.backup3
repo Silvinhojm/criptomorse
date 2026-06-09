@@ -1,11 +1,8 @@
-"use client";
-import { PanicButton } from "@/app/components/PanicButton";
-import { RealAutomatedTrader } from "./components/RealAutomatedTrader";
-
+﻿"use client";
 import { useState, useCallback, useEffect, useRef } from "react";
 import { ethers } from "ethers";
 import { Toaster, toast } from "react-hot-toast";
-
+import { createClient, cacheExchange, fetchExchange } from "urql";
 // Componentes
 import AgentIdentityCard from "./components/AgentIdentityCard";
 import BitcoinTreasureHunter from "./components/BitcoinTreasureHunter";
@@ -29,6 +26,11 @@ import { enhancedMarketAnalyzer } from "../lib/news-agent";
 import type { NewsSentiment } from "../lib/news-agent";
 
 // APIs com fallback
+const SUBGRAPH_URL = "http://localhost:8000/subgraphs/name/arc-wallet-subgraph";
+const subgraphClient = createClient({
+  url: SUBGRAPH_URL,
+  exchanges: [cacheExchange, fetchExchange],
+});
 let coingeckoAgent: any;
 let coinmarketcapAgent: any;
 let sosovalueAgent: any;
@@ -201,7 +203,7 @@ function NetworkSwitcher({
   };
 
   return (
-    <>
+    <>`n      <PanicButton />
       <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
         {networks.map((net) => (
           <button
@@ -334,7 +336,7 @@ function JobsPanel({ account, network }: { account: string; network: Network }) 
   }, [account, loadJobs]);
 
   return (
-    <div>
+    <div>`n      <PanicButton />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <h3 style={{ margin: 0, fontSize: 16, color: "#333" }}>💼 Jobs ERC-8183</h3>
         <button 
@@ -494,7 +496,7 @@ function SwapBridgeModal({
   };
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200 }}>
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200 }}>`n      <PanicButton />
       <div style={{ background: "#f2f3f5", borderRadius: 20, padding: 24, width: 520, maxWidth: "90%", maxHeight: "85%", overflowY: "auto" }}>
         
         <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
@@ -623,7 +625,7 @@ function SwapBridgeModal({
 function ReceiveModal({ account, onClose, network }: { account: string; onClose: () => void; network: Network }) {
   const copy = () => { navigator.clipboard.writeText(account); toast.success("Endereço copiado!"); };
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>`n      <PanicButton />
       <div style={{ background: "#f2f3f5", borderRadius: 20, padding: 24, width: 340 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
           <h3 style={{ margin: 0 }}>Receber {network.isTestnet ? "USDC (Teste)" : "USDC"}</h3>
@@ -785,7 +787,7 @@ function AutoTradeControl({ account, onTradeExecuted, network }: { account: stri
   }, []);
 
   return (
-    <div style={{ marginTop: '16px', padding: '16px', background: 'linear-gradient(135deg, #0a0a2e 0%, #1a1a4e 100%)', borderRadius: '16px' }}>
+    <div style={{ marginTop: '16px', padding: '16px', background: 'linear-gradient(135deg, #0a0a2e 0%, #1a1a4e 100%)', borderRadius: '16px' }}>`n      <PanicButton />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span style={{ fontSize: '24px' }}>🌌</span>
@@ -850,7 +852,7 @@ function AutoTradeControl({ account, onTradeExecuted, network }: { account: stri
 
 function ProfitPool({ totalProfit, onReinvest, network }: { totalProfit: number; onReinvest: (amount: number) => void; network: Network }) {
   return (
-    <div style={{ marginTop: '12px', padding: '12px', background: '#fef3c7', borderRadius: '12px' }}>
+    <div style={{ marginTop: '12px', padding: '12px', background: '#fef3c7', borderRadius: '12px' }}>`n      <PanicButton />
       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
         <span>🏦 Bolsão de Lucros {network.isTestnet && '(Teste)'}</span>
         <span style={{ fontWeight: 'bold', color: '#16a34a' }}>${totalProfit.toFixed(4)}</span>
@@ -870,7 +872,7 @@ function ProfitPool({ totalProfit, onReinvest, network }: { totalProfit: number;
 
 function MarketMonitor() {
   return (
-    <div style={{ marginTop: '16px', padding: '16px', border: `1px solid ${BORDER}`, borderRadius: '16px', background: '#f9fafb' }}>
+    <div style={{ marginTop: '16px', padding: '16px', border: `1px solid ${BORDER}`, borderRadius: '16px', background: '#f9fafb' }}>`n      <PanicButton />
       <div>📊 Market Monitor</div>
       <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '8px' }}>Monitorando spreads de mercado...</div>
     </div>
@@ -990,7 +992,7 @@ export default function Home() {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: "#eef0f5", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+    <div style={{ minHeight: "100vh", background: "#eef0f5", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>`n      <PanicButton />
       <Toaster position="top-center" />
       <div style={{ width: 550, borderRadius: 28, overflow: "hidden", boxShadow: "0 8px 40px rgba(0,0,0,0.13)" }}>
 
@@ -1083,7 +1085,6 @@ export default function Home() {
             {/* NOVOS COMPONENTES INTEGRADOS */}
            <BridgeWidget userAddress={account} />
             <RealTradingDashboard account={account} />
-            <RealAutomatedTrader account={account} currentNetwork="arc" />
             <NanopaymentDashboard agentScores={agentScores} />
             <TradingNanopaymentDashboard />
           </>

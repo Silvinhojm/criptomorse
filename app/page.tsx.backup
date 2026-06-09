@@ -1,11 +1,9 @@
-"use client";
-import { PanicButton } from "@/app/components/PanicButton";
-import { RealAutomatedTrader } from "./components/RealAutomatedTrader";
+﻿"use client";
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import { ethers } from "ethers";
 import { Toaster, toast } from "react-hot-toast";
-
+import { createClient, cacheExchange, fetchExchange } from "urql";
 // Componentes
 import AgentIdentityCard from "./components/AgentIdentityCard";
 import BitcoinTreasureHunter from "./components/BitcoinTreasureHunter";
@@ -29,6 +27,11 @@ import { enhancedMarketAnalyzer } from "../lib/news-agent";
 import type { NewsSentiment } from "../lib/news-agent";
 
 // APIs com fallback
+const SUBGRAPH_URL = "http://localhost:8000/subgraphs/name/arc-wallet-subgraph";
+const subgraphClient = createClient({
+  url: SUBGRAPH_URL,
+  exchanges: [cacheExchange, fetchExchange],
+});
 let coingeckoAgent: any;
 let coinmarketcapAgent: any;
 let sosovalueAgent: any;
@@ -1083,7 +1086,6 @@ export default function Home() {
             {/* NOVOS COMPONENTES INTEGRADOS */}
            <BridgeWidget userAddress={account} />
             <RealTradingDashboard account={account} />
-            <RealAutomatedTrader account={account} currentNetwork="arc" />
             <NanopaymentDashboard agentScores={agentScores} />
             <TradingNanopaymentDashboard />
           </>
