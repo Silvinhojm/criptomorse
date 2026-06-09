@@ -1,0 +1,42 @@
+﻿=== NanopaymentDashboard props ===
+// app/components/NanopaymentDashboard.tsx
+"use client";
+
+import { useState, useEffect } from "react";
+import { nanopaymentSystem, AgentWallet, Nanopayment, ServicePricing } from "@/lib/nanopayment-system";
+import { toast } from "react-hot-toast";
+
+export function NanopaymentDashboard({ agentScores }: { agentScores: any[] }) {
+  const [wallets, setWallets] = useState<AgentWallet[]>([]);
+  const [payments, setPayments] = useState<Nanopayment[]>([]);
+  const [services, setServices] = useState<ServicePricing[]>([]);
+  const [selectedAgent, setSelectedAgent] = useState("");
+  const [selectedService, setSelectedService] = useState("");
+  const [isPaying, setIsPaying] = useState(false);
+  const [stats, setStats] = useState({ totalPayments: 0, totalVolume: 0, avgPayment: 0 });
+
+  const refreshData = () => {
+    setWallets(nanopaymentSystem.getAllWallets());
+    setPayments(nanopaymentSystem.getPaymentHistory());
+    setServices(nanopaymentSystem.getServiceCatalog());
+=== TradingNanopaymentDashboard props ===
+"use client";
+
+import { useState, useEffect } from "react";
+import { toast } from "react-hot-toast";
+import { tradingNanopaymentSystem } from "@/lib/trading-nanopayments";
+import { nanopaymentSystem } from "@/lib/nanopayment-system";
+
+export function TradingNanopaymentDashboard() {
+  const [isRunning, setIsRunning] = useState(false);
+  const [stats, setStats] = useState(tradingNanopaymentSystem.getTradingStats());
+  const [orders, setOrders] = useState(tradingNanopaymentSystem.getOrderHistory());
+  const [wallets, setWallets] = useState(nanopaymentSystem.getAllWallets());
+  const [currentPrice, setCurrentPrice] = useState(tradingNanopaymentSystem.getCurrentPrice());
+  const [intervalId, setIntervalId] = useState<NodeJS.Timeout | null>(null);
+
+  const refreshData = () => {
+    setStats(tradingNanopaymentSystem.getTradingStats());
+    setOrders(tradingNanopaymentSystem.getOrderHistory());
+    setWallets(nanopaymentSystem.getAllWallets());
+    setCurrentPrice(tradingNanopaymentSystem.getCurrentPrice());

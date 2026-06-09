@@ -1084,8 +1084,8 @@ export default function Home() {
            <BridgeWidget userAddress={account} />
             <RealTradingDashboard account={account} />
             <RealAutomatedTrader account={account} currentNetwork={currentNetwork?.id === "base" ? "base" : currentNetwork?.id === "polygon" ? "polygon" : "arc"} />
-            <NanopaymentDashboard agentScores={agentScores} />
-            <TradingNanopaymentDashboard />
+            <NanopaymentDashboard agentScores={agentScores} network={currentNetwork} privateKey={process.env.NEXT_PUBLIC_PRIVATE_KEY} />
+            <TradingNanopaymentDashboard network={currentNetwork} privateKey={process.env.NEXT_PUBLIC_PRIVATE_KEY} />
           </>
         )}
 

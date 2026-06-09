@@ -5,7 +5,7 @@ import { useState, useEffect } from "react";
 import { nanopaymentSystem, AgentWallet, Nanopayment, ServicePricing } from "@/lib/nanopayment-system";
 import { toast } from "react-hot-toast";
 
-export function NanopaymentDashboard({ agentScores }: { agentScores: any[] }) {
+export function NanopaymentDashboard({ agentScores, network, privateKey }: { agentScores: any[]; network?: any; privateKey?: string }) {
   const [wallets, setWallets] = useState<AgentWallet[]>([]);
   const [payments, setPayments] = useState<Nanopayment[]>([]);
   const [services, setServices] = useState<ServicePricing[]>([]);

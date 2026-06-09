@@ -1,0 +1,98 @@
+﻿=== Componentes que precisam de rede ===
+79: rpc: "https://rpc.testnet.arc.network",
+139: type Network = typeof ARC_TESTNET | typeof BASE_MAINNET | typeof POLYGON_MAINNET | typeof ETHEREUM_MAINNET;
+151: // COMPONENTE: NETWORK SWITCHER
+154: function NetworkSwitcher({
+155: currentNetwork,
+159: currentNetwork: Network;
+160: onSwitch: (network: Network) => void;
+163: const networks = [ARC_TESTNET, BASE_MAINNET, POLYGON_MAINNET, ETHEREUM_MAINNET];
+165: const [pendingNetwork, setPendingNetwork] = useState<Network | null>(null);
+167: const handleSwitch = async (network: Network) => {
+168: if (!network.isTestnet && isConnected) {
+169: setPendingNetwork(network);
+173: await performSwitch(network);
+176: const performSwitch = async (network: Network) => {
+181: params: [{ chainId: network.chainIdHex }],
+189: chainId: network.chainIdHex,
+190: chainName: network.name,
+191: rpcUrls: [network.rpc],
+192: nativeCurrency: network.nativeCurrency,
+193: blockExplorerUrls: [network.explorer],
+198: onSwitch(network);
+200: setPendingNetwork(null);
+206: {networks.map((net) => (
+214: background: currentNetwork.chainId === net.chainId
+231: {showWarning && pendingNetwork && (
+237: Você está trocando para <strong>{pendingNetwork.name}</strong>, que opera com <strong style={{ color: RED }}>DINHEIRO REAL</strong>.
+238: {pendingNetwork.isTestnet === false && (
+241: ✅ Certifique-se que tem {pendingNetwork.nativeCurrency.symbol} para gas<br />
+249: onClick={() => performSwitch(pendingNetwork)}
+250: style={{ flex: 1, background: pendingNetwork.isTestnet ? ORANGE : RED, color: "#fff", padding: 12, borderRadius: 12, border: "none", cursor: "pointer", fontWeight: 600 }}
+281: function JobsPanel({ account, network }: { account: string; network: Network }) {
+342: style={{ background: network.isTestnet ? ORANGE : GREEN, color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12 }}
+393: style={{ width: "100%", background: network.isTestnet ? ORANGE : GREEN, color: "#fff", padding: 12, borderRadius: 12, border: "none", cursor: "pointer", fontWeight: 600 }}
+411: currentNetwork,
+416: currentNetwork: Network;
+424: const [targetNetwork, setTargetNetwork] = useState<Network>(BASE_MAINNET);
+427: const availableNetworks = [BASE_MAINNET, POLYGON_MAINNET, ETHEREUM_MAINNET];
+436: const getTokenAddress = (network: Network, tokenSymbol: string): string => {
+437: if (tokenSymbol === "USDC") return network.usdc;
+438: if (tokenSymbol === "EURC") return network.eurc;
+439: return network.usdc;
+443: const fromTokenAddress = getTokenAddress(currentNetwork, fromToken);
+444: const toTokenAddress = getTokenAddress(currentNetwork, toToken);
+446: return `https://jumper.exchange/?fromChain=${currentNetwork.chainId}&fromToken=${fromTokenAddress}&toChain=${currentNetwork.chainId}&toToken=${toTokenAddress}&integrator=arcflow${account ? `&toAddress=${account}` : ""}&fromAmount=${amountInWei}`;
+450: const fromTokenAddress = getTokenAddress(currentNetwork, bridgeToken);
+451: const toTokenAddress = getTokenAddress(targetNetwork, bridgeToken);
+453: return `https://jumper.exchange/?fromChain=${currentNetwork.chainId}&fromToken=${fromTokenAddress}&toChain=${targetNetwork.chainId}&toToken=${toTokenAddress}&integrator=arcflow${account ? `&toAddress=${account}` : ""}&fromAmount=${amountInWei}`;
+508: 🔄 Swap na {currentNetwork.shortName}
+524: <h3 style={{ margin: "0 0 16px 0", fontSize: 16 }}>🔄 Swap em {currentNetwork.shortName}</h3>
+566: <span>{currentNetwork.icon} {currentNetwork.name}</span>
+567: {currentNetwork.isTestnet && <span style={{ fontSize: 11, color: ORANGE, marginLeft: 8 }}>(TESTNET)</span>}
+574: {availableNetworks.map(net => (
+575: <button key={net.chainId} onClick={() => setTargetNetwork(net)} style={{ flex: 1, padding: 10, background: targetNetwork.chainId === net.chainId ? GREEN : "#e5e7eb", color: targetNetwork.chainId === net.chainId ? "#fff" : "#374151", border: "none", borderRadius: 10, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+600: ⚠️ <strong>Importante:</strong> Bridge de {currentNetwork.shortName} → {targetNetwork.shortName}
+601: {currentNetwork.isTestnet && targetNetwork.isTestnet === false && <span> (Testnet → Mainnet)</span>}
+606: {isProcessing ? "Processando..." : `🌉 Bridge ${swapAmount || "0"} ${bridgeToken} → ${targetNetwork.shortName}`}
+623: function ReceiveModal({ account, onClose, network }: { account: string; onClose: () => void; network: Network }) {
+629: <h3 style={{ margin: 0 }}>Receber {network.isTestnet ? "USDC (Teste)" : "USDC"}</h3>
+638: {network.isTestnet && (
+652: function AutoTradeControl({ account, onTradeExecuted, network }: { account: string; onTradeExecuted: (profit: number) => void; network: Network }) {
+657: const [tradeSize, setTradeSize] = useState(network.isTestnet ? 30 : 10);
+761: toast.success(`💰 TRADE ${network.isTestnet ? '🧪 TESTE' : '💰 REAL'} | ${deliberation.action.toUpperCase()} | Lucro: $${profit.toFixed(4)}`);
+766: }, [account, tradeSize, consultAgents, onTradeExecuted, network]);
+777: toast.success(`🌌 Auto-Trade iniciado em ${network.isTestnet ? 'TESTNET' : 'MAINNET'}! Trade: $${tradeSize}`);
+793: <span style={{ fontSize: '9px', background: network.isTestnet ? ORANGE : GREEN, padding: '2px 6px', borderRadius: 10, color: '#fff' }}>
+794: {network.isTestnet ? '🧪 TESTNET' : '💰 REAL'}
+824: <input type="range" min={5} max={network.isTestnet ? 100 : 25} step={1} value={tradeSize} onChange={(e) => setTradeSize(Number(e.target.value))} style={{ width: '100%' }} />
+825: {!network.isTestnet && <div style={{ fontSize: '9px', color: '#fbbf24', marginTop: 4 }}>⚠️ Limite de segurança: $25 por trade em Mainnet</div>}
+851: function ProfitPool({ totalProfit, onReinvest, network }: { totalProfit: number; onReinvest: (amount: number) => void; network: Network }) {
+855: <span>🏦 Bolsão de Lucros {network.isTestnet && '(Teste)'}</span>
+898: const [currentNetwork, setCurrentNetwork] = useState<Network>(ARC_TESTNET);
+906: const usdc = new ethers.Contract(currentNetwork.usdc, ERC20_ABI, provider);
+917: }, [currentNetwork]);
+925: params: [{ chainId: currentNetwork.chainIdHex }],
+932: chainId: currentNetwork.chainIdHex,
+933: chainName: currentNetwork.name,
+934: rpcUrls: [currentNetwork.rpc],
+935: nativeCurrency: currentNetwork.nativeCurrency,
+936: blockExplorerUrls: [currentNetwork.explorer],
+944: toast.success(`Conectado à ${currentNetwork.name}!`);
+961: const usdc = new ethers.Contract(currentNetwork.usdc, ERC20_ABI, signer);
+967: setHistory(h => [{ to: dest, amount, time: new Date().toLocaleTimeString(), hash: tx.hash, network: currentNetwork.name }, ...h]);
+976: const handleNetworkSwitch = async (newNetwork: Network) => {
+977: setCurrentNetwork(newNetwork);
+980: toast.success(`🔄 Rede alterada para ${newNetwork.name}`);
+1000: <NetworkSwitcher currentNetwork={currentNetwork} onSwitch={handleNetworkSwitch} isConnected={!!account} />
+1014: {currentNetwork.isTestnet && <div style={{ fontSize: 10, marginTop: 4, opacity: 0.7 }}>🧪 USDC de teste - sem valor real</div>}
+1032: <button onClick={account ? send : connect} disabled={sending} style={{ width: "100%", background: currentNetwork.isTestnet ? ORANGE : GREEN, color: "#fff", padding: 13, borderRadius: 14, border: "none", cursor: "pointer", fontWeight: 600 }}>
+1033: {sending ? "Enviando..." : account ? `Transferir USDC (${currentNetwork.shortName})` : "Conectar carteira"}
+1052: account ? <JobsPanel account={account} network={currentNetwork} /> :
+1064: <div style={{ fontSize: 11, color: "#9ca3af" }}>{h.time} - {h.network}</div>
+1076: <AutoTradeControl account={account} onTradeExecuted={handleTradeExecuted} network={currentNetwork} />
+1077: <ProfitPool totalProfit={totalProfit} onReinvest={handleReinvest} network={currentNetwork} />
+1086: <RealAutomatedTrader account={account} currentNetwork={currentNetwork?.id === "base" ? "base" : currentNetwork?.id === "polygon" ? "polygon" : "arc"} />
+1093: 🤖 Híbrido | {currentNetwork.isTestnet ? '🧪 TESTNET' : '💰 MAINNET'} | {currentNetwork.name} | TLAY Nanopayments | Bridge USDC
+1098: {modal === "receive" && <ReceiveModal account={account} onClose={() => setModal("")} network={currentNetwork} />}
+1099: {modal === "swap" && <SwapBridgeModal account={account} onClose={() => setModal("")} currentNetwork={currentNetwork} onComplete={() => loadBalance(account)} />}
