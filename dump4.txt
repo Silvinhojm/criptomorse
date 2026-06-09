@@ -1,0 +1,17 @@
+﻿=== .env.local ===
+cont address =***
+KIT_KEY=***
+NEXT_PUBLIC_PRIVATE_KEY=***
+BASE_RPC_URL=***
+NEXT_PUBLIC_AGENT_IDENTITY_ADDRESS=***
+LIFI_API_KEY=***
+=== networks.ts (Polygon) ===
+  // Polygon
+    id: 'polygon',
+    name: 'Polygon',
+    chainId: 137,
+    rpcUrl: 'https://polygon-rpc.com',
+    explorerUrl: 'https://polygonscan.com',
+      name: 'Polygon',
+      { symbol: 'POL', name: 'Polygon', address: '0x0000000000000000000000000000000000001010', decimals: 18, icon: '🟣' },
+    lifiId: 137,

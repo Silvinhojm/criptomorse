@@ -1083,7 +1083,7 @@ export default function Home() {
             {/* NOVOS COMPONENTES INTEGRADOS */}
            <BridgeWidget userAddress={account} />
             <RealTradingDashboard account={account} />
-            <RealAutomatedTrader account={account} currentNetwork="arc" />
+            <RealAutomatedTrader account={account} currentNetwork={currentNetwork?.id === "base" ? "base" : currentNetwork?.id === "polygon" ? "polygon" : "arc"} />
             <NanopaymentDashboard agentScores={agentScores} />
             <TradingNanopaymentDashboard />
           </>

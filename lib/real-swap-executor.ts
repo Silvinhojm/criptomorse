@@ -13,6 +13,14 @@ export const NETWORKS = {
     usdc: "0x3600000000000000000000000000000000000000",
     eurc: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
   },
+  polygon: {
+    chainId: 137,
+    name: "Polygon Mainnet",
+    rpcUrl: "https://polygon-rpc.com",
+    explorer: "https://polygonscan.com",
+    usdc: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+    eurc: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+  },
   base: {
     chainId: 8453,
     name: "Base Mainnet",
