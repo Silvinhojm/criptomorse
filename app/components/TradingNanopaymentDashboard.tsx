@@ -266,9 +266,9 @@ export function TradingNanopaymentDashboard({ network, privateKey }: { network?:
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
           {[
             { label: "Ordens", value: stats.totalOrders },
-            { label: "Compras", value: stats.buyOrders },
-            { label: "Vendas", value: stats.sellOrders },
-            { label: "Volume", value: `$${stats.totalVolume.toFixed(2)}` },
+            { label: "Compras", value: stats.totalBuys },
+            { label: "Vendas", value: stats.totalSells },
+            { label: "Volume", value: `$${parseFloat(stats.totalVolume).toFixed(2)}` },
           ].map(s => (
             <div key={s.label} style={{ background: "#0a0f1e", borderRadius: 6, padding: 6, textAlign: "center" }}>
               <div style={{ fontSize: 9, color: "#475569" }}>{s.label}</div>
