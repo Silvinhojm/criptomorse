@@ -77,16 +77,14 @@ class RealBalanceIntegration {
   }
 
   // Obter saldo REAL de USDC da carteira - CORRIGIDO
-  async getRealUSDCBalance(address: string): Promise<number> {
-    // Usar o mesmo executor real para consistência
-    try {
-      return await realSwap.getBalance("USDC");
-    } catch {
-      return 0;
-    }
+async getRealUSDCBalance(address: string): Promise<number> {
+  try {
+    const { realSwap } = await import("./real-swap-executor");
+    return await realSwap.getBalance("USDC");
+  } catch {
+    return 0;
   }
-  }
-
+}
   // Transferir USDC real
   async transferUSDC(to: string, amount: number): Promise<boolean> {
     if (!this.usdcContract || !this.userAddress) {

@@ -25,7 +25,7 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
   const [intervalSec, setIntervalSec] = useState(90);
   const logsRef = useRef<HTMLDivElement>(null);
 
-  const net = NETWORKS[currentNetwork];
+  const net = NETWORKS[currentNetwork] ?? NETWORKS.arc;
   const isMainnet = currentNetwork !== "arc";
 
   // Auto-scroll logs
