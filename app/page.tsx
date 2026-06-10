@@ -12,7 +12,6 @@ import BitcoinTreasureHunter from "./components/BitcoinTreasureHunter";
 import { AgentDashboard } from "./components/AgentDashboard";
 import { NanopaymentDashboard } from "./components/NanopaymentDashboard";
 import { TradingNanopaymentDashboard } from "./components/TradingNanopaymentDashboard";
-import { RealTradingDashboard } from "./components/RealTradingDashboard";
 import { BridgeWidget } from "./components/BridgeWidget";
 
 // Agents
@@ -1082,7 +1081,6 @@ export default function Home() {
             
             {/* NOVOS COMPONENTES INTEGRADOS */}
            <BridgeWidget userAddress={account} />
-            <RealTradingDashboard account={account} />
             <RealAutomatedTrader account={account} currentNetwork={currentNetwork?.id === "base" ? "base" : currentNetwork?.id === "polygon" ? "polygon" : "arc"} />
             <NanopaymentDashboard agentScores={agentScores} network={currentNetwork} privateKey={process.env.NEXT_PUBLIC_PRIVATE_KEY} />
             <TradingNanopaymentDashboard network={currentNetwork} privateKey={process.env.NEXT_PUBLIC_PRIVATE_KEY} />
