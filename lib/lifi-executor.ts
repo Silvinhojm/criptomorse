@@ -105,7 +105,7 @@ export async function getQuote(params: SwapParams): Promise<QuoteResult | null> 
 
     return {
       fromAmount:          data.fromAmount,
-      toAmount:            data.toAmount,
+      toAmount: data.estimate?.toAmount ?? data.toAmount ?? "0",
       tool:                data.tool ?? 'unknown',
       estimatedGas:        data.estimate?.gasCosts?.[0]?.amount ?? '0',
       expectedTime:        data.estimate?.executionDuration ?? 30,
