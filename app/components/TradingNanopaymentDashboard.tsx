@@ -104,7 +104,7 @@ export function TradingNanopaymentDashboard({ network, privateKey }: { network?:
       } catch (error: any) {
         addLog(`❌ Erro: ${error?.message || "desconhecido"}`);
       }
-    }, 20000);
+    }, 120000);
   };
 
   const stopAutomatedTrading = () => {

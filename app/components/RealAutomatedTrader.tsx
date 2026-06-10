@@ -22,7 +22,7 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
   const [history, setHistory] = useState<TradeRecord[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [tradeAmount, setTradeAmount] = useState(10);
-  const [intervalSec, setIntervalSec] = useState(60);
+  const [intervalSec, setIntervalSec] = useState(90);
   const logsRef = useRef<HTMLDivElement>(null);
 
   const net = NETWORKS[currentNetwork];
@@ -184,7 +184,7 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
           <input
             type="number"
             value={intervalSec}
-            onChange={(e) => setIntervalSec(Math.max(30, parseInt(e.target.value) || 60))}
+            onChange={(e) => setIntervalSec(Math.max(90, parseInt(e.target.value) || 60))}
             min={30}
             max={600}
             style={{ width: "100%", background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, padding: "8px 10px", color: "#e2e8f0", fontSize: 13 }}
