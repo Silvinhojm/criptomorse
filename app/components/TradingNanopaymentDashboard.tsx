@@ -245,7 +245,7 @@ export function TradingNanopaymentDashboard({ network, privateKey }: { network?:
       <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
         {!isRunning ? (
           <button onClick={startAutomatedTrading} style={{ flex: 2, background: isMainnet ? "#ef4444" : "#10b981", color: "#fff", border: "none", borderRadius: 10, padding: 10, fontWeight: 700, cursor: "pointer", fontSize: 11 }}>
-            ⏹️ {isMainnet ? "🔴 Iniciar Trading REAL" : "🤖 Iniciar Trading"}
+            {isMainnet ? "🔴 Iniciar Trading REAL" : "🤖 Iniciar Trading"}
           </button>
         ) : (
           <button onClick={stopAutomatedTrading} style={{ flex: 2, background: "#ef4444", color: "#fff", border: "none", borderRadius: 10, padding: 10, fontWeight: 700, cursor: "pointer", fontSize: 11 }}>
