@@ -63,6 +63,9 @@ class RealAutomatedTrader {
   private lastAction = "Aguardando...";
   private onTradeCallback: ((trade: TradeRecord) => void) | null = null;
   private onLogCallback: ((msg: string) => void) | null = null;
+  private cycleInProgress = false;
+  private sellCooldownUntil = 0;
+  private consecutiveSellFailures = 0;
 
   // ─── Setup ──────────────────────────────────────────────────────────────────
 
@@ -103,6 +106,24 @@ class RealAutomatedTrader {
   // ─── Ciclo de Trading ─────────────────────────────────────────────────────────
 
   async runTradingCycle(tradeAmount: number = 10): Promise<TradeRecord> {
+    if (this.cycleInProgress) {
+      this.log("⏭️ Ciclo anterior ainda em execução — aguardando confirmação on-chain");
+      return this._holdRecord(
+        `trade_skip_${Date.now()}`,
+        "Ciclo anterior em andamento",
+        Date.now()
+      );
+    }
+
+    this.cycleInProgress = true;
+    try {
+      return await this._runTradingCycle(tradeAmount);
+    } finally {
+      this.cycleInProgress = false;
+    }
+  }
+
+  private async _runTradingCycle(tradeAmount: number = 10): Promise<TradeRecord> {
     const timestamp = Date.now();
     const id = `trade_${timestamp}`;
 
@@ -117,33 +138,67 @@ class RealAutomatedTrader {
 
     // 2. Buscar spread de mercado
     const market = await fetchSpread();
-    this.log(`📊 Spread USDC/EURC: ${market.spread.toFixed(3)}% | EURC: $${market.eurc.toFixed(4)}`);
+    this.log(
+      `📊 Spread USDC/EURC: ${market.spread.toFixed(3)}% | EURC: $${market.eurc.toFixed(4)}`
+    );
 
-    // 3. Estratégia baseada em spread
-    //    BUY  (USDC→EURC) se EURC > USDC+spread mínimo  → arbitragem
-    //    SELL (EURC→USDC) se temos EURC acumulado       → realizar lucro
-    //    HOLD se spread pequeno ou saldo insuficiente
-
-    const MIN_SPREAD = 0.4; // % mínimo para operar
+    const MIN_SPREAD = 0.4;
+    const MAX_EURC_ACCUMULATION = tradeAmount * 3;
     let action: "BUY" | "SELL" | "HOLD" = "HOLD";
 
-    if (market.spread >= MIN_SPREAD && usdc >= tradeAmount) {
+    // Prioridade 1: rebalancear EURC acumulado
+    if (eurc >= tradeAmount * 0.9 && (usdc < tradeAmount || eurc >= MAX_EURC_ACCUMULATION)) {
+      action = "SELL";
+    }
+    // Prioridade 2: BUY só se ainda há espaço para EURC
+    else if (
+      market.spread >= MIN_SPREAD &&
+      usdc >= tradeAmount &&
+      eurc < MAX_EURC_ACCUMULATION
+    ) {
       action = "BUY";
-    } else if (eurc >= tradeAmount * 0.9 && market.eurc > 1.001) {
+    }
+    // Prioridade 3: SELL se spread favorável e tem EURC
+    else if (eurc >= tradeAmount * 0.9 && market.spread >= MIN_SPREAD) {
       action = "SELL";
     } else {
-      this.log(`⏸️ HOLD — spread ${market.spread.toFixed(3)}% abaixo de ${MIN_SPREAD}% ou saldo insuficiente`);
+      this.log(
+        `⏸️ HOLD — spread ${market.spread.toFixed(3)}% ou saldo insuficiente (USDC $${usdc.toFixed(2)}, EURC €${eurc.toFixed(2)})`
+      );
       this.lastAction = `HOLD (spread ${market.spread.toFixed(3)}%)`;
-      return this._holdRecord(id, `Spread ${market.spread.toFixed(3)}% — abaixo do mínimo`, timestamp);
+      return this._holdRecord(
+        id,
+        `Spread ${market.spread.toFixed(3)}% — abaixo do mínimo ou saldo insuficiente`,
+        timestamp
+      );
+    }
+
+    if (action === "SELL" && Date.now() < this.sellCooldownUntil) {
+      const mins = Math.ceil((this.sellCooldownUntil - Date.now()) / 60000);
+      this.log(`⏸️ SELL em cooldown (${mins}min) — LI.FI sem rota viável (price impact alto)`);
+      this.lastAction = `HOLD (cooldown SELL ${mins}min)`;
+      return this._holdRecord(id, "SELL em cooldown — price impact alto no LI.FI", timestamp);
     }
 
     // 4. Executar swap REAL
     this.log(`🚀 Executando ${action} de $${tradeAmount} via LI.FI...`);
-    const result: SwapResult = await realSwap.executeSwap(
-      action,
-      tradeAmount,
-      (msg) => this.log(msg)
+    const result: SwapResult = await realSwap.executeSwap(action, tradeAmount, (msg) =>
+      this.log(msg)
     );
+
+    if (action === "SELL") {
+      if (result.success && result.confirmed) {
+        this.consecutiveSellFailures = 0;
+      } else {
+        this.consecutiveSellFailures++;
+        if (this.consecutiveSellFailures >= 2) {
+          this.sellCooldownUntil = Date.now() + 5 * 60 * 1000;
+          this.log(
+            "⏸️ Pausando SELL por 5min — use Bridge/Swap manual (Jumper) ou aguarde liquidez"
+          );
+        }
+      }
+    }
 
     // 5. Calcular lucro real
     let profit = 0;
@@ -184,14 +239,15 @@ class RealAutomatedTrader {
   startAutomatedTrading(intervalSeconds = 60, tradeAmount = 10) {
     if (this.isRunning) return;
     this.isRunning = true;
+    this.sellCooldownUntil = 0;
+    this.consecutiveSellFailures = 0;
     this.log(`\n🤖 TRADING REAL INICIADO — $${tradeAmount} a cada ${intervalSeconds}s`);
 
-    // Primeiro ciclo imediato
-    this.runTradingCycle(tradeAmount);
+    void this.runTradingCycle(tradeAmount);
 
     this.intervalId = setInterval(() => {
       if (!this.isRunning) return;
-      this.runTradingCycle(tradeAmount);
+      void this.runTradingCycle(tradeAmount);
     }, intervalSeconds * 1000);
   }
 

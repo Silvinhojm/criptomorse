@@ -117,6 +117,23 @@ export async function getQuote(params: SwapParams): Promise<QuoteResult | null> 
   }
 }
 
+/** Tenta cotações com slippage crescente (útil quando price impact > 10% no LI.FI) */
+export async function getQuoteWithRetry(
+  params: SwapParams,
+  slippageLevels: number[] = [0.005, 0.05, 0.12]
+): Promise<QuoteResult | null> {
+  for (const slippage of slippageLevels) {
+    const quote = await getQuote({ ...params, slippage });
+    if (quote) {
+      if (slippage > (params.slippage ?? 0.005)) {
+        console.log(`✅ LI.FI cotação obtida com slippage ${(slippage * 100).toFixed(1)}%`);
+      }
+      return quote;
+    }
+  }
+  return null;
+}
+
 // ─── 2. Aprovar token ERC-20 se necessário ─────────────────────────────────────
 
 const ERC20_ABI = [

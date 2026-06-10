@@ -2,7 +2,7 @@
 // Executa SWAPS REAIS via LI.FI API REST + assinatura ethers.Wallet
 
 import { ethers } from "ethers";
-import { getQuote, toTokenUnits } from "./lifi-executor";
+import { getQuoteWithRetry, toTokenUnits } from "./lifi-executor";
 
 export const NETWORKS = {
   arc: {
@@ -50,11 +50,24 @@ export interface SwapResult {
   confirmed: boolean;
 }
 
+const SLIPPAGE_LEVELS = {
+  BUY: [0.005, 0.01, 0.03],
+  SELL: [0.05, 0.1, 0.15],
+} as const;
+
 class RealSwapExecutor {
   private provider: ethers.JsonRpcProvider | null = null;
   private signer: ethers.Wallet | null = null;
   private networkKey: keyof typeof NETWORKS = "arc";
   private userAddress: string = "";
+  private swapQueue: Promise<unknown> = Promise.resolve();
+
+  /** Garante uma transação por vez — evita erro de nonce duplicado */
+  private withSwapLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.swapQueue.then(fn, fn);
+    this.swapQueue = run.catch(() => undefined);
+    return run;
+  }
 
   async initialize(privateKey: string, networkKey: keyof typeof NETWORKS = "arc"): Promise<boolean> {
     try {
@@ -92,9 +105,20 @@ class RealSwapExecutor {
     amountUsd: number,
     onUpdate?: (msg: string) => void
   ): Promise<SwapResult> {
+    return this.withSwapLock(() => this._executeSwap(action, amountUsd, onUpdate));
+  }
+
+  private async _executeSwap(
+    action: "BUY" | "SELL",
+    amountUsd: number,
+    onUpdate?: (msg: string) => void
+  ): Promise<SwapResult> {
     const net = NETWORKS[this.networkKey];
     const timestamp = Date.now();
-    const log = (msg: string) => { console.log(msg); onUpdate?.(msg); };
+    const log = (msg: string) => {
+      console.log(msg);
+      onUpdate?.(msg);
+    };
 
     if (!this.signer || !this.provider) {
       return this._fail(action, amountUsd, "Executor não inicializado", timestamp);
@@ -102,30 +126,38 @@ class RealSwapExecutor {
 
     try {
       const fromToken = action === "BUY" ? net.usdc : net.eurc;
-      const toToken   = action === "BUY" ? net.eurc : net.usdc;
+      const toToken = action === "BUY" ? net.eurc : net.usdc;
       const fromAmount = toTokenUnits(amountUsd, 6);
+      const slippageLevels = [...SLIPPAGE_LEVELS[action]];
 
       log(`🔍 Buscando cotação LI.FI para ${action} $${amountUsd}...`);
 
-      const quote = await getQuote({
-        fromChain:   net.chainId,
-        toChain:     net.chainId,
-        fromToken,
-        toToken,
-        fromAmount,
-        fromAddress: this.userAddress,
-        toAddress:   this.userAddress,
-        slippage:    0.005,
-      });
+      const quote = await getQuoteWithRetry(
+        {
+          fromChain: net.chainId,
+          toChain: net.chainId,
+          fromToken,
+          toToken,
+          fromAmount,
+          fromAddress: this.userAddress,
+          toAddress: this.userAddress,
+        },
+        slippageLevels
+      );
 
-      if (!quote || !quote.transactionRequest) {
-        return this._fail(action, amountUsd, "Nenhuma rota LI.FI disponível", timestamp);
+      if (!quote?.transactionRequest) {
+        const hint =
+          action === "SELL"
+            ? "Price impact alto — tente Jumper manual ou aguarde liquidez"
+            : "Nenhuma rota LI.FI disponível";
+        return this._fail(action, amountUsd, hint, timestamp);
       }
 
       const toAmount = parseInt(quote.toAmount ?? "0") / Math.pow(10, 6);
-      log(`✅ Rota via ${quote.tool} | Estimativa: ${toAmount.toFixed(4)} ${action === "BUY" ? "EURC" : "USDC"}`);
+      log(
+        `✅ Rota via ${quote.tool} | Estimativa: ${toAmount.toFixed(4)} ${action === "BUY" ? "EURC" : "USDC"}`
+      );
 
-      // Aprovar token
       const tx = quote.transactionRequest;
       log(`🔓 Verificando allowance...`);
       const token = new ethers.Contract(fromToken, ERC20_ABI, this.signer);
@@ -137,12 +169,11 @@ class RealSwapExecutor {
         log(`✅ Aprovação confirmada!`);
       }
 
-      // Enviar transação
       log(`📝 Assinando e enviando transação...`);
       const txResponse = await this.signer.sendTransaction({
-        to:       tx.to,
-        data:     tx.data,
-        value:    BigInt(tx.value ?? "0"),
+        to: tx.to,
+        data: tx.data,
+        value: BigInt(tx.value ?? "0"),
         gasLimit: tx.gasLimit ? BigInt(tx.gasLimit) : undefined,
       });
 
@@ -170,11 +201,16 @@ class RealSwapExecutor {
         timestamp,
         confirmed: true,
       };
-
-    } catch (err: any) {
-      const msg = err?.code === "ACTION_REJECTED" ? "Transação rejeitada pelo usuário"
-        : err?.message?.includes("insufficient") ? "Saldo insuficiente"
-        : err?.message || "Erro desconhecido";
+    } catch (err: unknown) {
+      const error = err as { code?: string; message?: string };
+      const msg =
+        error?.code === "ACTION_REJECTED"
+          ? "Transação rejeitada pelo usuário"
+          : error?.message?.includes("insufficient")
+            ? "Saldo insuficiente"
+            : error?.message?.includes("nonce")
+              ? "Erro de nonce — aguarde confirmação da TX anterior"
+              : error?.message || "Erro desconhecido";
       log(`❌ Erro: ${msg}`);
       return this._fail(action, amountUsd, msg, timestamp);
     }
