@@ -147,14 +147,15 @@ class RealAutomatedTrader {
 
     // 5. Calcular lucro real
     let profit = 0;
-    if (result.success && result.confirmed) {
+    if (result.success && result.confirmed && result.toAmount > 0) {
       if (action === "BUY") {
-        // Compramos EURC: lucro = (EURC recebido * preço EURC) - USDC gasto
-        profit = result.toAmount * market.eurc - tradeAmount;
+        // Compramos EURC: lucro = (EURC recebido * preço) - USDC gasto
+        profit = parseFloat((result.toAmount * market.eurc - tradeAmount).toFixed(4));
       } else {
-        // Vendemos EURC: lucro = USDC recebido - EURC gasto (em USD)
-        profit = result.toAmount - tradeAmount * market.eurc;
+        // Vendemos EURC: lucro = USDC recebido - custo em USD
+        profit = parseFloat((result.toAmount - tradeAmount).toFixed(4));
       }
+      profit = isNaN(profit) ? 0 : profit;
     }
 
     this.totalProfit += profit;

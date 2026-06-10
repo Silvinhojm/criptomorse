@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 // app/components/RealAutomatedTrader.tsx
 // Painel de trading REAL — exibe tx hash clicável, saldos reais e confirmação blockchain
 
@@ -156,7 +156,7 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
             { label: "Trades", value: stats.totalTrades, color: "#fbbf24" },
             { label: "On-chain ✅", value: stats.confirmedTrades, color: "#4ade80" },
             { label: "Win Rate", value: `${stats.winRate}%`, color: "#a78bfa" },
-            { label: "Lucro", value: `$${stats.totalProfit}`, color: parseFloat(stats.totalProfit) >= 0 ? "#4ade80" : "#f87171" },
+            { label: "Lucro", value: `$${isNaN(parseFloat(stats.totalProfit)) ? "0.0000" : stats.totalProfit}`, color: parseFloat(stats.totalProfit) >= 0 ? "#4ade80" : "#f87171" },
           ].map((s) => (
             <div key={s.label} style={{ background: "#0f172a", borderRadius: 8, padding: 8, textAlign: "center" }}>
               <div style={{ fontSize: 9, color: "#475569" }}>{s.label}</div>

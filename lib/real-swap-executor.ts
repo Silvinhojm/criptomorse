@@ -122,7 +122,8 @@ class RealSwapExecutor {
         return this._fail(action, amountUsd, "Nenhuma rota LI.FI disponível", timestamp);
       }
 
-      const toAmount = parseFloat(quote.toAmount) / 1e6;
+      const toAmountRaw = parseFloat(quote.toAmount ?? "0");
+      const toAmount = toAmountRaw > 1000 ? toAmountRaw / 1e6 : toAmountRaw;
       log(`✅ Rota via ${quote.tool} | Estimativa: ${toAmount.toFixed(4)} ${action === "BUY" ? "EURC" : "USDC"}`);
 
       // Aprovar token
