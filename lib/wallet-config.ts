@@ -41,7 +41,7 @@ export const POLYGON_MAINNET = {
   id: "polygon",
   name: "Polygon (POL)",
   shortName: "Polygon",
-  rpc: "https://polygon-rpc.com",
+  rpc: "https://polygon.drpc.org",
   chainId: 137,
   chainIdHex: "0x89",
   usdc: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",

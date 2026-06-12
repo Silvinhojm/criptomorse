@@ -35,6 +35,15 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
     }
   }, [logs]);
 
+  // Atualizar rede quando currentNetwork mudar
+  useEffect(() => {
+    if (initialized && currentNetwork !== "arc") {
+      realAutomatedTrader.switchNetwork(currentNetwork);
+      addLog(`🔄 Trader atualizado para ${net.name}`);
+      refreshStats(); // Recarregar saldos da nova rede
+    }
+  }, [currentNetwork, initialized, net.name]);
+
   const addLog = (msg: string) => {
     setLogs((prev) => [...prev.slice(-49), `[${new Date().toLocaleTimeString()}] ${msg}`]);
   };
@@ -50,8 +59,32 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
   // Inicializar trader
   const handleInit = async () => {
     setIsInitializing(true);
-    addLog("🔑 Inicializando trader com private key...");
-    const ok = await realAutomatedTrader.initialize(PRIVATE_KEY, currentNetwork);
+
+    let walletInput = account.trim();
+    if (!walletInput && PRIVATE_KEY) {
+      walletInput = PRIVATE_KEY;
+    }
+    if (!walletInput && typeof window !== "undefined" && window.ethereum) {
+      try {
+        const accounts = (await window.ethereum.request({ method: "eth_accounts" })) as string[];
+        walletInput = accounts?.[0] || "";
+      } catch {
+        walletInput = "";
+      }
+    }
+
+    if (!walletInput) {
+      addLog("⏳ Aguardando conexão da carteira para inicializar o trader...");
+      setIsInitializing(false);
+      return;
+    }
+
+    addLog(
+      PRIVATE_KEY
+        ? "🔑 Inicializando trader com private key..."
+        : `🔑 Inicializando trader com a conta conectada ${walletInput.slice(0, 6)}...`
+    );
+    const ok = await realAutomatedTrader.initialize(walletInput, currentNetwork);
     if (ok) {
       realAutomatedTrader.onLog(addLog);
       realAutomatedTrader.onTrade(() => refreshStats());
@@ -59,7 +92,7 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
       addLog(`✅ Conectado à ${net.name}`);
       await refreshStats();
     } else {
-      addLog("❌ Falha ao inicializar — verifique PRIVATE_KEY e RPC");
+      addLog("❌ Falha ao inicializar — verifique PRIVATE_KEY, conta conectada e RPC");
     }
     setIsInitializing(false);
   };
@@ -83,6 +116,12 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
     await realAutomatedTrader.runTradingCycle(tradeAmount);
     await refreshStats();
   };
+
+  useEffect(() => {
+    if (account && !initialized && !isInitializing) {
+      void handleInit();
+    }
+  }, [account, currentNetwork, initialized, isInitializing]);
 
   useEffect(() => {
     const id = setInterval(refreshStats, 8000);

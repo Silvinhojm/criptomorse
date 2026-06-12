@@ -1,7 +1,7 @@
 // lib/real-swap-executor.ts
 // Executa SWAPS REAIS via LI.FI API REST + assinatura ethers.Wallet
 
-import { ethers } from "ethers";
+import { ethers, type JsonRpcSigner } from "ethers";
 import { getQuoteWithRetry, toTokenUnits } from "./lifi-executor";
 
 export const NETWORKS = {
@@ -16,10 +16,10 @@ export const NETWORKS = {
   polygon: {
     chainId: 137,
     name: "Polygon Mainnet",
-    rpcUrl: "https://polygon-rpc.com",
+    rpcUrl: "https://polygon.drpc.org",
     explorer: "https://polygonscan.com",
     usdc: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
-    eurc: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+    eurc: "0xE0B52e49357Fd4DAf2c15e02058DCE6BC0057db4", // EURC correto na Polygon
   },
   base: {
     chainId: 8453,
@@ -29,6 +29,14 @@ export const NETWORKS = {
     usdc: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     eurc: "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42",
   },
+  ethereum: {
+    chainId: 1,
+    name: "Ethereum Mainnet",
+    rpcUrl: "https://eth.llamarpc.com",
+    explorer: "https://etherscan.io",
+    usdc: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    eurc: "0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c",
+  },
 };
 
 const ERC20_ABI = [
@@ -37,6 +45,19 @@ const ERC20_ABI = [
   "function allowance(address owner, address spender) view returns (uint256)",
   "function approve(address spender, uint256 amount) returns (bool)",
 ];
+
+const isPrivateKey = (value: string) => /^0x?[a-fA-F0-9]{64}$/.test(value.trim());
+
+async function resolveWalletFromBrowser(): Promise<string> {
+  if (typeof window === "undefined" || !window.ethereum) return "";
+
+  try {
+    const accounts = (await window.ethereum.request({ method: "eth_accounts" })) as string[];
+    return accounts?.[0] || "";
+  } catch {
+    return "";
+  }
+}
 
 export interface SwapResult {
   success: boolean;
@@ -57,7 +78,7 @@ const SLIPPAGE_LEVELS = {
 
 class RealSwapExecutor {
   private provider: ethers.JsonRpcProvider | null = null;
-  private signer: ethers.Wallet | null = null;
+  private signer: ethers.Wallet | JsonRpcSigner | null = null;
   private networkKey: keyof typeof NETWORKS = "arc";
   private userAddress: string = "";
   private swapQueue: Promise<unknown> = Promise.resolve();
@@ -69,33 +90,83 @@ class RealSwapExecutor {
     return run;
   }
 
-  async initialize(privateKey: string, networkKey: keyof typeof NETWORKS = "arc"): Promise<boolean> {
+  async initialize(walletOrPrivateKey: string, networkKey: keyof typeof NETWORKS = "arc"): Promise<boolean> {
     try {
       this.networkKey = networkKey;
       const net = NETWORKS[networkKey];
       this.provider = new ethers.JsonRpcProvider(net.rpcUrl);
-      this.signer = new ethers.Wallet(privateKey, this.provider);
-      this.userAddress = await this.signer.getAddress();
-      console.log(`✅ RealSwapExecutor: ${net.name} | ${this.userAddress}`);
-      return true;
+      this.signer = null;
+      this.userAddress = "";
+
+      const rawValue = (walletOrPrivateKey || "").trim();
+      let resolvedValue = rawValue;
+
+      if (!resolvedValue || isPrivateKey(resolvedValue)) {
+        const browserAccount = await resolveWalletFromBrowser();
+        if (browserAccount) {
+          resolvedValue = browserAccount;
+        } else if (isPrivateKey(rawValue)) {
+          resolvedValue = rawValue;
+        }
+      }
+
+      if (isPrivateKey(resolvedValue)) {
+        this.signer = new ethers.Wallet(resolvedValue, this.provider);
+        this.userAddress = await this.signer.getAddress();
+      } else if (ethers.isAddress(resolvedValue)) {
+        this.userAddress = ethers.getAddress(resolvedValue);
+
+        if (typeof window !== "undefined" && window.ethereum) {
+          try {
+            const browserProvider = new ethers.BrowserProvider(window.ethereum);
+            this.signer = await browserProvider.getSigner();
+            const signerAddress = await this.signer.getAddress();
+            if (signerAddress) {
+              this.userAddress = signerAddress;
+            }
+          } catch (signerErr) {
+            console.warn("⚠️ Não foi possível criar signer via MetaMask:", signerErr);
+          }
+        }
+      }
+
+      console.log(`✅ RealSwapExecutor: ${net.name} | ${this.userAddress || "sem conta"} | source=${resolvedValue ? "wallet" : "empty"}`);
+      return Boolean(this.userAddress);
     } catch (err) {
       console.error("❌ Erro ao inicializar:", err);
       return false;
     }
   }
 
-  async getBalance(token: "USDC" | "EURC"): Promise<number> {
-    if (!this.provider || !this.userAddress) return 0;
+  /** Mudar de rede sem reinicializar o signer */
+  switchNetwork(networkKey: keyof typeof NETWORKS): void {
+    this.networkKey = networkKey;
+    const net = NETWORKS[networkKey];
+    this.provider = new ethers.JsonRpcProvider(net.rpcUrl);
+    console.log(`🔄 RealSwapExecutor mudou para: ${net.name}`);
+  }
+
+  async getBalance(token: "USDC" | "EURC", networkKey?: keyof typeof NETWORKS): Promise<number> {
+    if (!this.provider || !this.userAddress) {
+      console.warn(`⚠️ getBalance: provider=${!!this.provider}, userAddress=${!!this.userAddress}`);
+      return 0;
+    }
     try {
-      const net = NETWORKS[this.networkKey];
+      // Usa rede passada ou a rede atual
+      const key = networkKey || this.networkKey;
+      const net = NETWORKS[key];
       const addr = token === "USDC" ? net.usdc : net.eurc;
+      console.log(`🔍 getBalance(${token}) - Rede: ${key}, Endereço Token: ${addr}, Minha Conta: ${this.userAddress}`);
       const contract = new ethers.Contract(addr, ERC20_ABI, this.provider);
       const [raw, decimals] = await Promise.all([
         contract.balanceOf(this.userAddress),
         contract.decimals(),
       ]);
-      return parseFloat(ethers.formatUnits(raw, decimals));
-    } catch {
+      const balance = parseFloat(ethers.formatUnits(raw, decimals));
+      console.log(`✅ Saldo ${token}: ${balance} (raw: ${raw.toString()}, decimals: ${decimals})`);
+      return balance;
+    } catch (err) {
+      console.error(`❌ Erro ao buscar saldo ${token}:`, err);
       return 0;
     }
   }
@@ -217,6 +288,7 @@ class RealSwapExecutor {
   }
 
   getAddress(): string { return this.userAddress; }
+  getNetwork(): keyof typeof NETWORKS { return this.networkKey; }
   getExplorerUrl(txHash: string): string {
     return `${NETWORKS[this.networkKey].explorer}/tx/${txHash}`;
   }

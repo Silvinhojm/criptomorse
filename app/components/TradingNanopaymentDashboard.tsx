@@ -5,7 +5,7 @@ import { tradingNanopaymentSystem } from "@/lib/trading-nanopayments";
 import { nanopaymentSystem } from "@/lib/nanopayment-system";
 import { realSwap, NETWORKS } from "@/lib/real-swap-executor";
 
-export function TradingNanopaymentDashboard({ network, privateKey }: { network?: any; privateKey?: string }) {
+export function TradingNanopaymentDashboard({ network, privateKey, account }: { network?: any; privateKey?: string; account?: string }) {
   const [isRunning, setIsRunning] = useState(false);
   const [stats, setStats] = useState(tradingNanopaymentSystem.getTradingStats());
   const [orders, setOrders] = useState(tradingNanopaymentSystem.getOrderHistory());
@@ -31,18 +31,48 @@ export function TradingNanopaymentDashboard({ network, privateKey }: { network?:
     if (logsRef.current) logsRef.current.scrollTop = logsRef.current.scrollHeight;
   }, [logs]);
 
-  // Inicializar realSwap quando tem privateKey
+  // Inicializar realSwap a partir da conta conectada ou da private key
   useEffect(() => {
-    if (privateKey && privateKey.length > 10) {
-      realSwap.initialize(privateKey, networkKey).then(ok => {
-        if (ok) {
-          setRealMode(true);
-          addLog(`✅ Conectado à ${network?.name || "Arc"} — modo ${isMainnet ? "REAL" : "TESTNET"}`);
-          refreshRealBalances();
+    const resolveWallet = async () => {
+      const walletInput = (account || (privateKey && privateKey.length > 10 ? privateKey : "") || "").trim();
+      if (!walletInput && typeof window !== "undefined" && window.ethereum) {
+        try {
+          const accounts = (await window.ethereum.request({ method: "eth_accounts" })) as string[];
+          const browserAccount = accounts?.[0] || "";
+          if (!browserAccount) return;
+          const ok = await realSwap.initialize(browserAccount, networkKey);
+          if (ok) {
+            setRealMode(true);
+            addLog(`✅ Conectado à ${network?.name || "Arc"} — modo ${isMainnet ? "REAL" : "TESTNET"}`);
+            refreshRealBalances();
+          }
+          return;
+        } catch {
+          return;
         }
-      });
+      }
+
+      if (!walletInput) return;
+
+      const ok = await realSwap.initialize(walletInput, networkKey);
+      if (ok) {
+        setRealMode(true);
+        addLog(`✅ Conectado à ${network?.name || "Arc"} — modo ${isMainnet ? "REAL" : "TESTNET"}`);
+        refreshRealBalances();
+      }
+    };
+
+    void resolveWallet();
+  }, [privateKey, account, networkKey, network?.name, isMainnet]);
+
+  // Atualizar quando rede muda
+  useEffect(() => {
+    if (realMode) {
+      realSwap.switchNetwork(networkKey);
+      addLog(`🔄 Rede atualizada para ${network?.name || "Arc"}`);
+      refreshRealBalances();
     }
-  }, [privateKey, networkKey]);
+  }, [networkKey, realMode, network?.name]);
 
   const refreshRealBalances = async () => {
     const usdc = await realSwap.getBalance("USDC");
