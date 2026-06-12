@@ -46,51 +46,102 @@ export function SwapBridgeModal({
   const [targetNetwork, setTargetNetwork] = useState<WalletNetwork>(BASE_MAINNET);
   const [bridgeToken, setBridgeToken] = useState("USDC");
 
+  // Função SIMPLES para converter valor
+  const getAmountInWei = (amountStr: string): number => {
+    if (!amountStr) return 0;
+    
+    // Remove espaços
+    let clean = amountStr.trim();
+    
+    // Substitui vírgula por ponto (formato BR)
+    clean = clean.replace(",", ".");
+    
+    // Remove qualquer caractere que não seja número ou ponto
+    clean = clean.replace(/[^0-9.]/g, "");
+    
+    // Garante que só tem um ponto
+    const parts = clean.split(".");
+    if (parts.length > 2) {
+      clean = parts[0] + "." + parts.slice(1).join("");
+    }
+    
+    // Converte para número
+    const amount = parseFloat(clean);
+    if (isNaN(amount) || amount <= 0) return 0;
+    
+    // USDC tem 6 decimais
+    return Math.floor(amount * 1_000_000);
+  };
+
   const getSwapUrl = () => {
     const fromTokenAddress = getTokenAddress(currentNetwork, fromToken);
     const toTokenAddress = getTokenAddress(currentNetwork, toToken);
-    const amountInWei = parseFloat(swapAmount) * 1000000 || 0;
+    const amountInWei = getAmountInWei(swapAmount);
+    
+    console.log("🔍 Debug Swap:", {
+      input: swapAmount,
+      amountInWei,
+      expectedAmount: amountInWei / 1_000_000
+    });
+    
     return `https://jumper.exchange/?fromChain=${currentNetwork.chainId}&fromToken=${fromTokenAddress}&toChain=${currentNetwork.chainId}&toToken=${toTokenAddress}&integrator=arcflow${account ? `&toAddress=${account}` : ""}&fromAmount=${amountInWei}`;
   };
 
   const getBridgeUrl = () => {
     const fromTokenAddress = getTokenAddress(currentNetwork, bridgeToken);
     const toTokenAddress = getTokenAddress(targetNetwork, bridgeToken);
-    const amountInWei = parseFloat(swapAmount) * 1000000 || 0;
+    const amountInWei = getAmountInWei(swapAmount);
+    
+    console.log("🔍 Debug Bridge:", {
+      input: swapAmount,
+      amountInWei,
+      expectedAmount: amountInWei / 1_000_000
+    });
+    
     return `https://jumper.exchange/?fromChain=${currentNetwork.chainId}&fromToken=${fromTokenAddress}&toChain=${targetNetwork.chainId}&toToken=${toTokenAddress}&integrator=arcflow${account ? `&toAddress=${account}` : ""}&fromAmount=${amountInWei}`;
   };
 
   const handleSwap = async () => {
-    if (!swapAmount || parseFloat(swapAmount) <= 0) {
-      toast.error("Digite um valor válido");
+    const amount = getAmountInWei(swapAmount);
+    
+    if (amount <= 0) {
+      toast.error("Digite um valor válido (ex: 5 ou 5.50)");
       return;
     }
+    
+    const displayAmount = amount / 1_000_000;
+    
     setIsProcessing(true);
     try {
-      toast.loading("Preparando swap...", { id: "swap" });
+      toast.loading(`Preparando swap de ${displayAmount.toFixed(2)} ${fromToken}...`, { id: "swap" });
       await new Promise((resolve) => setTimeout(resolve, 1000));
       window.open(getSwapUrl(), "_blank");
-      toast.success("Redirecionando para LI.FI para concluir!", { id: "swap" });
+      toast.success(`Swap de ${displayAmount.toFixed(2)} ${fromToken} → ${toToken} redirecionado!`, { id: "swap" });
       if (onComplete) setTimeout(onComplete, 3000);
       onClose();
     } catch {
-      toast.error("Erro ao processar", { id: "swap" });
+      toast.error("Erro ao processar swap", { id: "swap" });
     } finally {
       setIsProcessing(false);
     }
   };
 
   const handleBridge = async () => {
-    if (!swapAmount || parseFloat(swapAmount) <= 0) {
-      toast.error("Digite um valor válido");
+    const amount = getAmountInWei(swapAmount);
+    
+    if (amount <= 0) {
+      toast.error("Digite um valor válido (ex: 5 ou 5.50)");
       return;
     }
+    
+    const displayAmount = amount / 1_000_000;
+    
     setIsProcessing(true);
     try {
-      toast.loading("Preparando bridge...", { id: "bridge" });
+      toast.loading(`Preparando bridge de ${displayAmount.toFixed(2)} ${bridgeToken}...`, { id: "bridge" });
       await new Promise((resolve) => setTimeout(resolve, 1000));
       window.open(getBridgeUrl(), "_blank");
-      toast.success("Redirecionando para LI.FI para fazer bridge!", { id: "bridge" });
+      toast.success(`Bridge de ${displayAmount.toFixed(2)} ${bridgeToken} redirecionada!`, { id: "bridge" });
       if (onComplete) setTimeout(onComplete, 3000);
       onClose();
     } catch {
@@ -98,6 +149,13 @@ export function SwapBridgeModal({
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const getDisplayAmount = () => {
+    if (!swapAmount) return "";
+    const amount = getAmountInWei(swapAmount);
+    if (amount <= 0) return swapAmount;
+    return (amount / 1_000_000).toFixed(2);
   };
 
   return (
@@ -222,10 +280,11 @@ export function SwapBridgeModal({
 
             <div style={{ marginBottom: 20 }}>
               <label style={{ fontSize: 12, color: "#6b7280", marginBottom: 6, display: "block" }}>
-                Valor:
+                Valor (ex: 5 ou 5.50):
               </label>
               <input
                 type="number"
+                step="0.01"
                 value={swapAmount}
                 onChange={(e) => setSwapAmount(e.target.value)}
                 placeholder="0.00"
@@ -235,13 +294,22 @@ export function SwapBridgeModal({
                   borderRadius: 10,
                   border: `1px solid ${BORDER}`,
                   boxSizing: "border-box",
+                  fontSize: 16,
                 }}
               />
+              {swapAmount && parseFloat(swapAmount) > 0 && (
+                <div style={{ fontSize: 12, color: "#10b981", marginTop: 6 }}>
+                  ✅ Valor: {parseFloat(swapAmount).toFixed(2)} {fromToken}
+                  <span style={{ fontSize: 10, color: "#6b7280", marginLeft: 8 }}>
+                    (6 decimais: {(parseFloat(swapAmount) * 1000000).toFixed(0)} wei)
+                  </span>
+                </div>
+              )}
             </div>
 
             <button
               onClick={handleSwap}
-              disabled={isProcessing}
+              disabled={isProcessing || !swapAmount || parseFloat(swapAmount) <= 0}
               style={{
                 width: "100%",
                 background: ORANGE,
@@ -249,12 +317,16 @@ export function SwapBridgeModal({
                 padding: 14,
                 borderRadius: 14,
                 border: "none",
-                cursor: isProcessing ? "not-allowed" : "pointer",
+                cursor: isProcessing || !swapAmount || parseFloat(swapAmount) <= 0 ? "not-allowed" : "pointer",
                 fontWeight: 600,
-                opacity: isProcessing ? 0.7 : 1,
+                opacity: isProcessing || !swapAmount || parseFloat(swapAmount) <= 0 ? 0.7 : 1,
               }}
             >
-              {isProcessing ? "Processando..." : `🔄 Swappar ${fromToken} → ${toToken}`}
+              {isProcessing 
+                ? "Processando..." 
+                : !swapAmount || parseFloat(swapAmount) <= 0 
+                  ? "Digite um valor" 
+                  : `🔄 Swappar ${parseFloat(swapAmount).toFixed(2)} ${fromToken} → ${toToken}`}
             </button>
           </>
         ) : (
@@ -338,10 +410,11 @@ export function SwapBridgeModal({
 
             <div style={{ marginBottom: 20 }}>
               <label style={{ fontSize: 12, color: "#6b7280", marginBottom: 6, display: "block" }}>
-                Valor:
+                Valor (ex: 5 ou 5.50):
               </label>
               <input
                 type="number"
+                step="0.01"
                 value={swapAmount}
                 onChange={(e) => setSwapAmount(e.target.value)}
                 placeholder="0.00"
@@ -351,8 +424,14 @@ export function SwapBridgeModal({
                   borderRadius: 10,
                   border: `1px solid ${BORDER}`,
                   boxSizing: "border-box",
+                  fontSize: 16,
                 }}
               />
+              {swapAmount && parseFloat(swapAmount) > 0 && (
+                <div style={{ fontSize: 12, color: "#10b981", marginTop: 6 }}>
+                  ✅ Valor: {parseFloat(swapAmount).toFixed(2)} {bridgeToken}
+                </div>
+              )}
             </div>
 
             <div style={{ background: "#fef3c7", borderRadius: 12, padding: 12, marginBottom: 20 }}>
@@ -367,7 +446,7 @@ export function SwapBridgeModal({
 
             <button
               onClick={handleBridge}
-              disabled={isProcessing}
+              disabled={isProcessing || !swapAmount || parseFloat(swapAmount) <= 0}
               style={{
                 width: "100%",
                 background: GREEN,
@@ -375,14 +454,16 @@ export function SwapBridgeModal({
                 padding: 14,
                 borderRadius: 14,
                 border: "none",
-                cursor: isProcessing ? "not-allowed" : "pointer",
+                cursor: isProcessing || !swapAmount || parseFloat(swapAmount) <= 0 ? "not-allowed" : "pointer",
                 fontWeight: 600,
-                opacity: isProcessing ? 0.7 : 1,
+                opacity: isProcessing || !swapAmount || parseFloat(swapAmount) <= 0 ? 0.7 : 1,
               }}
             >
               {isProcessing
                 ? "Processando..."
-                : `🌉 Bridge ${swapAmount || "0"} ${bridgeToken} → ${targetNetwork.shortName}`}
+                : !swapAmount || parseFloat(swapAmount) <= 0
+                  ? "Digite um valor"
+                  : `🌉 Bridge ${parseFloat(swapAmount).toFixed(2)} ${bridgeToken} → ${targetNetwork.shortName}`}
             </button>
           </>
         )}

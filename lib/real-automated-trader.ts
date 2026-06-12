@@ -69,15 +69,24 @@ class RealAutomatedTrader {
 
   // ─── Setup ──────────────────────────────────────────────────────────────────
 
-  async initialize(
+   async initialize(
     privateKey: string,
     networkKey: keyof typeof NETWORKS = "arc"
   ): Promise<boolean> {
     this.privateKey = privateKey;
     this.networkKey = networkKey;
+    console.log(`🔑 RealAutomatedTrader.initialize() called with network: ${networkKey}`);
     const ok = await realSwap.initialize(privateKey, networkKey);
+    console.log(`✅ realSwap.initialize() result: ${ok}`);
     this.initialized = ok;
     return ok;
+  }
+
+  /** Mudar de rede sem reinicializar */
+  switchNetwork(networkKey: keyof typeof NETWORKS): void {
+    this.networkKey = networkKey;
+    realSwap.switchNetwork(networkKey);
+    this.log(`🔄 Trader mudou para: ${NETWORKS[networkKey].name}`);
   }
 
   onTrade(cb: (trade: TradeRecord) => void) {
@@ -96,10 +105,12 @@ class RealAutomatedTrader {
   // ─── Saldos ──────────────────────────────────────────────────────────────────
 
   async getBalances(): Promise<{ usdc: number; eurc: number }> {
+    console.log(`💾 getBalances() chamado - rede atual: ${this.networkKey}`);
     const [usdc, eurc] = await Promise.all([
       realSwap.getBalance("USDC"),
       realSwap.getBalance("EURC"),
     ]);
+    console.log(`💰 getBalances() resultado - USDC: ${usdc}, EURC: ${eurc}`);
     return { usdc, eurc };
   }
 

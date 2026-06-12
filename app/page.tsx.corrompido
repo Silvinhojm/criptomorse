@@ -1,0 +1,12 @@
+﻿"use client";
+
+import { MultiPairConsensusPanel } from "./components/MultiPairConsensusPanel";
+
+export default function Home() {
+  return (
+    <main style={{ padding: "20px" }}>
+      <h1>ArcFlow Trading Platform</h1>
+      <MultiPairConsensusPanel />
+    </main>
+  );
+}

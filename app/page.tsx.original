@@ -1,10 +1,11 @@
 "use client";
-import { MultiPairConsensusPanel } from "./components/MultiPairConsensusPanel";
+
 import { useState, useCallback, useEffect } from "react";
 import { ethers } from "ethers";
 import { Toaster, toast } from "react-hot-toast";
 
 import { RealAutomatedTrader } from "./components/RealAutomatedTrader";
+import BitcoinTreasureHunter from "./components/BitcoinTreasureHunter";
 import { BridgeWidget } from "./components/BridgeWidget";
 import { NanopaymentDashboard } from "./components/NanopaymentDashboard";
 import { TradingNanopaymentDashboard } from "./components/TradingNanopaymentDashboard";
@@ -30,11 +31,7 @@ import {
   ERC20_ABI,
   shortAddress,
   type WalletNetwork,
-  POLYGON_MAINNET,
-  BASE_MAINNET,
-  ETHEREUM_MAINNET,
 } from "@/lib/wallet-config";
-import { realSwap, NETWORKS } from "@/lib/real-swap-executor";
 
 declare global {
   interface Window {
@@ -69,48 +66,6 @@ export default function Home() {
 
   useEffect(() => {
     setIsClient(true);
-
-    // Listener para mudança de rede no MetaMask
-    if (window.ethereum) {
-      const handleChainChanged = (...args: unknown[]) => {
-        const chainIdHex = typeof args[0] === "string" ? args[0] : "";
-        const chainId = parseInt(chainIdHex, 16);
-        console.log(`🔄 MetaMask mudou para chainId: ${chainId}`);
-
-        // Mapear chainId para rede
-        let newNetwork: WalletNetwork = ARC_TESTNET;
-        let swapNetworkKey: keyof typeof NETWORKS = "arc";
-
-        if (chainId === POLYGON_MAINNET.chainId) {
-          newNetwork = POLYGON_MAINNET;
-          swapNetworkKey = "polygon";
-        } else if (chainId === BASE_MAINNET.chainId) {
-          newNetwork = BASE_MAINNET;
-          swapNetworkKey = "base";
-        } else if (chainId === ETHEREUM_MAINNET.chainId) {
-          newNetwork = ETHEREUM_MAINNET;
-          swapNetworkKey = "ethereum";
-        } else if (chainId === ARC_TESTNET.chainId) {
-          newNetwork = ARC_TESTNET;
-          swapNetworkKey = "arc";
-        }
-
-        setCurrentNetwork(newNetwork);
-        realSwap.switchNetwork(swapNetworkKey);
-        console.log(`✅ Rede atualizada para: ${newNetwork.name}`);
-      };
-
-      const provider = window.ethereum as typeof window.ethereum & {
-        on?: (event: string, listener: (...args: unknown[]) => void) => void;
-        removeListener?: (event: string, listener: (...args: unknown[]) => void) => void;
-      };
-
-      provider.on?.("chainChanged", handleChainChanged);
-
-      return () => {
-        provider.removeListener?.("chainChanged", handleChainChanged);
-      };
-    }
   }, []);
 
   const loadBalance = useCallback(
@@ -508,6 +463,12 @@ export default function Home() {
               onReinvest={handleReinvest}
               network={currentNetwork}
             />
+            <BitcoinTreasureHunter
+              onTreasureFound={(_value: number, fee: number) => {
+                setTotalProfit((prev) => prev + fee);
+              }}
+              userAddress={account}
+            />
             <BridgeWidget userAddress={account} />
             <RealAutomatedTrader
               account={account}
@@ -516,9 +477,7 @@ export default function Home() {
                   ? "base"
                   : currentNetwork.id === "polygon"
                     ? "polygon"
-                    : currentNetwork.id === "ethereum"
-                      ? "ethereum"
-                      : "arc"
+                    : "arc"
               }
             />
             <NanopaymentDashboard
@@ -529,12 +488,6 @@ export default function Home() {
             <TradingNanopaymentDashboard
               network={currentNetwork}
               privateKey={process.env.NEXT_PUBLIC_PRIVATE_KEY}
-              account={account}
-            />
-            
-            {/* NOVO: Multi-Pair Consensus Panel */}
-            <MultiPairConsensusPanel 
-              privateKey={process.env.NEXT_PUBLIC_PRIVATE_KEY || ""}
             />
           </>
         )}
