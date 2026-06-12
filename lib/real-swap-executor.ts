@@ -2,7 +2,6 @@
 // Executa SWAPS REAIS via LI.FI API REST + assinatura ethers.Wallet
 
 import { ethers, type JsonRpcSigner } from "ethers";
-import { getQuoteWithRetry, toTokenUnits } from "./lifi-executor";
 
 export const NETWORKS = {
   arc: {
@@ -16,10 +15,10 @@ export const NETWORKS = {
   polygon: {
     chainId: 137,
     name: "Polygon Mainnet",
-    rpcUrl: "https://polygon.drpc.org",
+    rpcUrl: "https://polygon-rpc.com",
     explorer: "https://polygonscan.com",
     usdc: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
-    eurc: "0xE0B52e49357Fd4DAf2c15e02058DCE6BC0057db4", // EURC correto na Polygon
+    eurc: "0xE0B52e49357Fd4DAf2c15e02058DCE6BC0057db4",
   },
   base: {
     chainId: 8453,
@@ -50,7 +49,6 @@ const isPrivateKey = (value: string) => /^0x?[a-fA-F0-9]{64}$/.test(value.trim()
 
 async function resolveWalletFromBrowser(): Promise<string> {
   if (typeof window === "undefined" || !window.ethereum) return "";
-
   try {
     const accounts = (await window.ethereum.request({ method: "eth_accounts" })) as string[];
     return accounts?.[0] || "";
@@ -71,19 +69,26 @@ export interface SwapResult {
   confirmed: boolean;
 }
 
-const SLIPPAGE_LEVELS = {
-  BUY: [0.005, 0.01, 0.03],
-  SELL: [0.05, 0.1, 0.15],
-} as const;
+function toTokenUnits(amount: number, decimals: number): string {
+  return ethers.parseUnits(amount.toString(), decimals).toString();
+}
+
+function getTokenDecimals(tokenSymbol: "USDC" | "EURC", networkKey: keyof typeof NETWORKS): number {
+  if (tokenSymbol === "USDC") return 6;
+  if (tokenSymbol === "EURC") {
+    const net = NETWORKS[networkKey];
+    if (net.chainId === 137) return 18;
+    return 6;
+  }
+  return 6;
+}
 
 class RealSwapExecutor {
-  private provider: ethers.JsonRpcProvider | null = null;
   private signer: ethers.Wallet | JsonRpcSigner | null = null;
   private networkKey: keyof typeof NETWORKS = "arc";
   private userAddress: string = "";
   private swapQueue: Promise<unknown> = Promise.resolve();
 
-  /** Garante uma transação por vez — evita erro de nonce duplicado */
   private withSwapLock<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.swapQueue.then(fn, fn);
     this.swapQueue = run.catch(() => undefined);
@@ -93,8 +98,6 @@ class RealSwapExecutor {
   async initialize(walletOrPrivateKey: string, networkKey: keyof typeof NETWORKS = "arc"): Promise<boolean> {
     try {
       this.networkKey = networkKey;
-      const net = NETWORKS[networkKey];
-      this.provider = new ethers.JsonRpcProvider(net.rpcUrl);
       this.signer = null;
       this.userAddress = "";
 
@@ -110,27 +113,28 @@ class RealSwapExecutor {
         }
       }
 
+      // 🔥 Se for private key, cria wallet
       if (isPrivateKey(resolvedValue)) {
-        this.signer = new ethers.Wallet(resolvedValue, this.provider);
+        const provider = new ethers.JsonRpcProvider(NETWORKS[networkKey].rpcUrl);
+        this.signer = new ethers.Wallet(resolvedValue, provider);
         this.userAddress = await this.signer.getAddress();
-      } else if (ethers.isAddress(resolvedValue)) {
+      } 
+      // 🔥 Se for endereço, usa MetaMask
+      else if (ethers.isAddress(resolvedValue)) {
         this.userAddress = ethers.getAddress(resolvedValue);
-
         if (typeof window !== "undefined" && window.ethereum) {
           try {
             const browserProvider = new ethers.BrowserProvider(window.ethereum);
             this.signer = await browserProvider.getSigner();
             const signerAddress = await this.signer.getAddress();
-            if (signerAddress) {
-              this.userAddress = signerAddress;
-            }
+            if (signerAddress) this.userAddress = signerAddress;
           } catch (signerErr) {
             console.warn("⚠️ Não foi possível criar signer via MetaMask:", signerErr);
           }
         }
       }
 
-      console.log(`✅ RealSwapExecutor: ${net.name} | ${this.userAddress || "sem conta"} | source=${resolvedValue ? "wallet" : "empty"}`);
+      console.log(`✅ RealSwapExecutor: ${NETWORKS[networkKey].name} | ${this.userAddress || "sem conta"}`);
       return Boolean(this.userAddress);
     } catch (err) {
       console.error("❌ Erro ao inicializar:", err);
@@ -138,33 +142,39 @@ class RealSwapExecutor {
     }
   }
 
-  /** Mudar de rede sem reinicializar o signer */
   switchNetwork(networkKey: keyof typeof NETWORKS): void {
     this.networkKey = networkKey;
-    const net = NETWORKS[networkKey];
-    this.provider = new ethers.JsonRpcProvider(net.rpcUrl);
-    console.log(`🔄 RealSwapExecutor mudou para: ${net.name}`);
+    console.log(`🔄 RealSwapExecutor mudou para: ${NETWORKS[networkKey].name}`);
   }
 
+  // 🔥 FUNÇÃO CORRIGIDA - usa apenas MetaMask para ler saldos
   async getBalance(token: "USDC" | "EURC", networkKey?: keyof typeof NETWORKS): Promise<number> {
-    if (!this.provider || !this.userAddress) {
-      console.warn(`⚠️ getBalance: provider=${!!this.provider}, userAddress=${!!this.userAddress}`);
-      return 0;
-    }
+    if (!this.userAddress) return 0;
+    
     try {
-      // Usa rede passada ou a rede atual
       const key = networkKey || this.networkKey;
       const net = NETWORKS[key];
       const addr = token === "USDC" ? net.usdc : net.eurc;
-      console.log(`🔍 getBalance(${token}) - Rede: ${key}, Endereço Token: ${addr}, Minha Conta: ${this.userAddress}`);
-      const contract = new ethers.Contract(addr, ERC20_ABI, this.provider);
-      const [raw, decimals] = await Promise.all([
-        contract.balanceOf(this.userAddress),
-        contract.decimals(),
-      ]);
-      const balance = parseFloat(ethers.formatUnits(raw, decimals));
-      console.log(`✅ Saldo ${token}: ${balance} (raw: ${raw.toString()}, decimals: ${decimals})`);
-      return balance;
+      
+      // 🔥 Usa o provider do MetaMask (browser)
+      if (typeof window !== "undefined" && window.ethereum) {
+        const browserProvider = new ethers.BrowserProvider(window.ethereum);
+        const contract = new ethers.Contract(addr, ERC20_ABI, browserProvider);
+        
+        const raw = await contract.balanceOf(this.userAddress).catch(() => 0n);
+        let decimals = 6;
+        try {
+          decimals = await contract.decimals();
+        } catch {
+          decimals = token === "USDC" ? 6 : 18;
+        }
+        
+        const balance = parseFloat(ethers.formatUnits(raw, decimals));
+        console.log(`✅ Saldo ${token}: ${balance}`);
+        return balance;
+      }
+      
+      return 0;
     } catch (err) {
       console.error(`❌ Erro ao buscar saldo ${token}:`, err);
       return 0;
@@ -173,10 +183,10 @@ class RealSwapExecutor {
 
   async executeSwap(
     action: "BUY" | "SELL",
-    amountUsd: number,
+    amount: number,
     onUpdate?: (msg: string) => void
   ): Promise<SwapResult> {
-    return this.withSwapLock(() => this._executeSwap(action, amountUsd, onUpdate));
+    return this.withSwapLock(() => this._executeSwap(action, amount, onUpdate));
   }
 
   private async _executeSwap(
@@ -186,102 +196,88 @@ class RealSwapExecutor {
   ): Promise<SwapResult> {
     const net = NETWORKS[this.networkKey];
     const timestamp = Date.now();
-    const log = (msg: string) => {
-      console.log(msg);
-      onUpdate?.(msg);
-    };
+    const log = (msg: string) => { console.log(msg); onUpdate?.(msg); };
 
-    if (!this.signer || !this.provider) {
+    if (!this.signer) {
       return this._fail(action, amountUsd, "Executor não inicializado", timestamp);
     }
 
     try {
-      const fromToken = action === "BUY" ? net.usdc : net.eurc;
-      const toToken = action === "BUY" ? net.eurc : net.usdc;
-      const fromAmount = toTokenUnits(amountUsd, 6);
-      const slippageLevels = [...SLIPPAGE_LEVELS[action]];
+      const fromTokenSymbol = action === "BUY" ? "USDC" : "EURC";
+      const toTokenSymbol = action === "BUY" ? "EURC" : "USDC";
+      const fromTokenAddress = action === "BUY" ? net.usdc : net.eurc;
+      const toTokenAddress = action === "BUY" ? net.eurc : net.usdc;
+      
+      const decimals = getTokenDecimals(fromTokenSymbol, this.networkKey);
+      const fromAmount = toTokenUnits(amountUsd, decimals);
+      
+      log(`🔧 Swap: ${action} ${amountUsd} ${fromTokenSymbol} → raw: ${fromAmount}`);
 
-      log(`🔍 Buscando cotação LI.FI para ${action} $${amountUsd}...`);
-
-      const quote = await getQuoteWithRetry(
-        {
-          fromChain: net.chainId,
-          toChain: net.chainId,
-          fromToken,
-          toToken,
-          fromAmount,
-          fromAddress: this.userAddress,
-          toAddress: this.userAddress,
-        },
-        slippageLevels
-      );
-
-      if (!quote?.transactionRequest) {
-        const hint =
-          action === "SELL"
-            ? "Price impact alto — tente Jumper manual ou aguarde liquidez"
-            : "Nenhuma rota LI.FI disponível";
-        return this._fail(action, amountUsd, hint, timestamp);
+      log(`🔍 Buscando cotação LI.FI...`);
+      
+      const quoteUrl = `https://li.quest/v1/quote?fromChain=${net.chainId}&toChain=${net.chainId}&fromToken=${fromTokenAddress}&toToken=${toTokenAddress}&fromAmount=${fromAmount}&fromAddress=${this.userAddress}&slippage=0.005&integrator=arcflow`;
+      
+      const quoteResponse = await fetch(quoteUrl);
+      const quote = await quoteResponse.json();
+      
+      if (!quote.transactionRequest) {
+        log(`❌ Sem rota disponível`);
+        return this._fail(action, amountUsd, "Nenhuma rota LI.FI disponível", timestamp);
       }
+      
+      const toDecimals = getTokenDecimals(toTokenSymbol, this.networkKey);
+      const toAmountValue = parseFloat(ethers.formatUnits(quote.toAmount || "0", toDecimals));
+      
+      log(`✅ Via ${quote.tool} | Saída: ${toAmountValue.toFixed(6)} ${toTokenSymbol}`);
 
-      const toAmount = parseInt(quote.toAmount ?? "0") / Math.pow(10, 6);
-      log(
-        `✅ Rota via ${quote.tool} | Estimativa: ${toAmount.toFixed(4)} ${action === "BUY" ? "EURC" : "USDC"}`
-      );
-
-      const tx = quote.transactionRequest;
-      log(`🔓 Verificando allowance...`);
-      const token = new ethers.Contract(fromToken, ERC20_ABI, this.signer);
-      const allowance: bigint = await token.allowance(this.userAddress, tx.to);
+      // 🔥 Verifica allowance
+      const token = new ethers.Contract(fromTokenAddress, ERC20_ABI, this.signer);
+      const spender = quote.transactionRequest.to;
+      const allowance = await token.allowance(this.userAddress, spender);
+      
       if (allowance < BigInt(fromAmount)) {
         log(`🔓 Aprovando token para o contrato LI.FI...`);
-        const approveTx = await token.approve(tx.to, ethers.MaxUint256);
+        const approveTx = await token.approve(spender, ethers.MaxUint256);
         await approveTx.wait();
         log(`✅ Aprovação confirmada!`);
       }
 
-      log(`📝 Assinando e enviando transação...`);
-      const txResponse = await this.signer.sendTransaction({
-        to: tx.to,
-        data: tx.data,
-        value: BigInt(tx.value ?? "0"),
-        gasLimit: tx.gasLimit ? BigInt(tx.gasLimit) : undefined,
+      log(`📝 Enviando transação para a blockchain...`);
+      const tx = await this.signer.sendTransaction({
+        to: quote.transactionRequest.to,
+        data: quote.transactionRequest.data,
+        value: BigInt(quote.transactionRequest.value || "0"),
+        gasLimit: quote.transactionRequest.gasLimit ? BigInt(quote.transactionRequest.gasLimit) : undefined,
       });
 
-      log(`🔗 TX enviada: ${txResponse.hash}`);
-      log(`⏳ Aguardando confirmação no bloco...`);
+      log(`🔗 TX enviada: ${tx.hash}`);
+      log(`⏳ Aguardando confirmação...`);
 
-      const receipt = await txResponse.wait(1);
+      const receipt = await tx.wait(1);
 
       if (!receipt || receipt.status === 0) {
-        return this._fail(action, amountUsd, "TX falhou on-chain (status 0)", timestamp);
+        return this._fail(action, amountUsd, "Transação falhou on-chain", timestamp);
       }
 
-      const explorerUrl = `${net.explorer}/tx/${txResponse.hash}`;
-      log(`✅ CONFIRMADO no bloco ${receipt.blockNumber}!`);
-      log(`🔗 ${explorerUrl}`);
+      const explorerUrl = `${net.explorer}/tx/${tx.hash}`;
+      log(`✅ CONFIRMADO! ${explorerUrl}`);
 
       return {
         success: true,
-        txHash: txResponse.hash,
+        txHash: tx.hash,
         explorerUrl,
         fromAmount: amountUsd,
-        toAmount,
+        toAmount: toAmountValue,
         action,
-        message: `✅ ${action} $${amountUsd} → ${toAmount.toFixed(4)} | TX: ${txResponse.hash.slice(0, 10)}...`,
+        message: `✅ ${action} $${amountUsd} ${fromTokenSymbol} → ${toAmountValue.toFixed(6)} ${toTokenSymbol}`,
         timestamp,
         confirmed: true,
       };
-    } catch (err: unknown) {
-      const error = err as { code?: string; message?: string };
-      const msg =
-        error?.code === "ACTION_REJECTED"
-          ? "Transação rejeitada pelo usuário"
-          : error?.message?.includes("insufficient")
-            ? "Saldo insuficiente"
-            : error?.message?.includes("nonce")
-              ? "Erro de nonce — aguarde confirmação da TX anterior"
-              : error?.message || "Erro desconhecido";
+
+    } catch (err: any) {
+      const msg = err?.code === "ACTION_REJECTED"
+        ? "Transação rejeitada"
+        : err?.message?.includes("insufficient") ? "Saldo insuficiente" : err?.message || "Erro desconhecido";
       log(`❌ Erro: ${msg}`);
       return this._fail(action, amountUsd, msg, timestamp);
     }

@@ -61,6 +61,46 @@ function explorerTx(chainId: number, txHash: string): string {
   return `${base}/tx/${txHash}`;
 }
 
+// ─── Mapeamento de decimais por token e chain ─────────────────────────────────
+const TOKEN_DECIMALS: Record<string, number> = {
+  // USDC em todas as chains principais = 6 decimais
+  'USDC-8453': 6,    // Base
+  'USDC-137': 6,     // Polygon
+  'USDC-42161': 6,   // Arbitrum
+  'USDC-10': 6,      // Optimism
+  'USDC-1': 6,       // Ethereum
+  'USDC-5042002': 6, // Arc (USDC tem 6 decimais)
+  
+  // EURC na Polygon tem 18 decimais! (é um token diferente)
+  'EURC-137': 18,    // 🔥 Polygon EURC = 18 decimais
+  'EURC-8453': 6,    // Base EURC = 6 decimais
+  'EURC-1': 6,       // Ethereum EURC = 6 decimais
+  
+  // Tokens nativos (ETH, MATIC) = 18 decimais
+  'ETH-1': 18,
+  'ETH-8453': 18,
+  'MATIC-137': 18,
+};
+
+function getTokenDecimals(tokenAddress: string, chainId: number, symbol?: string): number {
+  // Primeiro tenta pelo símbolo + chain
+  if (symbol) {
+    const key = `${symbol}-${chainId}`;
+    if (TOKEN_DECIMALS[key]) return TOKEN_DECIMALS[key];
+  }
+  
+  // Tenta pelo address + chain (hash simples)
+  const shortAddr = tokenAddress.slice(0, 8);
+  const addrKey = `${shortAddr}-${chainId}`;
+  if (TOKEN_DECIMALS[addrKey]) return TOKEN_DECIMALS[addrKey];
+  
+  // Fallback: USDC-like tokens geralmente 6, outros 18
+  const isStableLike = tokenAddress.toLowerCase().includes('usdc') || 
+                       tokenAddress.toLowerCase().includes('eurc') ||
+                       symbol === 'USDC' || symbol === 'EURC';
+  return isStableLike ? 6 : 18;
+}
+
 // ─── 1. Buscar cotação ─────────────────────────────────────────────────────────
 
 export async function getQuote(params: SwapParams): Promise<QuoteResult | null> {
@@ -76,7 +116,7 @@ export async function getQuote(params: SwapParams): Promise<QuoteResult | null> 
     url.searchParams.set('integrator',  INTEGRATOR_ID);
     if (params.toAddress) url.searchParams.set('toAddress', params.toAddress);
 
-    console.log(`📊 LI.FI: Buscando cotação ${params.fromChain} → ${params.toChain}`);
+    console.log(`📊 LI.FI: Buscando cotação ${params.fromChain} → ${params.toChain} with amount ${params.fromAmount}`);
 
     const res = await fetch(url.toString(), {
       headers: { 'Accept': 'application/json' },
@@ -202,7 +242,6 @@ export async function executeSwap(
       data:     tx.data,
       value:    BigInt(tx.value ?? '0'),
       gasLimit: tx.gasLimit ? BigInt(tx.gasLimit) : undefined,
-      // gasPrice omitido: ethers usará EIP-1559 automaticamente
     });
 
     log(`🔗 TX enviada: ${txResponse.hash}`);
@@ -247,16 +286,78 @@ export async function executeSwap(
   }
 }
 
-// ─── 4. Helpers ────────────────────────────────────────────────────────────────
+// ─── 4. Helpers CORRIGIDOS (USANDO ethers.parseUnits) ─────────────────────────
+// 🔥🔥🔥 CORREÇÃO PRINCIPAL - usando ethers.parseUnits que é 100% preciso 🔥🔥🔥
 
-/** Converte valor humano para unidades do token */
-export function toTokenUnits(amount: number, decimals = 6): string {
-  return Math.floor(amount * Math.pow(10, decimals)).toString();
+/** 
+ * Converte valor humano para unidades do token usando ethers.parseUnits
+ * @param amount - Valor legível (ex: 2.5)
+ * @param decimals - Número de decimais do token (OBRIGATÓRIO)
+ * @returns String com o valor em unidades base (ex: "2500000")
+ * 
+ * @example
+ * toTokenUnits(1, 6)   // "1000000" (1 USDC)
+ * toTokenUnits(1, 18)  // "1000000000000000000" (1 EURC na Polygon)
+ */
+export function toTokenUnits(amount: number, decimals: number): string {
+  // Usando ethers.parseUnits que lida corretamente com BigInt e decimais
+  return ethers.parseUnits(amount.toString(), decimals).toString();
 }
 
-/** Converte unidades do token para valor humano */
-export function fromTokenUnits(amount: string, decimals = 6): number {
-  return parseInt(amount) / Math.pow(10, decimals);
+/** 
+ * Converte unidades do token para valor humano usando ethers.formatUnits
+ * @param amount - Valor em unidades base (ex: "2500000")
+ * @param decimals - Número de decimais do token
+ * @returns Valor legível (ex: 2.5)
+ */
+export function fromTokenUnits(amount: string, decimals: number): number {
+  return parseFloat(ethers.formatUnits(amount, decimals));
+}
+
+/**
+ * Função auxiliar: Cria os parâmetros de swap com decimais automáticos
+ * Use esta função para montar o SwapParams sem errar os decimais!
+ * 
+ * @example
+ * const params = buildSwapParams({
+ *   fromChain: 137,
+ *   toChain: 8453,
+ *   fromTokenAddress: '0xE0B52e49357Fd4DAf2c15e02058DCE6BC0057db4', // EURC Polygon
+ *   toTokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // USDC Base
+ *   amountHuman: 2,  // 2 EURC
+ *   fromAddress: '0x...',
+ *   fromTokenSymbol: 'EURC'
+ * });
+ */
+export function buildSwapParams(params: {
+  fromChain: number;
+  toChain: number;
+  fromTokenAddress: string;
+  toTokenAddress: string;
+  amountHuman: number;
+  fromAddress: string;
+  toAddress?: string;
+  slippage?: number;
+  fromTokenDecimals?: number;
+  fromTokenSymbol?: string;
+}): SwapParams {
+  const decimals = params.fromTokenDecimals ?? 
+                   getTokenDecimals(params.fromTokenAddress, params.fromChain, params.fromTokenSymbol);
+  
+  const rawAmount = toTokenUnits(params.amountHuman, decimals);
+  
+  console.log(`🔧 buildSwapParams: ${params.amountHuman} ${params.fromTokenSymbol || 'token'} com ${decimals} decimais → raw: ${rawAmount}`);
+  
+  return {
+    fromChain: params.fromChain,
+    toChain: params.toChain,
+    fromToken: params.fromTokenAddress,
+    toToken: params.toTokenAddress,
+    fromAmount: rawAmount,
+    fromAddress: params.fromAddress,
+    toAddress: params.toAddress,
+    slippage: params.slippage,
+  };
 }
 
 /** Chains suportadas com endereços USDC */
