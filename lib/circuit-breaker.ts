@@ -22,10 +22,10 @@ export function getCircuitBreakerState(): CircuitBreakerState {
 
 export function recordError(agentName: string, errorType: string): CircuitBreakerState {
   state.consecutiveLosses++;
-  console.log(⚠️ Erro registrado para : );
-  console.log(📊 Erros consecutivos: /);
+  console.log(`⚠️ Erro registrado para ${agentName}: ${errorType}`);
+  console.log(`📊 Erros consecutivos: ${state.consecutiveLosses}`);
   if (state.consecutiveLosses >= state.maxLossesBeforePanic && !state.isPanicActive) {
-    activatePanic(Erros consecutivos:  erros);
+    activatePanic(`Erros consecutivos: ${state.consecutiveLosses} erros`);
   }
   return { ...state };
 }
