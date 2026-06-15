@@ -1,8 +1,10 @@
 // lib/trading-nanopayments.ts
-// Trading automático multi-par usando saldo REAL da carteira conectada
+// Trading automatico multi-par usando saldo REAL da carteira conectada
 // Arc Testnet = faucet (sem risco) | Outras redes = dinheiro real
 
 import { realSwap, NETWORKS, TRADING_PAIRS, type NetworkKey, type TokenSymbol, type SwapResult } from "./real-swap-executor";
+import { getCircuitBreakerState, blockIfPanicked, recordTradeResult } from "./circuit-breaker";
+import { saveTradeHistory, loadTradeHistory } from "./persistence";
 
 export interface TradeOrder {
   id: string;
@@ -40,49 +42,85 @@ export interface TradingStats {
   networkKey: NetworkKey;
 }
 
+// Tokens estaveis (USD peg)
+const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"]);
+
+// Cache de preco para analise de spread
+let priceCache: { price: number; timestamp: number; token: string }[] = [];
+
+async function getTokenPrice(token: TokenSymbol): Promise<number> {
+  const cached = priceCache.find(p => p.token === token);
+  if (cached && Date.now() - cached.timestamp < 60000) return cached.price;
+
+  if (STABLES.has(token)) return 1.0;
+
+  const coinIds: Record<string, string> = {
+    WETH: "ethereum", WMATIC: "matic-network", ARB: "arbitrum",
+  };
+  const coinId = coinIds[token];
+  if (!coinId) return 1.0;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(
+      `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd`,
+      { signal: controller.signal }
+    );
+    clearTimeout(timeoutId);
+    const data = await res.json();
+    const price = data[coinId]?.usd ?? 1.0;
+    priceCache.push({ price, timestamp: Date.now(), token });
+    return price;
+  } catch {
+    return 1.0;
+  }
+}
+
 class TradingNanopaymentSystem {
   private orders: TradeOrder[] = [];
   private isInitialized = false;
   private currentNetwork: NetworkKey = "arc";
   private walletAddress = "";
 
-  // Agentes com estratégias diferentes
   private agents: AgentStrategy[] = [
     {
       name: "QuantumTrader",
       strategy: "best_pair",
       maxAmount: 10,
-      minProfitThreshold: 0.0001,
-      description: "Escolhe sempre o melhor par disponível",
+      minProfitThreshold: 0.01,
+      description: "Escolhe sempre o melhor par disponivel",
     },
     {
       name: "ArbitrageHunter",
       strategy: "arbitrage",
       maxAmount: 5,
-      minProfitThreshold: 0.0005,
-      description: "Busca oportunidades de arbitragem entre pares estáveis",
+      minProfitThreshold: 0.02,
+      description: "Busca oportunidades de arbitragem entre pares estaveis",
     },
     {
       name: "ScalpingBot",
       strategy: "scalping",
       maxAmount: 2,
-      minProfitThreshold: 0.0001,
-      description: "Micro trades rápidos em pares de alta liquidez",
+      minProfitThreshold: 0.005,
+      description: "Micro trades rapidos em pares de alta liquidez",
     },
     {
       name: "MarketMaker",
       strategy: "momentum",
       maxAmount: 8,
-      minProfitThreshold: 0.0002,
-      description: "Segue tendência do mercado com pares voláteis",
+      minProfitThreshold: 0.01,
+      description: "Segue tendencia com pares via findBestPair",
     },
   ];
 
-  // ─── Inicialização ─────────────────────────────────────────────────────────
   async initialize(walletAddress: string, networkKey: NetworkKey, privateKey?: string): Promise<boolean> {
     try {
       this.walletAddress = walletAddress;
       this.currentNetwork = networkKey;
+
+      // Restaurar historico persistido
+      this.orders = loadTradeHistory().filter((o: any) => o.agentName);
 
       const ok = await realSwap.initialize(
         privateKey || walletAddress,
@@ -93,29 +131,26 @@ class TradingNanopaymentSystem {
       if (ok) {
         this.isInitialized = true;
         const net = NETWORKS[networkKey];
-        console.log(`✅ TradingSystem: ${net.name} | ${walletAddress} | ${net.isTestnet ? "TESTNET (faucet)" : "MAINNET (dinheiro real)"}`);
+        console.log(`TradingSystem: ${net.name} | ${walletAddress} | ${net.isTestnet ? "TESTNET" : "MAINNET"}`);
       }
 
       return ok;
     } catch (err) {
-      console.error("❌ Erro ao inicializar TradingSystem:", err);
+      console.error("Erro ao inicializar TradingSystem:", err);
       return false;
     }
   }
 
-  // ─── Saldos reais da carteira ──────────────────────────────────────────────
   async getRealBalances() {
     if (!this.isInitialized) return [];
     await realSwap.refreshAllBalances();
     return realSwap.getAllBalances().filter(b => b.balance > 0);
   }
 
-  // ─── Encontrar melhor par para um agente ──────────────────────────────────
   async findBestPairForAgent(agent: AgentStrategy): Promise<{ from: TokenSymbol; to: TokenSymbol; label: string } | null> {
     const pairs = TRADING_PAIRS[this.currentNetwork];
-    const net   = NETWORKS[this.currentNetwork];
+    const net = NETWORKS[this.currentNetwork];
 
-    // Filtrar pares onde o agente tem saldo suficiente
     const affordable = pairs.filter(p => {
       const bal = realSwap.getBalance(p.from);
       return bal >= agent.maxAmount * 0.9;
@@ -123,52 +158,80 @@ class TradingNanopaymentSystem {
 
     if (affordable.length === 0) return null;
 
-    // Estratégia: retornar par com mais saldo disponível (mais seguro)
+    // Calcular spread estimado para cada par e escolher o melhor
+    const scored = await Promise.all(
+      affordable.map(async (pair) => {
+        const fromPrice = await getTokenPrice(pair.from);
+        const toPrice = await getTokenPrice(pair.to);
+        const spread = Math.abs((toPrice - fromPrice) / fromPrice) * 100;
+        return { pair, spread, fromPrice, toPrice };
+      })
+    );
+
     if (agent.strategy === "scalping") {
-      // Scalping prefere stablecoins (menor risco)
-      const stables = affordable.filter(p =>
-        ["USDC", "USDT", "DAI", "EURC"].includes(p.from) &&
-        ["USDC", "USDT", "DAI", "EURC"].includes(p.to)
+      // Scalping: maior spread entre stables
+      const stables = scored.filter(p =>
+        STABLES.has(p.pair.from) && STABLES.has(p.pair.to)
       );
-      return stables[0] ?? affordable[0];
+      if (stables.length === 0) return affordable[0];
+      stables.sort((a, b) => b.spread - a.spread);
+      console.log(`[Scalping] Maior spread: ${stables[0].pair.label} (${stables[0].spread.toFixed(3)}%)`);
+      return stables[0].pair;
     }
 
     if (agent.strategy === "arbitrage") {
-      // Arbitragem prefere pares estáveis com spread
-      const stables = affordable.filter(p =>
-        ["USDC", "USDT", "DAI", "EURC"].includes(p.from)
+      // Arbitrage: par estavel com maior spread positivo
+      const stables = scored.filter(p =>
+        STABLES.has(p.pair.from) && STABLES.has(p.pair.to) &&
+        p.spread > agent.minProfitThreshold * 10
       );
-      return stables[Math.floor(Math.random() * stables.length)] ?? affordable[0];
+      if (stables.length === 0) return affordable[0];
+      stables.sort((a, b) => b.spread - a.spread);
+      console.log(`[Arbitrage] Melhor spread: ${stables[0].pair.label} (${stables[0].spread.toFixed(3)}%)`);
+      return stables[0].pair;
     }
 
-    // best_pair e momentum: qualquer par com saldo
-    return affordable[Math.floor(Math.random() * affordable.length)];
+    // momentum: par com maior potencial (volatil)
+    if (agent.strategy === "momentum") {
+      const volatiles = scored.filter(p => !STABLES.has(p.pair.from) || !STABLES.has(p.pair.to));
+      if (volatiles.length > 0) {
+        volatiles.sort((a, b) => b.spread - a.spread);
+        console.log(`[Momentum] Par volatil escolhido: ${volatiles[0].pair.label} (spread ${volatiles[0].spread.toFixed(3)}%)`);
+        return volatiles[0].pair;
+      }
+    }
+
+    return affordable[0];
   }
 
-  // ─── Executar trade de um agente ──────────────────────────────────────────
   async executeAgentTrade(
     agent: AgentStrategy,
     onLog?: (msg: string) => void
   ): Promise<TradeOrder | null> {
     if (!this.isInitialized) return null;
 
+    // Circuit breaker
+    if (blockIfPanicked()) {
+      onLog?.("Circuit breaker bloqueou trade");
+      return null;
+    }
+
     const net = NETWORKS[this.currentNetwork];
     const log = (msg: string) => { console.log(`[${agent.name}] ${msg}`); onLog?.(msg); };
 
-    log(`🤖 ${agent.name} (${agent.strategy}) analisando ${net.name}...`);
+    log(`${agent.name} (${agent.strategy}) analisando ${net.name}...`);
 
     let result: SwapResult;
 
-    if (agent.strategy === "best_pair") {
-      // Usa o sistema inteligente de busca do melhor par
+    if (agent.strategy === "best_pair" || agent.strategy === "momentum") {
       result = await realSwap.executeSmartSwap(agent.maxAmount, (msg) => log(msg));
     } else {
       const pair = await this.findBestPairForAgent(agent);
       if (!pair) {
-        log(`⚠️ Sem saldo suficiente para qualquer par em ${net.name}`);
+        log(`Sem saldo suficiente para qualquer par em ${net.name}`);
         return null;
       }
-      log(`📊 Par escolhido: ${pair.label}`);
+      log(`Par escolhido: ${pair.label}`);
       result = await realSwap.executeSwap(pair.from, pair.to, agent.maxAmount, (msg) => log(msg));
     }
 
@@ -178,7 +241,7 @@ class TradingNanopaymentSystem {
       toToken:   result.toToken,
       amount:    result.fromAmount,
       toAmount:  result.toAmount,
-      type:      result.success ? "BUY" : "HOLD",
+      type:      result.success ? result.action : "HOLD",
       status:    result.success ? "completed" : "failed",
       timestamp: result.timestamp,
       profit:    result.profit ?? 0,
@@ -190,51 +253,57 @@ class TradingNanopaymentSystem {
 
     this.orders.push(order);
 
+    // Persistir historico
+    saveTradeHistory(this.orders);
+
     if (result.success) {
-      log(`✅ Trade confirmado! Lucro: $${order.profit.toFixed(6)}`);
+      log(`Trade confirmado! Lucro: $${order.profit.toFixed(6)}`);
+      recordTradeResult(order.profit);
     } else {
-      log(`❌ Trade falhou: ${result.message}`);
+      log(`Trade falhou: ${result.message}`);
     }
 
     return order;
   }
 
-  // ─── Ciclo automático de todos os agentes ─────────────────────────────────
   async executeAutomatedCycle(onLog?: (msg: string) => void): Promise<TradeOrder[]> {
     const results: TradeOrder[] = [];
     const net = NETWORKS[this.currentNetwork];
-    onLog?.(`🔄 Ciclo automático — ${net.name} | ${net.isTestnet ? "🧪 TESTNET" : "💰 MAINNET"}`);
+    onLog?.(`Ciclo automatico - ${net.name} | ${net.isTestnet ? "TESTNET" : "MAINNET"}`);
 
-    // Atualizar saldos antes do ciclo
+    // Verificar circuit breaker antes do ciclo
+    const cb = getCircuitBreakerState();
+    if (cb.isPanicActive) {
+      onLog?.(`Circuit breaker ativo desde ${cb.panicTimestamp}. Motivo: ${cb.panicReason}`);
+      return results;
+    }
+
     await realSwap.refreshAllBalances();
     const balances = realSwap.getAllBalances().filter(b => b.balance > 0);
-    onLog?.(`💼 Saldos: ${balances.map(b => `${b.symbol}:${b.balance.toFixed(4)}`).join(" | ")}`);
+    onLog?.(`Saldos: ${balances.map(b => `${b.symbol}:${b.balance.toFixed(4)}`).join(" | ")}`);
 
     for (const agent of this.agents) {
       try {
         const order = await this.executeAgentTrade(agent, onLog);
         if (order) results.push(order);
-        // Pequena pausa entre agentes para não sobrecarregar RPC
         await new Promise(r => setTimeout(r, 1000));
       } catch (err: any) {
-        onLog?.(`❌ ${agent.name} erro: ${err?.message}`);
+        onLog?.(`${agent.name} erro: ${err?.message}`);
       }
     }
 
     return results;
   }
 
-  // ─── Estatísticas ──────────────────────────────────────────────────────────
   getStats(): TradingStats {
     const completed = this.orders.filter(o => o.status === "completed");
     const profitable = completed.filter(o => o.profit > 0);
     const totalVolume = completed.reduce((s, o) => s + o.amount, 0);
     const totalProfit = completed.reduce((s, o) => s + o.profit, 0);
 
-    // Par mais lucrativo
     const pairProfits = new Map<string, number>();
     completed.forEach(o => {
-      const key = `${o.fromToken}→${o.toToken}`;
+      const key = `${o.fromToken}->${o.toToken}`;
       pairProfits.set(key, (pairProfits.get(key) ?? 0) + o.profit);
     });
     let bestPair = "-";

@@ -4,6 +4,7 @@
 
 import { ethers } from "ethers";
 import { getQuote, toTokenUnits } from "./lifi-executor";
+import { getCircuitBreakerState, recordError, recordTradeResult } from "./circuit-breaker";
 
 // ─── Redes suportadas ────────────────────────────────────────────────────────
 export const NETWORKS = {
@@ -121,6 +122,16 @@ export const TRADING_PAIRS: Record<NetworkKey, Array<{ from: TokenSymbol; to: To
     { from: "USDC", to: "USDT",  label: "USDC→USDT" },
   ],
 };
+
+// Tokens atrelados a USD (stablecoins) — usados para cálculo de lucro
+const STABLE_TOKENS: Set<TokenSymbol> = new Set(["USDC", "USDT", "DAI", "EURC"]);
+
+function isStable(token: TokenSymbol): boolean {
+  return STABLE_TOKENS.has(token);
+}
+
+// Lucro mínimo em USD para executar um trade (evita perda com gas)
+const MIN_PROFIT_THRESHOLD = 0.01;
 
 const ERC20_ABI = [
   "function balanceOf(address owner) view returns (uint256)",
@@ -264,8 +275,21 @@ class RealSwapExecutor {
 
           const toDecimals   = this.tokenBalances.get(pair.to)?.decimals ?? 6;
           const toAmount     = parseFloat(quote.toAmount) / Math.pow(10, toDecimals);
-          // Estimar lucro em USD (simplificado: comparar valores)
-          const expectedProfit = toAmount - amountUsd;
+
+          // Calcular lucro em USD corretamente:
+          // - Se TO token é stable → toAmount ≈ USD value
+          // - Se FROM token é stable e TO não → não calculamos lucro em USD
+          let expectedProfit = 0;
+          if (isStable(pair.to)) {
+            // Recebemos stablecoin → valor em USD é direto
+            expectedProfit = toAmount - amountUsd;
+          } else if (isStable(pair.from)) {
+            // FROM é stable, TO não é → estimamos via exchange rate
+            // amountUsd units of fromToken => toAmount units of toToken
+            // O "fair value" seria aprox. amountUsd, profit = toAmount_usd - amountUsd
+            // Sem feed de preço externo, marcamos como neutro (troca por token volátil)
+            expectedProfit = 0;
+          }
 
           results.push({ pair, expectedProfit, toAmount, route: quote.tool ?? "lifi" });
         } catch {
@@ -276,9 +300,16 @@ class RealSwapExecutor {
 
     if (results.length === 0) return null;
 
+    // Filtrar pares com lucro mínimo (só para pares estáveis)
+    const profitable = results.filter(r =>
+      !isStable(r.pair.to) || r.expectedProfit >= MIN_PROFIT_THRESHOLD
+    );
+
+    if (profitable.length === 0) return null;
+
     // Retorna o par com maior lucro esperado
-    results.sort((a, b) => b.expectedProfit - a.expectedProfit);
-    return results[0];
+    profitable.sort((a, b) => b.expectedProfit - a.expectedProfit);
+    return profitable[0];
   }
 
   // Executar swap no melhor par disponível
@@ -294,6 +325,11 @@ class RealSwapExecutor {
 
     if (!this.signer || !this.provider) {
       return this._fail(fromToken, toToken, amountUsd, "Signer não inicializado (necessário private key)", timestamp);
+    }
+
+    // Circuit breaker: bloquear se modo pânico ativo
+    if (getCircuitBreakerState().isPanicActive) {
+      return this._fail(fromToken, toToken, amountUsd, "Circuit breaker bloqueou trade (modo pânico ativo)", timestamp);
     }
 
     const fromBalance = this.getBalance(fromToken);
@@ -328,6 +364,21 @@ class RealSwapExecutor {
       const toAmount   = parseFloat(quote.toAmount) / Math.pow(10, toDecimals);
       log(`✅ Rota via ${quote.tool} | Estimativa: ${toAmount.toFixed(6)} ${toToken}`);
 
+      // Verificar lucro mínimo (só para pares onde TO é stablecoin)
+      let estimatedProfit = 0;
+      if (isStable(toToken)) {
+        estimatedProfit = toAmount - amountUsd;
+      }
+      if (estimatedProfit < MIN_PROFIT_THRESHOLD && isStable(toToken)) {
+        log(`⏸️ Lucro estimado $${estimatedProfit.toFixed(4)} abaixo do mínimo $${MIN_PROFIT_THRESHOLD}`);
+        return this._fail(fromToken, toToken, amountUsd, `Lucro mínimo não atingido: $${estimatedProfit.toFixed(4)}`, timestamp);
+      }
+
+      // Determinar direção da ação
+      const isBuyingVolatile = !isStable(toToken) && isStable(fromToken);
+      const isSellingForStable = isStable(toToken) && !isStable(fromToken);
+      const action: "BUY" | "SELL" | "HOLD" = isBuyingVolatile ? "BUY" : isSellingForStable ? "SELL" : "BUY";
+
       // Aprovar token se necessário
       const tx = quote.transactionRequest;
       const tokenContract = new ethers.Contract(fromTokenAddr, ERC20_ABI, this.signer);
@@ -354,6 +405,7 @@ class RealSwapExecutor {
 
       const receipt = await txResponse.wait(1);
       if (!receipt || receipt.status === 0) {
+        recordError("executeSwap", "TX falhou on-chain (status 0)");
         return this._fail(fromToken, toToken, amountUsd, "TX falhou on-chain (status 0)", timestamp);
       }
 
@@ -364,7 +416,17 @@ class RealSwapExecutor {
       // Atualizar saldos após trade
       await this.refreshAllBalances();
 
-      const profit = toAmount - amountUsd;
+      // Calcular lucro pós-trade usando refreshAllBalances
+      let profit = 0;
+      if (isStable(toToken)) {
+        profit = toAmount - amountUsd;
+      }
+
+      // Registrar resultado no circuit breaker
+      const { isPanicActive } = recordTradeResult(profit);
+      if (isPanicActive) {
+        log(`🚨 Circuit breaker ativado!`);
+      }
 
       return {
         success: true,
@@ -374,7 +436,7 @@ class RealSwapExecutor {
         toToken,
         fromAmount: amountUsd,
         toAmount,
-        action: "BUY",
+        action,
         message: `✅ ${fromToken}→${toToken} $${amountUsd} → ${toAmount.toFixed(6)} | ${txResponse.hash.slice(0, 10)}...`,
         timestamp,
         confirmed: true,
@@ -386,6 +448,7 @@ class RealSwapExecutor {
         : err?.message?.includes("insufficient") ? "Saldo insuficiente para gas"
         : err?.message || "Erro desconhecido";
       log(`❌ ${msg}`);
+      recordError("executeSwap", msg);
       return this._fail(fromToken, toToken, amountUsd, msg, timestamp);
     }
   }
