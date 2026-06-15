@@ -6,6 +6,9 @@ import { realSwap, isStable, type NetworkKey, type TokenSymbol } from "./real-sw
 import { blockIfPanicked } from "./circuit-breaker";
 import { saveTradeHistory, loadTradeHistory, saveTraderState, loadTraderState } from "./persistence";
 import { positionManager } from "./position-manager";
+import { feeMonetization } from "./fee-monetization";
+import { transactionMemos } from "./transaction-memos";
+import { arcMicroTrader } from "./arc-micro-trader";
 import { ethers } from "ethers";
 
 export interface TradeRecord {
@@ -106,7 +109,7 @@ class RealAutomatedTrader {
     return { usdc, eurc };
   }
 
-  async runTradingCycle(tradeAmount: number = 10): Promise<TradeRecord> {
+  async runTradingCycle(tradeAmount: number = 5): Promise<TradeRecord> {
     const timestamp = Date.now();
     const id = `trade_${timestamp}`;
 
@@ -125,24 +128,31 @@ class RealAutomatedTrader {
     this.log(`Saldos: ${balances.map(b => `${b.symbol}:$${b.balance.toFixed(2)}`).join(" | ") || "vazio"}`);
 
     this.log(`Buscando melhor par via LI.FI...`);
+
     const best = await realSwap.findBestPair(tradeAmount);
+
+    const adjustedTrade = feeMonetization.calculateFee(`${best?.pair.from || 'USDC'}_${best?.pair.to || 'EURC'}`, best?.toAmount ?? tradeAmount);
+    this.log(`Fee: $${adjustedTrade.fee.toFixed(4)} | Net: $${adjustedTrade.netAmount.toFixed(4)}`);
 
     if (best && (isStable(best.pair.to) && isStable(best.pair.from))) {
       this.log(`Melhor par: ${best.pair.label} | lucro esperado: $${best.expectedProfit.toFixed(4)} via ${best.route}`);
-      const result = await this._executeSwap(best.pair.from, best.pair.to, tradeAmount);
-      const profit = result.profit ?? 0;
-      if (result.success) { this.log(`Trade concluido! Lucro: $${profit.toFixed(4)}`); }
-      else { this.log(`Trade falhou: ${result.message}`); }
+      const result = await this._executeSwap(best.pair.from, best.pair.to, adjustedTrade.netAmount);
+      const profit = (result.profit ?? 0) - adjustedTrade.fee;
+      if (result.success) {
+        this.log(`Trade concluido! Lucro: $${profit.toFixed(4)} (fee: $${adjustedTrade.fee.toFixed(4)})`);
+        const memo = transactionMemos.createTradeMemo(id, 'RealTrader', { pair: best.pair.label, fee: adjustedTrade.fee.toFixed(4) });
+        this.log(`📝 Memo: ${memo.hex.slice(0, 30)}...`);
+      } else { this.log(`Trade falhou: ${result.message}`); }
       this.totalProfit += profit;
-      this.lastAction = `${best.pair.from}->${best.pair.to} $${tradeAmount}`;
-      const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: tradeAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: result.message, timestamp, confirmed: result.confirmed };
+      this.lastAction = `${best.pair.from}->${best.pair.to} $${adjustedTrade.netAmount}`;
+      const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: adjustedTrade.netAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: `${result.message} | fee: $${adjustedTrade.fee.toFixed(4)}`, timestamp, confirmed: result.confirmed };
       this.tradeHistory.push(record); this._persist(); this.onTradeCallback?.(record);
       return record;
     }
 
     if (best && !isStable(best.pair.to)) {
       this.log(`Par volatil: ${best.pair.label} — comprando e abrindo posicao`);
-      const result = await this._executeSwap(best.pair.from, best.pair.to, tradeAmount);
+      const result = await this._executeSwap(best.pair.from, best.pair.to, adjustedTrade.netAmount);
       if (result.success) {
         const volatileToken = best.pair.to;
         const paidToken = best.pair.from;
@@ -239,7 +249,7 @@ class RealAutomatedTrader {
     return realSwap.executeSwap(from as any, to as any, amount, (m: string) => this.log(m));
   }
 
-  startAutomatedTrading(intervalSeconds = 60, tradeAmount = 10) {
+  startAutomatedTrading(intervalSeconds = 30, tradeAmount = 5) {
     if (this.isRunning) return;
     this.isRunning = true;
     this.log(`\nTRADING REAL INICIADO - $${tradeAmount} a cada ${intervalSeconds}s`);
@@ -299,6 +309,77 @@ class RealAutomatedTrader {
       message: `HOLD - ${reason}`,
       timestamp,
       confirmed: false,
+    };
+  }
+
+  async runMicroTradeCycle(tradeAmount: number = 2): Promise<TradeRecord> {
+    const timestamp = Date.now();
+    const id = `micro_${timestamp}`;
+
+    if (!this.initialized) {
+      return this._holdRecord(id, "Nao inicializado", timestamp);
+    }
+
+    if (blockIfPanicked()) {
+      return this._holdRecord(id, "Circuit breaker", timestamp);
+    }
+
+    const profitCheck = arcMicroTrader.isMicroTradeProfitable(tradeAmount, 10);
+    if (!profitCheck.profitable) {
+      this.log(`Micro-trade: ${profitCheck.reason}`);
+      return this._holdRecord(id, profitCheck.reason, timestamp);
+    }
+
+    const result = await arcMicroTrader.executeMicroTrade("USDC", "EURC", tradeAmount, `auto_micro_${id}`);
+    this.totalProfit += result.profit;
+
+    if (result.success && result.profit > 0) {
+      const memoPreview = result.memoHex ? `📝 memo:${result.memoHex.slice(0, 20)}...` : '';
+      this.log(`✅ Micro-trade lucro: $${result.profit.toFixed(6)} | gas: $${result.gasUsed.toFixed(4)} | ${memoPreview}`);
+    } else {
+      this.log(`❌ Micro-trade falhou: ${result.message}`);
+    }
+
+    const record: TradeRecord = {
+      id, action: result.success ? "BUY" : "HOLD",
+      fromToken: "USDC", toToken: "EURC",
+      fromAmount: tradeAmount, toAmount: tradeAmount + result.profit,
+      profit: result.profit, txHash: result.txHash,
+      explorerUrl: result.explorerUrl,
+      message: `micro: $${result.profit.toFixed(6)} | gas $${result.gasUsed.toFixed(4)}`,
+      timestamp, confirmed: result.confirmed,
+    };
+
+    this.tradeHistory.push(record);
+    this._persist();
+    this.onTradeCallback?.(record);
+    return record;
+  }
+
+  async startMicroTrading(intervalSeconds = 15, tradeAmount = 2) {
+    if (this.isRunning) return;
+    this.isRunning = true;
+    const cfg = arcMicroTrader.getConfig();
+    this.log(`\n🤖 MICRO-TRADING ARC INICIADO - $${tradeAmount} a cada ${intervalSeconds}s`);
+    this.log(`⚡ Gas: ~$${cfg.gasBuffer.toFixed(4)} USDC | Batch: ${cfg.batchEnabled ? 'ON' : 'OFF'} | Memo: ${cfg.memoEnabled ? 'ON' : 'OFF'}`);
+
+    this.runMicroTradeCycle(tradeAmount);
+
+    this.intervalId = setInterval(() => {
+      if (!this.isRunning) return;
+      this.runMicroTradeCycle(tradeAmount);
+    }, intervalSeconds * 1000);
+  }
+
+  getBatchStats() {
+    const trades = this.tradeHistory.filter(t => t.id.startsWith('micro_'));
+    const microWins = trades.filter(t => t.profit > 0).length;
+    return {
+      totalMicroTrades: trades.length,
+      microWins,
+      microWinRate: trades.length > 0 ? ((microWins / trades.length) * 100).toFixed(1) : '0.0',
+      totalMicroProfit: trades.reduce((s, t) => s + t.profit, 0).toFixed(6),
+      avgGas: trades.length > 0 ? (trades.reduce((s, t) => s + parseFloat(t.message.split('gas $')[1] || '0'), 0) / trades.length).toFixed(4) : '0',
     };
   }
 }

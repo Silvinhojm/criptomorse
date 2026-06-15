@@ -22,7 +22,7 @@ class MarketAgent {
   getAdvice(): MarketOpinion {
     const { trend, fear } = this.lastInsights;
     const action: "buy" | "sell" | "hold" = trend === "bullish" ? "buy" : trend === "bearish" ? "sell" : "hold";
-    const confidence = Math.round(50 + Math.abs(fear - 50) * 0.5);
+    const confidence = Math.round(30 + Math.abs(fear - 50) * 0.3);
     return { agentName: "Market", action, confidence, reason: `Trend: ${trend}, Fear: ${Math.round(fear)}` };
   }
 
@@ -33,7 +33,7 @@ class MarketAgent {
       losses: this.losses,
       totalTrades: this.trades,
       winRate: this.trades > 0 ? (this.wins / this.trades) * 100 : 0,
-      avgConfidence: 65,
+      avgConfidence: 30,
       color: "#f97316",
       icon: "📈",
     };

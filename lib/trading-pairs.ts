@@ -28,7 +28,7 @@ export const ARC_TESTNET_PAIRS: TradingPair[] = [
     chainId: 1169,
     decimalsBase: 6,
     decimalsQuote: 6,
-    minSpreadPercent: 0.35,
+    minSpreadPercent: 0.3,
     volatility: 'low',
     enabled: true,
     color: '#3b82f6'
@@ -43,10 +43,59 @@ export const ARC_TESTNET_PAIRS: TradingPair[] = [
     chainId: 1169,
     decimalsBase: 6,
     decimalsQuote: 8,
-    minSpreadPercent: 0.8,
-    volatility: 'high',
-    enabled: false, // Aguardando liquidez
+    minSpreadPercent: 0.5,
+    volatility: 'medium',
+    enabled: false,
     color: '#f7931a'
+  }
+];
+
+// CONFIGURAÇÕES PARA POLYGON MAINNET
+export const POLYGON_MAINNET_PAIRS: TradingPair[] = [
+  {
+    id: 'usdc_usdt_polygon',
+    name: 'USDC/USDT',
+    baseToken: 'USDC',
+    quoteToken: 'USDT',
+    baseAddress: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
+    quoteAddress: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F',
+    chainId: 137,
+    decimalsBase: 6,
+    decimalsQuote: 6,
+    minSpreadPercent: 0.1,
+    volatility: 'low',
+    enabled: true,
+    color: '#26a17b'
+  },
+  {
+    id: 'usdt_usdc_polygon',
+    name: 'USDT/USDC',
+    baseToken: 'USDT',
+    quoteToken: 'USDC',
+    baseAddress: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F',
+    quoteAddress: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
+    chainId: 137,
+    decimalsBase: 6,
+    decimalsQuote: 6,
+    minSpreadPercent: 0.1,
+    volatility: 'low',
+    enabled: true,
+    color: '#3b82f6'
+  },
+  {
+    id: 'usdc_eurc_polygon',
+    name: 'USDC/EURC',
+    baseToken: 'USDC',
+    quoteToken: 'EURC',
+    baseAddress: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
+    quoteAddress: '0xc52d20D70d2B1E27C2cb85AA0E3a9F5b4AEBf7e7',
+    chainId: 137,
+    decimalsBase: 6,
+    decimalsQuote: 6,
+    minSpreadPercent: 0.25,
+    volatility: 'low',
+    enabled: true,
+    color: '#3b82f6'
   }
 ];
 
@@ -100,7 +149,8 @@ export const BASE_MAINNET_PAIRS: TradingPair[] = [
 ];
 
 // Obter pares por rede
-export function getTradingPairs(isMainnet: boolean): TradingPair[] {
+export function getTradingPairs(isMainnet: boolean, chainId?: number): TradingPair[] {
+  if (chainId === 137) return POLYGON_MAINNET_PAIRS;
   return isMainnet ? BASE_MAINNET_PAIRS : ARC_TESTNET_PAIRS;
 }
 

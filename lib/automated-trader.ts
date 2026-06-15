@@ -2,7 +2,7 @@
 // Sistema de trading automático integrado com agentes e nanopagamentos
 
 import { nanopaymentSystem } from "./nanopayment-system";
-import { quantumAgent, technicalAgent, synthesisAgent } from "./multi-agent-system";
+import { quantumAgent, technicalAgent } from "./multi-agent-system";
 import { marketAgent } from "./market-agent";
 import { volumeAgent } from "./volume-agent";
 import newsAgent from "./news-agent";
@@ -139,7 +139,7 @@ class AutomatedTrader {
     };
   }
 
-  async executeTrade(signal: TradeSignal, tradeAmount: number = 5): Promise<TradeResult> {
+  async executeTrade(signal: TradeSignal, tradeAmount: number = 3): Promise<TradeResult> {
     if (signal.action === 'HOLD') {
       return {
         success: true,
@@ -193,7 +193,7 @@ class AutomatedTrader {
     };
   }
 
-  async runTradingCycle(tradeAmount: number = 5): Promise<TradeResult> {
+  async runTradingCycle(tradeAmount: number = 3): Promise<TradeResult> {
     console.log("\n🔄 Iniciando ciclo de trading...");
     const signal = await this.collectAgentSignals();
     const result = await this.executeTrade(signal, tradeAmount);
@@ -201,7 +201,7 @@ class AutomatedTrader {
     return result;
   }
 
-  startAutomatedTrading(intervalSeconds: number = 30, tradeAmount: number = 5) {
+  startAutomatedTrading(intervalSeconds: number = 25, tradeAmount: number = 3) {
     if (this.isRunning) return;
 
     this.isRunning = true;

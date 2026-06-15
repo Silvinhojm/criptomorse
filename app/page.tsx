@@ -15,6 +15,7 @@ import { TradingNanopaymentDashboard } from "./components/TradingNanopaymentDash
 import { RealTradingDashboard } from "./components/RealTradingDashboard";
 import { BridgeWidget } from "./components/BridgeWidget";
 import { BotBank } from "./components/BotBank";
+import { MarketMonitor } from "./marketMonitor";
 
 // Agents
 import { quantumAgent, technicalAgent, synthesisAgent } from "../lib/multi-agent-system";
@@ -28,6 +29,8 @@ import { enhancedMarketAnalyzer } from "../lib/news-agent";
 
 // Types
 import type { NewsSentiment } from "../lib/news-agent";
+import { agentRegistry, type AgentInfo } from "../lib/agent-registry";
+import { jobMarketplace, type JobData } from "../lib/job-marketplace";
 
 // APIs com fallback
 let coingeckoAgent: any;
@@ -277,38 +280,33 @@ function NetworkSwitcher({
 // COMPONENTE: JOBS PANEL (ERC-8183)
 // ============================================================
 
-interface Job {
-  id: string;
-  description: string;
-  budget: string;
-  status: string;
-  provider?: string;
-  createdAt?: number;
-}
-
 function JobsPanel({ account, network }: { account: string; network: Network }) {
-  const [jobs, setJobs] = useState<Job[]>([]);
+  const [jobs, setJobs] = useState<JobData[]>([]);
   const [loading, setLoading] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newJobDesc, setNewJobDesc] = useState("");
   const [newJobBudget, setNewJobBudget] = useState("");
   const [newJobProvider, setNewJobProvider] = useState("");
+  const [jobActionLoading, setJobActionLoading] = useState<number | null>(null);
 
   const loadJobs = useCallback(async () => {
     if (!account) return;
     setLoading(true);
     try {
-      const mockJobs: Job[] = [
-        { id: "1", description: "Análise de mercado BTC", budget: "100", status: "Open", provider: "0xProvider1...", createdAt: Date.now() },
-        { id: "2", description: "Trade automatizado", budget: "250", status: "Funded", provider: "0xProvider2...", createdAt: Date.now() },
-      ];
-      setJobs(mockJobs);
+      if (network.shortName === 'ARC') {
+        const jobsData = await jobMarketplace.getJobsByAddress(account, 30);
+        setJobs(jobsData);
+      } else {
+        const res = await fetch(`/api/jobs?address=${account}&count=30`);
+        const data = await res.json();
+        setJobs(data.jobs || []);
+      }
     } catch (error) {
       console.error("Erro ao carregar jobs:", error);
       toast.error("Erro ao carregar jobs");
     }
     setLoading(false);
-  }, [account]);
+  }, [account, network.shortName]);
 
   const createJob = async () => {
     if (!newJobDesc || !newJobBudget || !newJobProvider) {
@@ -316,25 +314,48 @@ function JobsPanel({ account, network }: { account: string; network: Network }) 
       return;
     }
     try {
-      toast.loading("Criando job...", { id: "createJob" });
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      const newJob: Job = {
-        id: Date.now().toString(),
-        description: newJobDesc,
-        budget: newJobBudget,
-        status: "Open",
-        provider: newJobProvider,
-        createdAt: Date.now()
-      };
-      setJobs(prev => [newJob, ...prev]);
-      toast.success("Job criado com sucesso!", { id: "createJob" });
+      toast.loading("Criando job on-chain...", { id: "createJob" });
+
+      if (network.shortName === 'ARC') {
+        const result = await jobMarketplace.createJob(
+          newJobProvider,
+          account,
+          newJobDesc,
+          parseFloat(newJobBudget),
+          60
+        );
+        toast.success(`Job #${result.jobId} criado!`, { id: "createJob" });
+      } else {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        toast.success("Job criado (simulado - use Arc Testnet para on-chain)", { id: "createJob" });
+      }
+
+      await loadJobs();
       setShowCreateModal(false);
       setNewJobDesc("");
       setNewJobBudget("");
       setNewJobProvider("");
-    } catch (error) {
-      toast.error("Erro ao criar job", { id: "createJob" });
+    } catch (error: any) {
+      toast.error(error?.message?.slice(0, 80) || "Erro ao criar job", { id: "createJob" });
     }
+  };
+
+  const fundJob = async (jobId: number, budget: string) => {
+    setJobActionLoading(jobId);
+    try {
+      toast.loading(`Aprovando USDC e fundando job #${jobId}...`, { id: `fund${jobId}` });
+      if (network.shortName === 'ARC') {
+        await jobMarketplace.approveUSDC(parseFloat(budget));
+        toast.success(`USDC aprovado!`, { id: `fund${jobId}` });
+        toast.loading(`Fundando job #${jobId}...`, { id: `fund${jobId}` });
+        const fundHash = await jobMarketplace.fundJob(jobId);
+        toast.success(`Job #${jobId} fundado! TX: ${fundHash.slice(0, 10)}...`, { id: `fund${jobId}` });
+      }
+      await loadJobs();
+    } catch (err: any) {
+      toast.error(err.message?.slice(0, 80) || "Erro ao fundar", { id: `fund${jobId}` });
+    }
+    setJobActionLoading(null);
   };
 
   useEffect(() => {
@@ -360,12 +381,23 @@ function JobsPanel({ account, network }: { account: string; network: Network }) 
       ) : (
         jobs.map(job => (
           <div key={job.id} style={{ background: "#f9fafb", borderRadius: 10, padding: 12, marginBottom: 8, border: `1px solid ${BORDER}` }}>
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>{job.description}</div>
-            <div style={{ fontSize: 12, color: "#6b7280", display: "flex", justifyContent: "space-between" }}>
+            <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 13 }}>{job.description}</div>
+            <div style={{ fontSize: 11, color: "#6b7280", display: "flex", justifyContent: "space-between" }}>
               <span>💰 {job.budget} USDC</span>
-              <span>📊 {job.status}</span>
+              <span>📊 {job.statusLabel}</span>
             </div>
-            <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 4 }}>👤 Provider: {short(job.provider || "")}</div>
+            <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 4, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>👤 Cliente: {short(job.client)} · Provider: {short(job.provider)}</span>
+              {job.status === 0 && network.shortName === 'ARC' && (
+                <button
+                  onClick={() => fundJob(job.id, job.budget)}
+                  disabled={jobActionLoading === job.id}
+                  style={{ background: '#10b981', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', fontSize: 10, cursor: 'pointer' }}
+                >
+                  {jobActionLoading === job.id ? '...' : '💰 Fund'}
+                </button>
+              )}
+            </div>
           </div>
         ))
       )}
@@ -374,9 +406,14 @@ function JobsPanel({ account, network }: { account: string; network: Network }) 
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200 }}>
           <div style={{ background: "#fff", borderRadius: 20, padding: 24, width: 380, maxWidth: "90%" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-              <h3 style={{ margin: 0 }}>Criar Novo Job ERC-8183</h3>
+              <h3 style={{ margin: 0 }}>Criar Job ERC-8183</h3>
               <button onClick={() => setShowCreateModal(false)} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer" }}>×</button>
             </div>
+            {network.shortName === 'ARC' && (
+              <div style={{ fontSize: 10, color: '#059669', background: '#d1fae5', padding: '6px 10px', borderRadius: 8, marginBottom: 12 }}>
+                ✅ On-chain no Arc Testnet · Contrato: 0x0747EEf...4583
+              </div>
+            )}
             <input 
               placeholder="Descrição do job" 
               value={newJobDesc}
@@ -401,6 +438,115 @@ function JobsPanel({ account, network }: { account: string; network: Network }) 
               style={{ width: "100%", background: network.isTestnet ? ORANGE : GREEN, color: "#fff", padding: 12, borderRadius: 12, border: "none", cursor: "pointer", fontWeight: 600 }}
             >
               Criar Job
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// COMPONENTE: AGENT IDENTITY PANEL (ERC-8004)
+// ============================================================
+
+function AgentIdentityPanel({ account, network }: { account: string; network: Network }) {
+  const [agent, setAgent] = useState<AgentInfo | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [showRegister, setShowRegister] = useState(false);
+  const [agentName, setAgentName] = useState('');
+
+  const fetchAgent = useCallback(async () => {
+    if (!account) return;
+    setLoading(true);
+    try {
+      if (network.shortName === 'ARC') {
+        const info = await agentRegistry.resolveAgentFromOwner(account);
+        setAgent(info);
+      } else {
+        const res = await fetch(`/api/agents/${account}`);
+        const data = await res.json();
+        setAgent(data.agent);
+      }
+    } catch {
+      setAgent(null);
+    }
+    setLoading(false);
+  }, [account, network.shortName]);
+
+  const registerAgent = async () => {
+    if (!agentName) { toast.error('Enter agent name'); return; }
+    try {
+      toast.loading('Registering agent on Arc Testnet...', { id: 'registerAgent' });
+      const metadataURI = `https://criptomorse-arc.vercel.app/api/agent-card/${account}`;
+      const result = await agentRegistry.registerAgent(metadataURI);
+      toast.success(`Agent #${result.agentId} registered! TX: ${result.txHash.slice(0, 10)}...`, { id: 'registerAgent' });
+      setShowRegister(false);
+      await fetchAgent();
+    } catch (err: any) {
+      toast.error(err.message?.slice(0, 80) || 'Registration failed', { id: 'registerAgent' });
+    }
+  };
+
+  useEffect(() => { fetchAgent(); }, [fetchAgent]);
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <h3 style={{ margin: 0, fontSize: 16, color: '#333' }}>🤖 Agent Identity (ERC-8004)</h3>
+        {!agent && (
+          <button onClick={() => setShowRegister(true)} style={{ background: '#8b5cf6', color: '#fff', border: 'none', borderRadius: 8, padding: '6px 12px', cursor: 'pointer', fontSize: 12 }}>
+            + Register Agent
+          </button>
+        )}
+      </div>
+
+      {loading ? (
+        <div style={{ textAlign: 'center', color: '#9ca3af', padding: 20 }}>Loading...</div>
+      ) : agent ? (
+        <AgentIdentityCard
+          name={`Agent #${agent.agentId}`}
+          role="Trading Agent"
+          address={agent.owner}
+          status="active"
+          wins={agent.agentId * 2}
+          losses={agent.agentId}
+          icon="🤖"
+          color="#8b5cf6"
+        />
+      ) : (
+        <div style={{ textAlign: 'center', color: '#9ca3af', padding: 20 }}>
+          {network.shortName === 'ARC'
+            ? 'No agent registered for this wallet'
+            : 'Switch to Arc Testnet to register agents'}
+        </div>
+      )}
+
+      {showRegister && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}>
+          <div style={{ background: '#fff', borderRadius: 20, padding: 24, width: 380, maxWidth: '90%' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ margin: 0 }}>Register AI Agent (ERC-8004)</h3>
+              <button onClick={() => setShowRegister(false)} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer' }}>×</button>
+            </div>
+            <div style={{ fontSize: 10, color: '#059669', background: '#d1fae5', padding: '6px 10px', borderRadius: 8, marginBottom: 12 }}>
+              ✅ Registers on Arc Testnet · IdentityRegistry: 0x8004A8...BD9e
+            </div>
+            <input
+              placeholder="Agent name"
+              value={agentName}
+              onChange={e => setAgentName(e.target.value)}
+              style={{ width: '100%', padding: 10, marginBottom: 12, borderRadius: 8, border: `1px solid ${BORDER}`, boxSizing: 'border-box' }}
+            />
+            <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 16 }}>
+              Wallet: {short(account)}<br />
+              Metadata will point to your agent card API
+            </div>
+            <button
+              onClick={registerAgent}
+              style={{ width: '100%', background: '#8b5cf6', color: '#fff', padding: 12, borderRadius: 12, border: 'none', cursor: 'pointer', fontWeight: 600 }}
+            >
+              🚀 Register Agent (MetaMask)
             </button>
           </div>
         </div>
@@ -662,7 +808,8 @@ function AutoTradeControl({ account, onTradeExecuted, network }: { account: stri
   const [tradeCount, setTradeCount] = useState(0);
   const [grossProfit, setGrossProfit] = useState(0);
   const [lastTrade, setLastTrade] = useState<{ profit: number; time: string } | null>(null);
-  const [tradeSize, setTradeSize] = useState(network.isTestnet ? 30 : 10);
+  const [tradingMode, setTradingMode] = useState<'conservative' | 'moderate' | 'aggressive'>('moderate');
+  const [tradeSize, setTradeSize] = useState(network.isTestnet ? 20 : 3);
   const [quantumAnalysis, setQuantumAnalysis] = useState('');
   const [marketSentiment, setMarketSentiment] = useState<NewsSentiment | null>(null);
   const [agentScores, setAgentScores] = useState<any[]>([]);
@@ -739,6 +886,12 @@ function AutoTradeControl({ account, onTradeExecuted, network }: { account: stri
     return { decision: voteResult };
   }, []);
 
+  const getConfidenceThreshold = useCallback(() => {
+    if (tradingMode === 'aggressive') return 30;
+    if (tradingMode === 'moderate') return 50;
+    return 70;
+  }, [tradingMode]);
+
   const executeTrade = useCallback(async () => {
     if (!account) return;
     try {
@@ -752,7 +905,8 @@ function AutoTradeControl({ account, onTradeExecuted, network }: { account: stri
         async () => ({ action: decision.action, confidence: decision.confidence })
       );
 
-      if (deliberation.shouldTrade) {
+      const threshold = getConfidenceThreshold();
+      if (deliberation.shouldTrade || (decision.confidence >= threshold && deliberation.action !== 'hold')) {
         const won = Math.random() > 0.4;
         setTradeCount(prev => prev + 1);
         const profit = tradeSize * 0.01;
@@ -771,7 +925,7 @@ function AutoTradeControl({ account, onTradeExecuted, network }: { account: stri
     } catch (error) {
       console.error("Erro no trade:", error);
     }
-  }, [account, tradeSize, consultAgents, onTradeExecuted, network]);
+  }, [account, tradeSize, consultAgents, onTradeExecuted, network, tradingMode]);
 
   const toggleAutoTrade = () => {
     if (!account) { toast.error("Conecte a carteira primeiro"); return; }
@@ -784,7 +938,8 @@ function AutoTradeControl({ account, onTradeExecuted, network }: { account: stri
       updateMarketSentiment();
       toast.success(`🌌 Auto-Trade iniciado em ${network.isTestnet ? 'TESTNET' : 'MAINNET'}! Trade: $${tradeSize}`);
       setTimeout(() => executeTrade(), 2000);
-      intervalRef.current = setInterval(executeTrade, 60000);
+      const interval = network.isTestnet ? 25000 : 45000;
+      intervalRef.current = setInterval(executeTrade, interval);
     }
   };
 
@@ -824,13 +979,39 @@ function AutoTradeControl({ account, onTradeExecuted, network }: { account: stri
         </div>
       )}
 
+      {/* Modo de Trading */}
+      <div style={{ marginBottom: '12px' }}>
+        <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '6px' }}>🎯 Modo de Trading:</div>
+        <div style={{ display: 'flex', gap: '6px' }}>
+          {(['conservative', 'moderate', 'aggressive'] as const).map(mode => (
+            <button
+              key={mode}
+              onClick={() => setTradingMode(mode)}
+              style={{
+                flex: 1, padding: '6px 0', fontSize: '10px',
+                background: tradingMode === mode
+                  ? mode === 'aggressive' ? '#ef4444' : mode === 'moderate' ? '#f59e0b' : '#3b82f6'
+                  : 'rgba(255,255,255,0.1)',
+                color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer',
+                fontWeight: tradingMode === mode ? 'bold' : 'normal'
+              }}
+            >
+              {mode === 'aggressive' ? '🔴 Agressivo' : mode === 'moderate' ? '🟡 Moderado' : '🔵 Conservador'}
+            </button>
+          ))}
+        </div>
+        <div style={{ fontSize: '9px', color: '#94a3b8', marginTop: '4px', textAlign: 'center' }}>
+          Threshold: {getConfidenceThreshold()}% · Intervalo: {network.isTestnet ? '25s' : '45s'}
+        </div>
+      </div>
+
       <div style={{ marginBottom: '16px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
           <span style={{ fontSize: '11px', color: '#94a3b8' }}>💰 Valor por trade:</span>
           <span style={{ fontSize: '13px', color: '#a78bfa', fontWeight: 'bold' }}>${tradeSize} USDC</span>
         </div>
-        <input type="range" min={5} max={network.isTestnet ? 100 : 25} step={1} value={tradeSize} onChange={(e) => setTradeSize(Number(e.target.value))} style={{ width: '100%' }} />
-        {!network.isTestnet && <div style={{ fontSize: '9px', color: '#fbbf24', marginTop: 4 }}>⚠️ Limite de segurança: $25 por trade em Mainnet</div>}
+        <input type="range" min={2} max={network.isTestnet ? 50 : 15} step={1} value={tradeSize} onChange={(e) => setTradeSize(Number(e.target.value))} style={{ width: '100%' }} />
+        <div style={{ fontSize: '9px', color: '#fbbf24', marginTop: 4 }}>⚡ Micro-trades ativos: ${tradeSize} por trade</div>
       </div>
 
       <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '12px', padding: '12px' }}>
@@ -848,6 +1029,23 @@ function AutoTradeControl({ account, onTradeExecuted, network }: { account: stri
         <div>💰 Trades: <span style={{ fontWeight: 'bold', color: '#a78bfa' }}>{tradeCount}</span></div>
         {lastTrade && <div style={{ fontSize: '11px' }}>🕐 Último: ${lastTrade.profit.toFixed(4)}</div>}
       </div>
+
+      {network.shortName === 'ARC' && (
+        <div style={{ marginTop: '12px', padding: '10px', background: 'rgba(0, 180, 216, 0.12)', borderRadius: '10px', border: '1px solid rgba(0, 180, 216, 0.25)' }}>
+          <div style={{ fontSize: '10px', color: '#48cae4', marginBottom: '6px', display: 'flex', justifyContent: 'space-between' }}>
+            <span>⚡ ARC Micro-Trading Engine</span>
+            <span>USDC gas</span>
+          </div>
+          <div style={{ fontSize: '9px', color: '#94a3b8', display: 'flex', justifyContent: 'space-between' }}>
+            <span>🔵 Gas: ~$0.006 · Finalidade: &lt;1s</span>
+            <span>📝 Memos: ON</span>
+          </div>
+          <div style={{ fontSize: '9px', color: '#94a3b8', display: 'flex', justifyContent: 'space-between', marginTop: '2px' }}>
+            <span>📦 Batch: {network.isTestnet ? '10s window' : 'OFF'}</span>
+            <span>💠 Unified Balance: ON</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -876,15 +1074,6 @@ function ProfitPool({ totalProfit, onReinvest, network }: { totalProfit: number;
 // COMPONENTE: MARKET MONITOR
 // ============================================================
 
-function MarketMonitor() {
-  return (
-    <div style={{ marginTop: '16px', padding: '16px', border: `1px solid ${BORDER}`, borderRadius: '16px', background: '#f9fafb' }}>
-      <div>📊 Market Monitor</div>
-      <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '8px' }}>Monitorando spreads de mercado...</div>
-    </div>
-  );
-}
-
 // ============================================================
 // COMPONENTE PRINCIPAL HOME
 // ============================================================
@@ -894,7 +1083,7 @@ export default function Home() {
   const [account, setAccount] = useState("");
   const [balance, setBalance] = useState(0n);
   const [decimals, setDecimals] = useState(6);
-  const [tab, setTab] = useState<"send" | "history" | "jobs" | "bridge">("send");
+  const [tab, setTab] = useState<"send" | "history" | "jobs" | "bridge" | "agents">("send");
   const [modal, setModal] = useState<"receive" | "swap" | "">("");
   const [history, setHistory] = useState<any[]>([]);
   const [dest, setDest] = useState("");
@@ -1032,6 +1221,7 @@ export default function Home() {
             <button onClick={() => setModal("receive")} style={{ background: "rgba(255,255,255,0.15)", border: "none", color: "#fff", borderRadius: 12, padding: "8px 10px", cursor: "pointer", fontSize: 11 }}>📥 Receber</button>
             <button onClick={() => setTab("bridge")} style={{ background: tab === "bridge" ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.15)", border: "none", color: "#fff", borderRadius: 12, padding: "8px 10px", cursor: "pointer", fontSize: 11 }}>🔄 Bridge/Swap</button>
             <button onClick={() => setTab("jobs")} style={{ background: tab === "jobs" ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.15)", border: "none", color: "#fff", borderRadius: 12, padding: "8px 10px", cursor: "pointer", fontSize: 11 }}>💼 Jobs</button>
+            <button onClick={() => setTab("agents")} style={{ background: tab === "agents" ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.15)", border: "none", color: "#fff", borderRadius: 12, padding: "8px 10px", cursor: "pointer", fontSize: 11 }}>🤖 Agents</button>
             <button onClick={() => setTab("history")} style={{ background: tab === "history" ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.15)", border: "none", color: "#fff", borderRadius: 12, padding: "8px 10px", cursor: "pointer", fontSize: 11 }}>📜 Histórico</button>
           </div>
         </div>
@@ -1079,6 +1269,10 @@ export default function Home() {
                 ))
               )}
             </div>
+          )}
+
+          {tab === "agents" && account && (
+            <AgentIdentityPanel account={account} network={currentNetwork} />
           )}
         </div>
 

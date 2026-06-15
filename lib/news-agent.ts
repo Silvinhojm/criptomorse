@@ -36,7 +36,7 @@ class NewsAgent {
     await this.updateSentiment();
     const { score, bias } = this.sentiment;
     const action: "buy" | "sell" | "hold" = bias === "positive" ? "buy" : bias === "negative" ? "sell" : "hold";
-    const confidence = Math.round(40 + Math.abs(score - 50) * 1.2);
+    const confidence = Math.round(35 + Math.abs(score - 50) * 0.6);
     return { action, confidence, reason: `Sentiment: ${bias} (${score})` };
   }
 
@@ -47,7 +47,7 @@ class NewsAgent {
       losses: this.losses,
       totalTrades: this.trades,
       winRate: this.trades > 0 ? (this.wins / this.trades) * 100 : 0,
-      avgConfidence: 60,
+      avgConfidence: 35,
       color: "#f97316",
       icon: "📰",
     };

@@ -38,12 +38,12 @@ class QuantumAgent {
   ? Math.abs(trend) * 10
   : 0;
     const action: "buy" | "sell" | "hold" = trend > 0.001 ? "buy" : trend < -0.001 ? "sell" : "hold";
-    const confidence = Math.min(95, 50 + Math.abs(trend) * 5000);
+    const confidence = Math.min(75, 30 + Math.abs(trend) * 3000);
     return { agentName: this.agentName, action, confidence: Math.round(confidence), reason: `Quantum trend: ${trend.toFixed(5)}` };
   }
 
   getScore(): AgentScore {
-    return { agentName: this.agentName, wins: this.wins, losses: this.losses, totalTrades: this.trades, winRate: this.trades > 0 ? (this.wins / this.trades) * 100 : 0, avgConfidence: 70, color: "#a78bfa", icon: "🌌" };
+    return { agentName: this.agentName, wins: this.wins, losses: this.losses, totalTrades: this.trades, winRate: this.trades > 0 ? (this.wins / this.trades) * 100 : 0, avgConfidence: 45, color: "#a78bfa", icon: "🌌" };
   }
 }
 
@@ -72,12 +72,12 @@ class TechnicalAgent {
     const rsi = indicators[1] ?? 50;
     const trend = indicators[0] ?? 0;
     const action: "buy" | "sell" | "hold" = rsi < 35 || trend > 0 ? "buy" : rsi > 65 || trend < 0 ? "sell" : "hold";
-    const confidence = Math.round(50 + Math.abs(rsi - 50) * 0.8);
+    const confidence = Math.round(40 + Math.abs(rsi - 50) * 0.5);
     return { agentName: this.agentName, action, confidence, reason: `RSI: ${rsi.toFixed(1)}, Trend: ${trend}` };
   }
 
   getScore(): AgentScore {
-    return { agentName: this.agentName, wins: this.wins, losses: this.losses, totalTrades: this.trades, winRate: this.trades > 0 ? (this.wins / this.trades) * 100 : 0, avgConfidence: 68, color: "#00d4aa", icon: "📊" };
+    return { agentName: this.agentName, wins: this.wins, losses: this.losses, totalTrades: this.trades, winRate: this.trades > 0 ? (this.wins / this.trades) * 100 : 0, avgConfidence: 40, color: "#00d4aa", icon: "📊" };
   }
 }
 

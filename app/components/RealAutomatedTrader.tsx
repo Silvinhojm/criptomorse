@@ -20,8 +20,8 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
   const [balances, setBalances] = useState({ usdc: 0, eurc: 0 });
   const [history, setHistory] = useState<TradeRecord[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
-  const [tradeAmount, setTradeAmount] = useState(10);
-  const [intervalSec, setIntervalSec] = useState(60);
+  const [tradeAmount, setTradeAmount] = useState(5);
+  const [intervalSec, setIntervalSec] = useState(30);
   const logsRef = useRef<HTMLDivElement>(null);
 
   const net = NETWORKS[currentNetwork];
@@ -216,9 +216,9 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
           <input
             type="number"
             value={tradeAmount}
-            onChange={(e) => setTradeAmount(Math.max(1, parseFloat(e.target.value) || 10))}
+            onChange={(e) => setTradeAmount(Math.max(1, parseFloat(e.target.value) || 5))}
             min={1}
-            max={isMainnet ? 50 : 1000}
+            max={isMainnet ? 25 : 50}
             style={{ width: "100%", background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, padding: "8px 10px", color: "#e2e8f0", fontSize: 13 }}
           />
         </div>
@@ -227,8 +227,8 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
           <input
             type="number"
             value={intervalSec}
-            onChange={(e) => setIntervalSec(Math.max(30, parseInt(e.target.value) || 60))}
-            min={30}
+            onChange={(e) => setIntervalSec(Math.max(15, parseInt(e.target.value) || 30))}
+            min={15}
             max={600}
             style={{ width: "100%", background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, padding: "8px 10px", color: "#e2e8f0", fontSize: 13 }}
           />

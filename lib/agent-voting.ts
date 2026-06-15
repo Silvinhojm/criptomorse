@@ -20,11 +20,12 @@ export interface VoteResult {
   reason: string;
 }
 
-const MIN_VOTES = 2;
-const MIN_CONFIDENCE = 20;
+const TOTAL_AGENTS = 5;
+const MAJORITY = Math.floor(TOTAL_AGENTS / 2) + 1; // 3/5 = 60%
 
 class AgentVotingSystem {
   private votes: AgentVote[] = [];
+  private cyclesWithoutTrade = 0;
 
   registerVote(vote: AgentVote) {
     this.votes.push(vote);
@@ -35,7 +36,7 @@ class AgentVotingSystem {
     this.votes = [];
   }
 
-  // Processar votacao e decidir
+  // Processar votacao e decidir por maioria simples
   resolve(): VoteResult {
     const buyVotes = this.votes.filter(v => v.action === "buy");
     const sellVotes = this.votes.filter(v => v.action === "sell");
@@ -51,36 +52,41 @@ class AgentVotingSystem {
     let reason: string;
     let tiebreaker = "";
 
-    if (buyWeight > sellWeight && buyWeight > holdWeight) {
+    // MAIORIA SIMPLES: precisa de 3/5 votos (nao peso)
+    if (buyVotes.length >= MAJORITY) {
       action = "buy";
-      reason = `Compra venceu (${buyVotes.length}/${this.votes.length} votos, confianca ${((buyWeight / total) * 100).toFixed(0)}%)`;
-    } else if (sellWeight > buyWeight && sellWeight > holdWeight) {
+      reason = `Compra venceu (${buyVotes.length}/${this.votes.length} votos, maioria simples)`;
+      this.cyclesWithoutTrade = 0;
+    } else if (sellVotes.length >= MAJORITY) {
       action = "sell";
-      reason = `Venda venceu (${sellVotes.length}/${this.votes.length} votos, confianca ${((sellWeight / total) * 100).toFixed(0)}%)`;
-    } else if (holdWeight > buyWeight && holdWeight > sellWeight) {
+      reason = `Venda venceu (${sellVotes.length}/${this.votes.length} votos, maioria simples)`;
+      this.cyclesWithoutTrade = 0;
+    } else if (holdVotes.length >= MAJORITY) {
       action = "hold";
-      reason = `Espera venceu (${holdVotes.length}/${this.votes.length} votos, confianca ${((holdWeight / total) * 100).toFixed(0)}%)`;
+      reason = `Espera venceu (${holdVotes.length}/${this.votes.length} votos, maioria simples)`;
     } else {
-      // Empate: contador desempata
-      const best = accountant.getBestAgent();
-      tiebreaker = best || "contador";
-      const tieVote = accountant.getTiebreakerVote();
-      action = tieVote;
-      reason = `Empate resolvido pelo ${tiebreaker} (melhor rankeado): ${tieVote}`;
+      // Sem maioria: forca trade se ja passaram 3 ciclos sem acao
+      this.cyclesWithoutTrade++;
+      if (this.cyclesWithoutTrade >= 3 && buyVotes.length + sellVotes.length > 0) {
+        action = buyVotes.length > sellVotes.length ? "buy" : "sell";
+        reason = `Forcado apos ${this.cyclesWithoutTrade} ciclos sem acao: ${action}`;
+        this.cyclesWithoutTrade = 0;
+      } else {
+        // Empate: contador desempata
+        const best = accountant.getBestAgent();
+        tiebreaker = best || "contador";
+        const tieVote = accountant.getTiebreakerVote();
+        action = tieVote;
+        reason = `Empate resolvido pelo ${tiebreaker} (melhor rankeado): ${tieVote}`;
+      }
     }
 
-    // Verificar maioria simples (pelo menos MIN_VOTES concordando)
-    const agreeingVotes = action === "buy" ? buyVotes.length
-                        : action === "sell" ? sellVotes.length
-                        : holdVotes.length;
-
-    const approved = agreeingVotes >= MIN_VOTES &&
-                     (buyWeight / total) * 100 >= MIN_CONFIDENCE;
+    const approved = action !== "hold";
 
     const result: VoteResult = {
       approved,
       action,
-      confidence: (action === "buy" ? buyWeight : action === "sell" ? sellWeight : holdWeight) / total * 100,
+      confidence: total > 0 ? (action === "buy" ? buyWeight : action === "sell" ? sellWeight : holdWeight) / total * 100 : 0,
       votes: [...this.votes],
       tiebreaker,
       reason,

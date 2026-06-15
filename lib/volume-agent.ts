@@ -15,7 +15,7 @@ class VolumeAgent {
     const action: "buy" | "sell" | "hold" =
       signal === "high" && momentum > 0 ? "buy" :
       signal === "high" && momentum < 0 ? "sell" : "hold";
-    const confidence = signal === "high" ? 70 : 50;
+    const confidence = signal === "high" ? 55 : 35;
     return { action, confidence, reason: `Volume: ${signal}, Momentum: ${momentum > 0 ? "up" : "down"}`, signal };
   }
 
@@ -26,7 +26,7 @@ class VolumeAgent {
       losses: this.losses,
       totalTrades: this.trades,
       winRate: this.trades > 0 ? (this.wins / this.trades) * 100 : 0,
-      avgConfidence: 62,
+      avgConfidence: 35,
       color: "#f97316",
       icon: "📊",
     };
