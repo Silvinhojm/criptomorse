@@ -14,6 +14,7 @@ import { NanopaymentDashboard } from "./components/NanopaymentDashboard";
 import { TradingNanopaymentDashboard } from "./components/TradingNanopaymentDashboard";
 import { RealTradingDashboard } from "./components/RealTradingDashboard";
 import { BridgeWidget } from "./components/BridgeWidget";
+import { BotBank } from "./components/BotBank";
 
 // Agents
 import { quantumAgent, technicalAgent, synthesisAgent } from "../lib/multi-agent-system";
@@ -1084,6 +1085,7 @@ export default function Home() {
         {/* Seções de Agentes */}
         {account && (
           <>
+            <BotBank />
             <MarketMonitor />
             <AutoTradeControl account={account} onTradeExecuted={handleTradeExecuted} network={currentNetwork} />
             <ProfitPool totalProfit={totalProfit} onReinvest={handleReinvest} network={currentNetwork} />

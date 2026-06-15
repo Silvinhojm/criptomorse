@@ -11,6 +11,8 @@ import { ethers } from "ethers";
 export interface TradeRecord {
   id: string;
   action: "BUY" | "SELL" | "HOLD";
+  fromToken?: string;
+  toToken?: string;
   fromAmount: number;
   toAmount: number;
   profit: number;
@@ -133,7 +135,7 @@ class RealAutomatedTrader {
       else { this.log(`Trade falhou: ${result.message}`); }
       this.totalProfit += profit;
       this.lastAction = `${best.pair.from}->${best.pair.to} $${tradeAmount}`;
-      const record: TradeRecord = { id, action: "BUY", fromAmount: tradeAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: result.message, timestamp, confirmed: result.confirmed };
+      const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: tradeAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: result.message, timestamp, confirmed: result.confirmed };
       this.tradeHistory.push(record); this._persist(); this.onTradeCallback?.(record);
       return record;
     }
@@ -151,7 +153,7 @@ class RealAutomatedTrader {
       const profit = 0;
       this.totalProfit += profit;
       this.lastAction = `BUY $${tradeAmount} ${best.pair.to} (posicao)`;
-      const record: TradeRecord = { id, action: "BUY", fromAmount: tradeAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: result.message, timestamp, confirmed: result.confirmed ?? false };
+      const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: tradeAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: result.message, timestamp, confirmed: result.confirmed ?? false };
       this.tradeHistory.push(record); this._persist(); this.onTradeCallback?.(record);
       return record;
     }
@@ -170,7 +172,7 @@ class RealAutomatedTrader {
       }
       this.totalProfit += profit;
       this.lastAction = `CLOSE ${best.pair.from}→${best.pair.to}`;
-      const record: TradeRecord = { id, action: "SELL", fromAmount: tradeAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: result.message, timestamp, confirmed: result.confirmed ?? false };
+      const record: TradeRecord = { id, action: "SELL", fromToken: result.fromToken, toToken: result.toToken, fromAmount: tradeAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: result.message, timestamp, confirmed: result.confirmed ?? false };
       this.tradeHistory.push(record); this._persist(); this.onTradeCallback?.(record);
       return record;
     }
@@ -189,7 +191,7 @@ class RealAutomatedTrader {
       const wethPrice = await positionManager.fetchTokenPrice("WETH");
       positionManager.openPosition(this.networkKey, "WETH", stable, result.toAmount, amount, wethPrice);
       this.log(`Posicao WETH aberta: ${result.toAmount.toFixed(6)} @ $${wethPrice.toFixed(2)}`);
-      const record: TradeRecord = { id, action: "BUY", fromAmount: amount, toAmount: result.toAmount, profit: 0, txHash: result.txHash, explorerUrl: result.explorerUrl, message: `WETH position @ $${wethPrice.toFixed(2)}`, timestamp, confirmed: result.confirmed ?? false };
+      const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: amount, toAmount: result.toAmount, profit: 0, txHash: result.txHash, explorerUrl: result.explorerUrl, message: `WETH position @ $${wethPrice.toFixed(2)}`, timestamp, confirmed: result.confirmed ?? false };
       this.tradeHistory.push(record); this._persist(); this.onTradeCallback?.(record);
       bought = true;
       break;
@@ -225,6 +227,7 @@ class RealAutomatedTrader {
         this.log(`✅ Servidor: ${data.message || "swap concluido"} | TX: ${data.txHash?.slice(0, 10)}...`);
         return {
           success: true, txHash: data.txHash, explorerUrl: data.explorerUrl,
+          fromToken: data.fromToken || from, toToken: data.toToken || to,
           fromAmount: amount, toAmount: data.toAmount ?? 0, confirmed: true,
           profit: data.profit ?? 0, message: data.message || "Swap via servidor",
         };
