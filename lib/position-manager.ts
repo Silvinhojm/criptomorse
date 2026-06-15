@@ -25,6 +25,9 @@ export interface OpenPosition {
   profitPercent?: number;
 }
 
+// Idade maxima da posicao (12h) — forca fechamento para liberar capital
+const MAX_POSITION_AGE_MS = 12 * 60 * 60 * 1000;
+
 // Trail levels: as regras de fechamento ficam mais rigidas conforme o lucro cresce
 // "quanto maior o lucro, menor a porcentagem de fechamento"
 const TRAIL_RULES = [
@@ -106,6 +109,13 @@ class PositionManager {
   updatePrice(id: string, currentPrice: number): "hold" | "close" {
     const pos = this.positions.get(id);
     if (!pos || pos.status !== "open") return "hold";
+
+    // Forcar fechamento se posicao estiver estagnada apos N horas
+    const age = Date.now() - pos.entryTimestamp;
+    if (age > MAX_POSITION_AGE_MS && pos.peakProfitPercent < 2) {
+      console.log(`Posicao estagnada ha ${(age / 3600000).toFixed(1)}h, forcando fechamento (${pos.boughtToken})`);
+      return "close";
+    }
 
     pos.currentPrice = currentPrice;
     const profitPercent = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;

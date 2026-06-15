@@ -5,6 +5,7 @@
 import { ethers } from "ethers";
 import { getQuote, toTokenUnits } from "./lifi-executor";
 import { getCircuitBreakerState, recordError, recordTradeResult } from "./circuit-breaker";
+import { gasPriceOracle } from "./gas-price-oracle";
 
 // ─── Redes suportadas ────────────────────────────────────────────────────────
 // Custo estimado de gas em USD por rede (para deducao do lucro)
@@ -159,10 +160,10 @@ function isStable(token: TokenSymbol): boolean {
   return STABLE_TOKENS.has(token);
 }
 
-// Lucro mínimo dinâmico por rede (cobre gas + margem)
-function getMinProfitThreshold(networkKey: NetworkKey): number {
-  const gasEstimate = GAS_COST_ESTIMATE[networkKey] ?? 0.05;
-  return Math.max(0.01, gasEstimate * 3); // 3x o gas estimado de margem
+// Lucro mínimo dinâmico por rede (cobre gas real da RPC + margem)
+async function getMinProfitThreshold(networkKey: NetworkKey): Promise<number> {
+  const gasCost = await gasPriceOracle.getGasCost(networkKey);
+  return Math.max(0.01, gasCost * 3);
 }
 
 const ERC20_ABI = [
@@ -332,12 +333,14 @@ class RealSwapExecutor {
 
     if (results.length === 0) return null;
 
-    const minProfit = getMinProfitThreshold(this.networkKey);
+    const [minProfit, gasCost] = await Promise.all([
+      getMinProfitThreshold(this.networkKey),
+      gasPriceOracle.getGasCost(this.networkKey),
+    ]);
 
     // Filtrar pares com lucro mínimo (deduzindo gas)
     const profitable = results.filter(r => {
       if (!isStable(r.pair.to)) return true; // pares voláteis acumulam posição
-      const gasCost = GAS_COST_ESTIMATE[this.networkKey] ?? 0.05;
       return r.expectedProfit >= minProfit + gasCost;
     });
 
@@ -400,14 +403,14 @@ class RealSwapExecutor {
       const toAmount   = parseFloat(quote.toAmount) / Math.pow(10, toDecimals);
       log(`✅ Rota via ${quote.tool} | Estimativa: ${toAmount.toFixed(6)} ${toToken}`);
 
-      // Verificar lucro mínimo (deduzindo gas)
+      // Verificar lucro mínimo (deduzindo gas real)
       let estimatedProfit = 0;
-      const gasCost = GAS_COST_ESTIMATE[this.networkKey] ?? 0.05;
+      const gasCost = await gasPriceOracle.getGasCost(this.networkKey);
       if (isStable(toToken)) {
         estimatedProfit = toAmount - amountUsd;
       }
       const netProfit = estimatedProfit - gasCost;
-      const minProfit = getMinProfitThreshold(this.networkKey);
+      const minProfit = await getMinProfitThreshold(this.networkKey);
       if (estimatedProfit < minProfit && isStable(toToken)) {
         log(`⏸️ Lucro estimado $${estimatedProfit.toFixed(4)} - gas $${gasCost.toFixed(3)} = $${netProfit.toFixed(4)} (min: $${minProfit})`);
         return this._fail(fromToken, toToken, amountUsd, `Lucro líquido não atinge mínimo: $${netProfit.toFixed(4)}`, timestamp);
@@ -455,9 +458,9 @@ class RealSwapExecutor {
       // Atualizar saldos após trade
       await this.refreshAllBalances();
 
-      // Calcular lucro pós-trade (deduzindo gas)
+      // Calcular lucro pós-trade (deduzindo gas real)
       let profit = 0;
-      const postGas = GAS_COST_ESTIMATE[this.networkKey] ?? 0.05;
+      const postGas = await gasPriceOracle.getGasCost(this.networkKey);
       if (isStable(toToken)) {
         profit = toAmount - amountUsd - postGas;
       }
