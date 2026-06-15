@@ -196,7 +196,7 @@ export function TradingNanopaymentDashboard({ account, currentNetwork, privateKe
               <div key={o.id} style={{ display: "flex", gap: 8, padding: "5px 0", borderBottom: "1px solid #0f172a", fontSize: 10, alignItems: "center" }}>
                 <span style={{ color: o.status === "completed" ? "#4ade80" : "#f87171", minWidth: 80 }}>{o.fromToken}-{o.toToken}</span>
                 <span style={{ color: "#94a3b8" }}>{o.agentName}</span>
-                <span style={{ color: o.profit >= 0 ? "#4ade80" : "#f87171", marginLeft: "auto" }}>{o.profit >= 0 ? "+" : ""}${o.profit.toFixed(6)}</span>
+                <span style={{ color: (o.profit ?? 0) >= 0 ? "#4ade80" : "#f87171", marginLeft: "auto" }}>{(o.profit ?? 0) >= 0 ? "+" : ""}${(o.profit ?? 0).toFixed(6)}</span>
                 {o.txHash && <a href={o.explorerUrl} target="_blank" rel="noopener noreferrer" style={{ color: "#3b82f6" }}>🔗{o.txHash.slice(0,8)}</a>}
               </div>
             ))}
