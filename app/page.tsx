@@ -1082,8 +1082,7 @@ function ProfitPool({ totalProfit, onReinvest, network }: { totalProfit: number;
 export default function Home() {
   const [isClient, setIsClient] = useState(false);
   const [account, setAccount] = useState("");
-  const [balance, setBalance] = useState(0n);
-  const [decimals, setDecimals] = useState(6);
+  const [portfolios, setPortfolios] = useState<{ symbol: string; name: string; icon: string; balance: bigint; decimals: number }[]>([]);
   const [tab, setTab] = useState<"send" | "history" | "jobs" | "bridge" | "agents">("send");
   const [modal, setModal] = useState<"receive" | "swap" | "">("");
   const [history, setHistory] = useState<any[]>([]);
@@ -1102,22 +1101,59 @@ export default function Home() {
 
   useEffect(() => { setIsClient(true); }, []);
 
-  const loadBalance = useCallback(async (addr: string) => {
+  const getPortfolioTokens = useCallback(() => {
+    const common: { symbol: string; name: string; icon: string; address: string; decimals: number; isNative: boolean }[] = [
+      { symbol: currentNetwork.nativeCurrency.symbol, name: currentNetwork.nativeCurrency.name, icon: "🪙", address: "", decimals: currentNetwork.nativeCurrency.decimals, isNative: true },
+      { symbol: "USDC", name: "USD Coin", icon: "💵", address: currentNetwork.usdc, decimals: 6, isNative: false },
+      { symbol: "EURC", name: "Euro Coin", icon: "💶", address: currentNetwork.eurc, decimals: 6, isNative: false },
+    ];
+    if (currentNetwork.chainId === 137) { // Polygon
+      common.push(
+        { symbol: "WMATIC", name: "Wrapped MATIC", icon: "🔷", address: "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270", decimals: 18, isNative: false },
+        { symbol: "WETH", name: "Wrapped Ether", icon: "✨", address: "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619", decimals: 18, isNative: false },
+        { symbol: "DAI", name: "Dai", icon: "🏦", address: "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063", decimals: 18, isNative: false },
+        { symbol: "USDT", name: "Tether", icon: "🪙", address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", decimals: 6, isNative: false },
+      );
+    } else if (currentNetwork.chainId === 8453) { // Base
+      common.push(
+        { symbol: "WETH", name: "Wrapped Ether", icon: "✨", address: "0x4200000000000000000000000000000000000006", decimals: 18, isNative: false },
+        { symbol: "DAI", name: "Dai", icon: "🏦", address: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb", decimals: 18, isNative: false },
+        { symbol: "WBTC", name: "Wrapped Bitcoin", icon: "₿", address: "0x0555E30dD009B6f21Bcb7A78FeE496525DbD919e", decimals: 8, isNative: false },
+      );
+    } else if (currentNetwork.chainId === 1) { // Ethereum
+      common.push(
+        { symbol: "WETH", name: "Wrapped Ether", icon: "✨", address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", decimals: 18, isNative: false },
+        { symbol: "DAI", name: "Dai", icon: "🏦", address: "0x6B175474E89094C44Da98b954EedeAC495271d0F", decimals: 18, isNative: false },
+        { symbol: "USDT", name: "Tether", icon: "🪙", address: "0xdAC17F958D2ee523a2206206994597C13D831ec7", decimals: 6, isNative: false },
+        { symbol: "WBTC", name: "Wrapped Bitcoin", icon: "₿", address: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599", decimals: 8, isNative: false },
+      );
+    }
+    return common;
+  }, [currentNetwork]);
+
+  const loadAllBalances = useCallback(async (addr: string) => {
     if (!addr) return;
     try {
-      const provider = new ethers.JsonRpcProvider(currentNetwork.rpc);
-      const usdc = new ethers.Contract(currentNetwork.usdc, ERC20_ABI, provider);
-      const [bal, dec] = await Promise.all([
-        usdc.balanceOf(addr),
-        usdc.decimals().catch(() => 6),
-      ]);
-      setBalance(bal);
-      setDecimals(Number(dec));
+      const bp = new ethers.BrowserProvider(window.ethereum);
+      const tokens = getPortfolioTokens();
+      const results = await Promise.allSettled(tokens.map(async (t) => {
+        if (t.isNative) {
+          const bal = await bp.getBalance(addr);
+          return { symbol: t.symbol, balance: bal, decimals: t.decimals, name: t.name, icon: t.icon };
+        }
+        const contract = new ethers.Contract(t.address, ERC20_ABI, bp);
+        const [bal, dec] = await Promise.all([
+          contract.balanceOf(addr).catch(() => 0n),
+          contract.decimals().catch(() => t.decimals),
+        ]);
+        return { symbol: t.symbol, balance: bal, decimals: Number(dec), name: t.name, icon: t.icon };
+      }));
+      const loaded = results.filter(r => r.status === "fulfilled").map(r => (r as PromiseFulfilledResult<any>).value);
+      setPortfolios(loaded);
     } catch (e) {
-      console.error("Erro ao buscar saldo:", e);
-      setBalance(0n);
+      console.error("Erro ao buscar carteira:", e);
     }
-  }, [currentNetwork]);
+  }, [getPortfolioTokens]);
 
   const connect = async () => {
     if (!window.ethereum) { toast.error("MetaMask não encontrado"); return; }
@@ -1145,10 +1181,20 @@ export default function Home() {
       const accounts: string[] = await window.ethereum.request({ method: "eth_requestAccounts" });
       setAccount(accounts[0]);
       toast.success(`Conectado à ${currentNetwork.name}!`);
-      await loadBalance(accounts[0]);
+      await loadAllBalances(accounts[0]);
       
       const scores = [quantumAgent.getScore(), technicalAgent.getScore(), newsAgent.getScore(), marketAgent.getScore(), volumeAgent.getScore(), synthesisAgent.getScore()];
       setAgentScores(scores);
+
+      // Auto-refresh on account/chain change
+      window.ethereum.on("accountsChanged", (accts: string[]) => {
+        if (accts.length === 0) { setAccount(""); setPortfolios([]); return; }
+        setAccount(accts[0]);
+        loadAllBalances(accts[0]);
+      });
+      window.ethereum.on("chainChanged", () => {
+        if (account) loadAllBalances(account);
+      });
     } catch (error: any) {
       console.error("Erro ao conectar:", error);
       toast.error(error?.message?.slice(0, 80) || "Erro ao conectar");
@@ -1162,14 +1208,14 @@ export default function Home() {
       const provider = new ethers.BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
       const usdc = new ethers.Contract(currentNetwork.usdc, ERC20_ABI, signer);
-      const parsed = ethers.parseUnits(amount, decimals);
+      const parsed = ethers.parseUnits(amount, 6);
       const tx = await usdc.transfer(dest, parsed);
       toast.loading("Aguardando confirmação...", { id: "tx" });
       await tx.wait();
       toast.success("Enviado!", { id: "tx" });
       setHistory(h => [{ to: dest, amount, time: new Date().toLocaleTimeString(), hash: tx.hash, network: currentNetwork.name }, ...h]);
       setDest(""); setAmount("");
-      await loadBalance(account);
+      await loadAllBalances(account);
     } catch (e: any) {
       toast.error(e?.reason || e?.message?.slice(0, 60) || "Erro ao enviar");
     }
@@ -1179,14 +1225,23 @@ export default function Home() {
   const handleNetworkSwitch = async (newNetwork: Network) => {
     setCurrentNetwork(newNetwork);
     setAccount("");
-    setBalance(0n);
+    setPortfolios([]);
     toast.success(`🔄 Rede alterada para ${newNetwork.name}`);
   };
 
   const handleTradeExecuted = (profit: number) => { setTotalProfit(prev => prev + profit); };
   const handleReinvest = (amt: number) => { toast.success(`💰 ${amt.toFixed(4)} USDC reinvestido!`); };
 
-  const balanceDisplay = parseFloat(ethers.formatUnits(balance, decimals)).toFixed(2);
+  const portfoliosWithBalance = portfolios.filter(p => p.balance > 0n);
+  const usdcEntry = portfolios.find(p => p.symbol === "USDC");
+  const usdcDisplay = usdcEntry ? parseFloat(ethers.formatUnits(usdcEntry.balance, usdcEntry.decimals)).toFixed(2) : "0.00";
+
+  // Auto-refresh portfolio every 15s while connected
+  useEffect(() => {
+    if (!account) return;
+    const id = setInterval(() => loadAllBalances(account), 15000);
+    return () => clearInterval(id);
+  }, [account, loadAllBalances]);
 
   if (!isClient) {
     return <div style={{ minHeight: "100vh", background: "#eef0f5", display: "flex", alignItems: "center", justifyContent: "center" }}>Carregando...</div>;
@@ -1211,9 +1266,27 @@ export default function Home() {
           </div>
 
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 11, opacity: 0.75, marginBottom: 4 }}>SALDO DISPONÍVEL</div>
-            <div style={{ fontSize: 40, fontWeight: 700 }}>{balanceDisplay}</div>
-            <div style={{ fontSize: 13, opacity: 0.8 }}>USDC</div>
+            <div style={{ fontSize: 11, opacity: 0.75, marginBottom: 4 }}>
+              CARTEIRA
+              <button onClick={() => loadAllBalances(account)} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 12, opacity: 0.7, marginLeft: 8, textDecoration: "underline" }}>
+                🔄 atualizar
+              </button>
+            </div>
+            {usdcEntry && (
+              <>
+                <div style={{ fontSize: 40, fontWeight: 700 }}>{usdcDisplay}</div>
+                <div style={{ fontSize: 13, opacity: 0.8 }}>USDC</div>
+              </>
+            )}
+            {portfoliosWithBalance.length > 1 && (
+              <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "4px 12px" }}>
+                {portfoliosWithBalance.filter(p => p.symbol !== "USDC").map(p => (
+                  <div key={p.symbol} style={{ fontSize: 11, background: "rgba(255,255,255,0.1)", padding: "3px 8px", borderRadius: 6 }}>
+                    {p.icon} {parseFloat(ethers.formatUnits(p.balance, p.decimals)).toFixed(p.decimals > 6 ? 4 : 2)} {p.symbol}
+                  </div>
+                ))}
+              </div>
+            )}
             {currentNetwork.isTestnet && <div style={{ fontSize: 10, marginTop: 4, opacity: 0.7 }}>🧪 USDC de teste - sem valor real</div>}
           </div>
 
@@ -1302,7 +1375,7 @@ export default function Home() {
 
       {/* Modais */}
       {modal === "receive" && <ReceiveModal account={account} onClose={() => setModal("")} network={currentNetwork} />}
-      {modal === "swap" && <SwapBridgeModal account={account} onClose={() => setModal("")} currentNetwork={currentNetwork} onComplete={() => loadBalance(account)} />}
+      {modal === "swap" && <SwapBridgeModal account={account} onClose={() => setModal("")} currentNetwork={currentNetwork} onComplete={() => loadAllBalances(account)} />}
     </div>
   );
 }
