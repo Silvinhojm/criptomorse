@@ -44,8 +44,6 @@ export function TransactionScanner({ userAddress }: TransactionScannerProps) {
         <div style="background:#1a1a4e;padding:12px;border-radius:12px;margin:16px 0;">
           <div style="color:#4ade80;">Endereço:</div>
           <div style="font-family:monospace;font-size:11px;">${wallet.address}</div>
-          <div style="color:#fbbf24;margin-top:12px;">Chave Privada:</div>
-          <div style="font-family:monospace;font-size:10px;background:#000;padding:8px;border-radius:8px;">${wallet.privateKey}</div>
         </div>
         <button id="closeWalletModal" style="width:100%;background:#8b5cf6;border:none;padding:12px;border-radius:12px;color:#fff;cursor:pointer;">Fechar</button>
       </div>

@@ -156,7 +156,7 @@ export const TRADING_PAIRS: Record<NetworkKey, Array<{ from: TokenSymbol; to: To
 // Tokens atrelados a USD (stablecoins) — usados para cálculo de lucro
 const STABLE_TOKENS: Set<TokenSymbol> = new Set(["USDC", "USDT", "DAI", "EURC"]);
 
-function isStable(token: TokenSymbol): boolean {
+export function isStable(token: TokenSymbol): boolean {
   return STABLE_TOKENS.has(token);
 }
 
@@ -204,12 +204,39 @@ export interface BestPairResult {
 }
 
 // ─── Executor principal ───────────────────────────────────────────────────────
+const COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price";
+const COIN_IDS: Record<string, string> = {
+  WETH: "ethereum", WMATIC: "matic-network", WBTC: "bitcoin",
+  ARB: "arbitrum", SOL: "solana",
+};
+
 class RealSwapExecutor {
   private provider: ethers.JsonRpcProvider | null = null;
   private signer: ethers.Signer | null = null;
   private networkKey: NetworkKey = "arc";
   private userAddress: string = "";
   private tokenBalances: Map<TokenSymbol, TokenBalance> = new Map();
+  private priceCache: Map<TokenSymbol, { price: number; timestamp: number }> = new Map();
+
+  private async _getTokenPrice(token: TokenSymbol): Promise<number> {
+    if (isStable(token)) return 1.0;
+    const cached = this.priceCache.get(token);
+    if (cached && Date.now() - cached.timestamp < 15000) return cached.price;
+    const coinId = COIN_IDS[token];
+    if (!coinId) return 1.0;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(`${COINGECKO_URL}?ids=${coinId}&vs_currencies=usd`, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      const data = await res.json();
+      const price = data[coinId]?.usd ?? 1.0;
+      this.priceCache.set(token, { price, timestamp: Date.now() });
+      return price;
+    } catch {
+      return this.priceCache.get(token)?.price ?? 1.0;
+    }
+  }
 
   // Inicializar com chave privada OU somente endereço (read-only)
   async initialize(
@@ -222,13 +249,20 @@ class RealSwapExecutor {
       const net = NETWORKS[networkKey];
       this.provider = new ethers.JsonRpcProvider(net.rpcUrl);
 
-      if (readOnly || !privateKeyOrAddress.startsWith("0x") || privateKeyOrAddress.length === 42) {
+      if (readOnly) {
         this.userAddress = privateKeyOrAddress;
-        console.log(`👁️ RealSwapExecutor (read-only): ${net.name} | ${this.userAddress}`);
-      } else {
+        console.log(`👁️ RealSwapExecutor (read-only): ${net.name} | ${this.userAddress.slice(0, 6)}...${this.userAddress.slice(-4)}`);
+      } else if (privateKeyOrAddress.length === 66 && privateKeyOrAddress.startsWith("0x")) {
         this.signer = new ethers.Wallet(privateKeyOrAddress, this.provider);
         this.userAddress = await this.signer.getAddress();
-        console.log(`✅ RealSwapExecutor: ${net.name} | ${this.userAddress}`);
+        console.log(`✅ RealSwapExecutor: ${net.name} | ${this.userAddress.slice(0, 6)}...${this.userAddress.slice(-4)}`);
+      } else if (privateKeyOrAddress.length === 64 && /^[0-9a-fA-F]+$/.test(privateKeyOrAddress)) {
+        this.signer = new ethers.Wallet("0x" + privateKeyOrAddress, this.provider);
+        this.userAddress = await this.signer.getAddress();
+        console.log(`✅ RealSwapExecutor: ${net.name} | ${this.userAddress.slice(0, 6)}...${this.userAddress.slice(-4)}`);
+      } else {
+        this.userAddress = privateKeyOrAddress;
+        console.log(`👁️ RealSwapExecutor (read-only): ${net.name} | ${this.userAddress.slice(0, 6)}...${this.userAddress.slice(-4)}`);
       }
 
       await this.refreshAllBalances();
@@ -304,46 +338,58 @@ class RealSwapExecutor {
     await Promise.all(
       pairs.map(async (pair) => {
         try {
-          const fromBalance = this.getBalance(pair.from);
-          if (fromBalance < amountUsd * 0.9) return; // sem saldo suficiente
-
+          // Verificar endereços dos tokens
           const fromTokenAddr = (net.tokens as any)[pair.from];
           const toTokenAddr   = (net.tokens as any)[pair.to];
           if (!fromTokenAddr || !toTokenAddr) return;
 
-          const fromDecimals = this.tokenBalances.get(pair.from)?.decimals ?? 6;
-          const fromAmount   = toTokenUnits(amountUsd, fromDecimals);
+          // Preços dos tokens (estáveis = $1.00, voláteis via CoinGecko)
+          const fromPrice = await this._getTokenPrice(pair.from);
+          const toPrice   = await this._getTokenPrice(pair.to);
+
+          // Saldo do fromToken em USD
+          const fromBalanceTokens = this.getBalance(pair.from);
+          const fromBalanceUsd    = fromBalanceTokens * fromPrice;
+
+          // Usar o que for menor: amountUsd fixo ou 95% do saldo disponível
+          const actualAmount = Math.min(amountUsd, fromBalanceUsd * 0.95);
+          if (actualAmount < 0.5) return; // não vale a pena para < $0.50
+
+          // Converter USD → raw units do fromToken
+          const fromDecimals    = this.tokenBalances.get(pair.from)?.decimals ?? 6;
+          const fromTokenAmount = actualAmount / fromPrice;
+          const fromAmountRaw   = toTokenUnits(fromTokenAmount, fromDecimals);
 
           const quote = await getQuote({
             fromChain:   net.chainId,
             toChain:     net.chainId,
             fromToken:   fromTokenAddr,
             toToken:     toTokenAddr,
-            fromAmount,
+            fromAmount:  fromAmountRaw,
             fromAddress: this.userAddress,
             toAddress:   this.userAddress,
             slippage:    0.005,
           });
 
-          if (!quote || !quote.toAmount) return;
+          if (!quote) return;
 
-          const toDecimals   = this.tokenBalances.get(pair.to)?.decimals ?? 6;
-          const toAmount     = parseFloat(quote.toAmount) / Math.pow(10, toDecimals);
+          // toAmount em unidades de toToken
+          let toAmount = 0;
+          if (quote.toAmount && quote.toAmount !== "0") {
+            const toDecimals = this.tokenBalances.get(pair.to)?.decimals ?? 6;
+            toAmount = parseFloat(quote.toAmount) / Math.pow(10, toDecimals);
+          }
 
-          // Calcular lucro em USD corretamente:
-          // - Se TO token é stable → toAmount ≈ USD value
-          // - Se FROM token é stable e TO não → não calculamos lucro em USD
+          // Calcular lucro esperado em USD
           let expectedProfit = 0;
           if (isStable(pair.to)) {
-            // Recebemos stablecoin → valor em USD é direto
-            expectedProfit = toAmount - amountUsd;
-          } else if (isStable(pair.from)) {
-            // FROM é stable, TO não é → estimamos via exchange rate
-            // amountUsd units of fromToken => toAmount units of toToken
-            // O "fair value" seria aprox. amountUsd, profit = toAmount_usd - amountUsd
-            // Sem feed de preço externo, marcamos como neutro (troca por token volátil)
-            expectedProfit = 0;
+            // TOKEN é stable → toAmount já é o valor em USD
+            expectedProfit = toAmount - actualAmount;
+          } else if (isStable(pair.from) && toAmount > 0) {
+            // Compra de volátil: estimar valor USD atual do que recebemos
+            expectedProfit = toAmount * toPrice - actualAmount;
           }
+          // expectedProfit = 0 para pares sem toAmount (swap possível mas sem cotação)
 
           results.push({ pair, expectedProfit, toAmount, route: quote.tool ?? "lifi" });
         } catch {
@@ -359,15 +405,15 @@ class RealSwapExecutor {
       gasPriceOracle.getGasCost(this.networkKey),
     ]);
 
-    // Filtrar pares com lucro mínimo (deduzindo gas)
+    // Filtrar: voláteis sempre passam, stable-stable só se lucrativos
     const profitable = results.filter(r => {
-      if (!isStable(r.pair.to)) return true; // pares voláteis acumulam posição
+      if (!isStable(r.pair.to)) return true;
       return r.expectedProfit >= minProfit + gasCost;
     });
 
     if (profitable.length === 0) return null;
 
-    // Retorna o par com maior lucro esperado
+    // Ordenar por lucro (voláteis com expectedProfit 0 ficam no final)
     profitable.sort((a, b) => b.expectedProfit - a.expectedProfit);
     return profitable[0];
   }
@@ -392,18 +438,21 @@ class RealSwapExecutor {
       return this._fail(fromToken, toToken, amountUsd, "Circuit breaker bloqueou trade (modo pânico ativo)", timestamp);
     }
 
-    const fromBalance = this.getBalance(fromToken);
-    if (fromBalance < amountUsd * 0.95) {
-      return this._fail(fromToken, toToken, amountUsd, `Saldo insuficiente de ${fromToken}: $${fromBalance.toFixed(4)}`, timestamp);
+    const fromBalance     = this.getBalance(fromToken);
+    const fromPrice       = await this._getTokenPrice(fromToken);
+    const fromBalanceUsd  = fromBalance * fromPrice;
+    if (fromBalanceUsd < amountUsd * 0.95) {
+      return this._fail(fromToken, toToken, amountUsd, `Saldo insuficiente de ${fromToken}: $${fromBalanceUsd.toFixed(4)} (${fromBalance.toFixed(6)} ${fromToken})`, timestamp);
     }
 
     try {
-      const fromTokenAddr = (net.tokens as any)[fromToken];
-      const toTokenAddr   = (net.tokens as any)[toToken];
-      const fromDecimals  = this.tokenBalances.get(fromToken)?.decimals ?? 6;
-      const fromAmountRaw = toTokenUnits(amountUsd, fromDecimals);
+      const fromTokenAddr   = (net.tokens as any)[fromToken];
+      const toTokenAddr     = (net.tokens as any)[toToken];
+      const fromDecimals    = this.tokenBalances.get(fromToken)?.decimals ?? 6;
+      const fromTokenAmount = amountUsd / fromPrice;
+      const fromAmountRaw   = toTokenUnits(fromTokenAmount, fromDecimals);
 
-      log(`🔍 Buscando rota LI.FI: ${fromToken}→${toToken} ($${amountUsd})...`);
+      log(`🔍 Buscando rota LI.FI: ${fromToken}→${toToken} ($${amountUsd} ≈ ${fromTokenAmount.toFixed(6)} ${fromToken})...`);
 
       const quote = await getQuote({
         fromChain:   net.chainId,
@@ -420,15 +469,18 @@ class RealSwapExecutor {
         return this._fail(fromToken, toToken, amountUsd, "Nenhuma rota LI.FI disponível", timestamp);
       }
 
-      const toDecimals = this.tokenBalances.get(toToken)?.decimals ?? 6;
-      const toAmount   = parseFloat(quote.toAmount) / Math.pow(10, toDecimals);
-      log(`✅ Rota via ${quote.tool} | Estimativa: ${toAmount.toFixed(6)} ${toToken}`);
+      const toDecimals   = this.tokenBalances.get(toToken)?.decimals ?? 6;
+      const toEstimate   = parseFloat(quote.toAmount ?? "0") / Math.pow(10, toDecimals);
+      log(`✅ Rota via ${quote.tool} | Estimativa: ${toEstimate.toFixed(6)} ${toToken}`);
+
+      // Registrar saldo pré-swap para calcular valor real recebido on-chain
+      const preSwapBalance = this.getBalance(toToken);
 
       // Verificar lucro mínimo (deduzindo gas real)
       let estimatedProfit = 0;
       const gasCost = await gasPriceOracle.getGasCost(this.networkKey);
       if (isStable(toToken)) {
-        estimatedProfit = toAmount - amountUsd;
+        estimatedProfit = toEstimate - amountUsd;
       }
       const netProfit = estimatedProfit - gasCost;
       const minProfit = await getMinProfitThreshold(this.networkKey);
@@ -476,17 +528,25 @@ class RealSwapExecutor {
       log(`✅ Confirmado no bloco ${receipt.blockNumber}!`);
       log(`🔗 ${explorerUrl}`);
 
-      // Atualizar saldos após trade
+      // Atualizar saldos após trade e ler valor REAL recebido on-chain
       await this.refreshAllBalances();
+      const postSwapBalance = this.getBalance(toToken);
+      const actualToAmount  = Math.max(0, postSwapBalance - preSwapBalance);
+      const toPrice         = await this._getTokenPrice(toToken);
+      const toAmountUsd     = actualToAmount * toPrice;
 
-      // Calcular lucro pós-trade (deduzindo gas real)
+      log(`📊 On-chain: ${actualToAmount.toFixed(6)} ${toToken} ($${toAmountUsd.toFixed(4)}) — saldo anterior: ${preSwapBalance.toFixed(6)} → atual: ${postSwapBalance.toFixed(6)}`);
+
+      // Calcular lucro real pós-trade (deduzindo gas real)
       let profit = 0;
       const postGas = await gasPriceOracle.getGasCost(this.networkKey);
       if (isStable(toToken)) {
-        profit = toAmount - amountUsd - postGas;
+        // Venda de volátil OU stable-stable: profit = USDC recebido - investido - gas
+        profit = actualToAmount - amountUsd - postGas;
       }
+      // Para compra de volátil (stable→volátil): profit = 0 (posição aberta, lucro só no fechamento)
 
-      log(`💵 Lucro líquido (pós-gas): $${profit.toFixed(4)}`);
+      log(`💵 Lucro líquido real (pós-gas): $${profit.toFixed(4)}`);
 
       // Registrar resultado no circuit breaker
       const { isPanicActive } = recordTradeResult(profit);
@@ -501,9 +561,9 @@ class RealSwapExecutor {
         fromToken,
         toToken,
         fromAmount: amountUsd,
-        toAmount,
+        toAmount: actualToAmount,
         action,
-        message: `✅ ${fromToken}→${toToken} $${amountUsd} → ${toAmount.toFixed(6)} | ${txResponse.hash.slice(0, 10)}...`,
+        message: `✅ ${fromToken}→${toToken} $${amountUsd} → ${actualToAmount.toFixed(6)} ${toToken} | ${txResponse.hash.slice(0, 10)}...`,
         timestamp,
         confirmed: true,
         profit,

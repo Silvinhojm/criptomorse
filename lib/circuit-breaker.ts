@@ -27,6 +27,7 @@ export function getCircuitBreakerState(): CircuitBreakerState {
 }
 
 export function recordTradeResult(profit: number): CircuitBreakerState {
+  if (isNaN(profit)) return { ...state };
   if (profit < 0) {
     state.consecutiveLosses++;
     state.totalLoss += Math.abs(profit);

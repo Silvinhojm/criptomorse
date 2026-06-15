@@ -9,7 +9,6 @@ import { Toaster, toast } from "react-hot-toast";
 
 // Componentes
 import AgentIdentityCard from "./components/AgentIdentityCard";
-import BitcoinTreasureHunter from "./components/BitcoinTreasureHunter";
 import { AgentDashboard } from "./components/AgentDashboard";
 import { NanopaymentDashboard } from "./components/NanopaymentDashboard";
 import { TradingNanopaymentDashboard } from "./components/TradingNanopaymentDashboard";
@@ -903,7 +902,12 @@ export default function Home() {
   const [totalProfit, setTotalProfit] = useState(0);
   const [agentScores, setAgentScores] = useState<any[]>([]);
   
-  const [currentNetwork, setCurrentNetwork] = useState<Network>(ARC_TESTNET);
+  const [currentNetwork, setCurrentNetwork] = useState<Network>(() => {
+    const defaultNet = process.env.NEXT_PUBLIC_DEFAULT_NETWORK || "arc";
+    if (defaultNet === "polygon") return POLYGON_MAINNET;
+    if (defaultNet === "base") return BASE_MAINNET;
+    return ARC_TESTNET;
+  });
 
   useEffect(() => { setIsClient(true); }, []);
 
@@ -1083,10 +1087,6 @@ export default function Home() {
             <MarketMonitor />
             <AutoTradeControl account={account} onTradeExecuted={handleTradeExecuted} network={currentNetwork} />
             <ProfitPool totalProfit={totalProfit} onReinvest={handleReinvest} network={currentNetwork} />
-            <BitcoinTreasureHunter
-              onTreasureFound={(value: number, fee: number) => { setTotalProfit(prev => prev + fee); }}
-              userAddress={account}
-            />
             
             {/* NOVOS COMPONENTES INTEGRADOS */}
            <BridgeWidget userAddress={account} />

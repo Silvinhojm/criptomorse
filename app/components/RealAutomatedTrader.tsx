@@ -46,11 +46,34 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
     setHistory(realAutomatedTrader.getHistory());
   };
 
-  // Inicializar trader com a wallet conectada (MetaMask)
+  // Inicializar trader com server auto-sign (env) ou MetaMask
   const handleInit = async () => {
     setIsInitializing(true);
-    addLog("🔑 Conectando carteira MetaMask...");
 
+    // Verificar se o servidor tem PRIVATE_KEY configurada
+    try {
+      const signStatus = await fetch("/api/swap/sign").then(r => r.json());
+      if (signStatus.autoSignAvailable) {
+        addLog("🔑 PRIVATE_KEY detectada no servidor — modo auto-sign (sem MetaMask)");
+        realAutomatedTrader.setAutoSignMode(true);
+        const ok = await realAutomatedTrader.initialize(account, currentNetwork);
+        if (ok) {
+          realAutomatedTrader.onLog(addLog);
+          realAutomatedTrader.onTrade(() => refreshStats());
+          setInitialized(true);
+          addLog(`✅ Auto-sign ativo na ${net.name} — wallet: ${account?.slice(0, 6)}...${account?.slice(-4)}`);
+          await refreshStats();
+        } else {
+          addLog("❌ Falha ao conectar — verifique RPC e .env");
+        }
+        setIsInitializing(false);
+        return;
+      }
+    } catch {
+      // servidor sem suporte a auto-sign, fallback para MetaMask
+    }
+
+    addLog("🔑 Conectando carteira MetaMask...");
     let externalSigner: ethers.Signer | undefined;
     try {
       if (typeof window !== "undefined" && (window as any).ethereum) {

@@ -134,7 +134,7 @@ class TradingNanopaymentSystem {
     try {
       this.walletAddress = walletAddress;
       this.currentNetwork = networkKey;
-      this.orders = loadTradeHistory().filter((o: any) => o.agentName);
+      this.orders = (await loadTradeHistory()).filter((o: any) => o.agentName);
 
       const ok = await realSwap.initialize(privateKey || walletAddress, networkKey, !privateKey);
       if (ok) {
@@ -316,7 +316,7 @@ class TradingNanopaymentSystem {
       networkKey: this.currentNetwork,
     };
     this.orders.push(order);
-    saveTradeHistory(this.orders);
+    await saveTradeHistory(this.orders);
 
     // Registrar no contador
     const entryPrice = result.fromAmount > 0 ? result.fromAmount / result.toAmount : 1;
