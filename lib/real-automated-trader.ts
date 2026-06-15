@@ -126,6 +126,33 @@ class RealAutomatedTrader {
     return { usdc, eurc };
   }
 
+  private FALLBACK_PAIRS: Array<{ from: string; to: string; label: string }> = [
+    { from: "USDC", to: "WETH", label: "USDC→WETH" },
+    { from: "WETH", to: "USDC", label: "WETH→USDC" },
+    { from: "USDC", to: "USDT", label: "USDC→USDT" },
+    { from: "USDT", to: "USDC", label: "USDT→USDC" },
+    { from: "USDC", to: "DAI",  label: "USDC→DAI" },
+    { from: "DAI",  to: "USDC", label: "DAI→USDC" },
+  ];
+
+  private async _trySwap(
+    fromToken: string,
+    toToken: string,
+    amount: number,
+  ): Promise<SwapResult | null> {
+    try {
+      const result = await realSwap.executeSwap(fromToken, toToken, amount, (m) => this.log(m));
+      if (result.success) return result;
+      if (result.message?.toLowerCase().includes("token") && result.message?.toLowerCase().includes("found")) {
+        this.log(`Par ${fromToken}→${toToken} nao suportado, tentando fallback...`);
+        return null;
+      }
+      return result;
+    } catch {
+      return null;
+    }
+  }
+
   async runTradingCycle(tradeAmount: number = 10): Promise<TradeRecord> {
     const timestamp = Date.now();
     const id = `trade_${timestamp}`;
@@ -148,50 +175,76 @@ class RealAutomatedTrader {
 
     const MIN_SPREAD = 0.4;
     let action: "BUY" | "SELL" | "HOLD" = "HOLD";
+    let fromToken = "USDC";
+    let toToken = "EURC";
+    let actualAmount = tradeAmount;
+
+    const hasEurcBalance = eurc >= (tradeAmount / market.eurc) * 0.9;
 
     if (market.spread >= MIN_SPREAD && usdc >= tradeAmount) {
       action = "BUY";
-    } else if (eurc >= (tradeAmount / market.eurc) * 0.9 && market.eurc > 1.001) {
-      const eurcNeeded = tradeAmount / market.eurc;
-      this.log(`EURC necessario: ${eurcNeeded.toFixed(4)} | Disponivel: ${eurc.toFixed(4)}`);
+      fromToken = "USDC";
+      toToken = "EURC";
+      actualAmount = tradeAmount;
+    } else if (hasEurcBalance && market.eurc > 1.001) {
       action = "SELL";
+      fromToken = "EURC";
+      toToken = "USDC";
+      actualAmount = tradeAmount / market.eurc;
+      this.log(`EURC necessario: ${actualAmount.toFixed(4)} | Disponivel: ${eurc.toFixed(4)}`);
+    } else if (usdc >= tradeAmount) {
+      // EURC nao disponivel ou spread baixo — tentar fallback
+      for (const pair of this.FALLBACK_PAIRS) {
+        if (pair.from !== "USDC") continue;
+        const bal = pair.from === "USDC" ? usdc : 0;
+        if (bal >= tradeAmount) {
+          this.log(`Fallback: tentando ${pair.label}...`);
+          action = "BUY";
+          fromToken = pair.from;
+          toToken = pair.to;
+          actualAmount = tradeAmount;
+          break;
+        }
+      }
+      if (action === "HOLD") {
+        this.log(`HOLD - sem saldo para pares disponiveis`);
+        this.lastAction = "HOLD (sem saldo)";
+        return this._holdRecord(id, "Sem saldo para pares disponiveis", timestamp);
+      }
     } else {
       this.log(`HOLD - spread ${market.spread.toFixed(3)}% abaixo de ${MIN_SPREAD}% ou saldo insuficiente`);
       this.lastAction = `HOLD (spread ${market.spread.toFixed(3)}%)`;
       return this._holdRecord(id, `Spread ${market.spread.toFixed(3)}% - abaixo do minimo`, timestamp);
     }
 
-    let actualAmount = tradeAmount;
-    let fromToken: string;
-    let toToken: string;
+    this.log(`Executando ${action} de ${fromToken}->${toToken} via LI.FI...`);
 
-    if (action === "BUY") {
-      fromToken = "USDC";
-      toToken = "EURC";
-      actualAmount = tradeAmount;
-    } else {
-      fromToken = "EURC";
-      toToken = "USDC";
-      actualAmount = tradeAmount / market.eurc;
-      this.log(`Convertendo $${tradeAmount} -> ${actualAmount.toFixed(4)} EURC (preco: $${market.eurc.toFixed(4)})`);
+    // Tentar o par principal, depois fallbacks
+    let result = await this._trySwap(fromToken, toToken, actualAmount);
+
+    if (!result && action === "BUY" && fromToken === "USDC" && toToken === "EURC") {
+      // EURC falhou, tentar fallbacks
+      for (const pair of this.FALLBACK_PAIRS) {
+        if (pair.from !== "USDC") continue;
+        this.log(`Fallback: ${pair.label}...`);
+        result = await this._trySwap(pair.from, pair.to, tradeAmount);
+        if (result?.success) {
+          fromToken = pair.from;
+          toToken = pair.to;
+          break;
+        }
+      }
     }
 
-    this.log(`Executando ${action} de ${fromToken}->${toToken} via LI.FI...`);
-    const result: SwapResult = await realSwap.executeSwap(
-      fromToken,
-      toToken,
-      actualAmount,
-      (msg: string) => this.log(msg)
-    );
+    if (!result) {
+      this.log("Todos os pares falharam");
+      return this._holdRecord(id, "Nenhum par disponivel", timestamp);
+    }
 
     let profit = 0;
     if (result.success && result.confirmed) {
-      if (action === "BUY") {
-        profit = result.toAmount * market.eurc - actualAmount;
-      } else {
-        profit = result.toAmount - actualAmount * market.eurc;
-      }
-      this.log(`Lucro estimado: $${profit.toFixed(4)}`);
+      profit = result.profit ?? 0;
+      this.log(`Lucro: $${profit.toFixed(4)}`);
     }
 
     this.totalProfit += profit;
