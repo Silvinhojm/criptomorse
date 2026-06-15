@@ -118,7 +118,7 @@ export const SUPPORTED_NETWORKS: Network[] = [
     shortName: 'POL',
     chainId: 137,
     chainIdHex: '0x89',
-    rpcUrl: 'https://polygon-rpc.com',
+    rpcUrl: 'https://polygon.publicnode.com',
     explorerUrl: 'https://polygonscan.com',
     nativeCurrency: {
       name: 'Polygon',

@@ -31,7 +31,6 @@ class TradingNanopaymentSystemReal {
   // Inicializar com endereço da carteira
   async initialize(address: string) {
     this.userAddress = address;
-    await realBalance.initialize(address);
     
     // Verificar saldo real
     const balance = await realBalance.getRealUSDCBalance(address);

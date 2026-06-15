@@ -21,7 +21,7 @@ interface TransactionScannerProps {
 
 const NETWORKS = [
   { name: 'ethereum', chainId: 1, rpc: 'https://cloudflare-eth.com', explorer: 'https://etherscan.io', icon: '🔷' },
-  { name: 'polygon', chainId: 137, rpc: 'https://polygon-rpc.com', explorer: 'https://polygonscan.com', icon: '🟣' },
+  { name: 'polygon', chainId: 137, rpc: 'https://polygon.publicnode.com', explorer: 'https://polygonscan.com', icon: '🟣' },
   { name: 'arbitrum', chainId: 42161, rpc: 'https://arb1.arbitrum.io/rpc', explorer: 'https://arbiscan.io', icon: '🔴' },
   { name: 'base', chainId: 8453, rpc: 'https://mainnet.base.org', explorer: 'https://basescan.org', icon: '🔵' },
 ];

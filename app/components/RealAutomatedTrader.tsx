@@ -85,6 +85,15 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
   };
 
   useEffect(() => {
+    setInitialized(false);
+    setIsRunning(false);
+    setStats(null);
+    setBalances({ usdc: 0, eurc: 0 });
+    setHistory([]);
+    setLogs([]);
+  }, [currentNetwork]);
+
+  useEffect(() => {
     const id = setInterval(refreshStats, 8000);
     return () => clearInterval(id);
   }, []);

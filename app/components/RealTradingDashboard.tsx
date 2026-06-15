@@ -1,28 +1,53 @@
 // app/components/RealTradingDashboard.tsx
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { ethers } from "ethers";
 import { toast } from "react-hot-toast";
 
 interface RealTradingDashboardProps {
   account: string;
+  currentNetwork?: {
+    rpc: string;
+    usdc: string;
+    name: string;
+    isTestnet: boolean;
+    chainId: number;
+  };
 }
 
-export function RealTradingDashboard({ account }: RealTradingDashboardProps) {
+const ERC20_ABI = [
+  "function balanceOf(address owner) view returns (uint256)",
+  "function decimals() view returns (uint8)",
+];
+
+export function RealTradingDashboard({ account, currentNetwork }: RealTradingDashboardProps) {
   const [balance, setBalance] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [profit, setProfit] = useState(0);
   const [trades, setTrades] = useState(0);
 
-  // Simular carregamento de saldo real
-  useEffect(() => {
-    if (account) {
-      // Em produção, buscar saldo real da blockchain
-      const mockBalance = 25.50 + Math.random() * 10;
-      setBalance(mockBalance);
+  const loadRealBalance = useCallback(async () => {
+    if (!account || !currentNetwork) return;
+    setIsLoading(true);
+    try {
+      const provider = new ethers.JsonRpcProvider(currentNetwork.rpc);
+      const contract = new ethers.Contract(currentNetwork.usdc, ERC20_ABI, provider);
+      const [bal, dec] = await Promise.all([
+        contract.balanceOf(account),
+        contract.decimals().catch(() => 6),
+      ]);
+      setBalance(parseFloat(ethers.formatUnits(bal, Number(dec))));
+    } catch {
+      setBalance(0);
     }
-  }, [account]);
+    setIsLoading(false);
+  }, [account, currentNetwork]);
+
+  useEffect(() => {
+    loadRealBalance();
+  }, [loadRealBalance]);
 
   const startTrading = () => {
     if (balance < 5) {
@@ -52,10 +77,9 @@ export function RealTradingDashboard({ account }: RealTradingDashboardProps) {
     toast.success("⏹️ Trading REAL parado");
   };
 
-  const addMockFunds = () => {
-    const newBalance = balance + 10;
-    setBalance(newBalance);
-    toast.success(`💰 $10 adicionados à sua carteira! Novo saldo: $${newBalance.toFixed(2)}`);
+  const refreshBalance = () => {
+    loadRealBalance();
+    toast.success("💰 Saldo atualizado!");
   };
 
   return (
@@ -66,15 +90,15 @@ export function RealTradingDashboard({ account }: RealTradingDashboardProps) {
         {isRunning && <span style={{ fontSize: 9, background: '#22c55e', padding: '2px 8px', borderRadius: 10, color: '#fff' }}>ATIVO</span>}
       </div>
 
-      {/* Saldo REAL */}
+        {/* Saldo REAL */}
       <div style={{ background: '#1e293b', padding: 16, borderRadius: 12, marginBottom: 16, textAlign: 'center' }}>
-        <div style={{ fontSize: 11, color: '#94a3b8' }}>SEU SALDO REAL (USDC na Arc Testnet)</div>
+        <div style={{ fontSize: 11, color: '#94a3b8' }}>SEU SALDO REAL ({currentNetwork?.name || "..."})</div>
         <div style={{ fontSize: 32, fontWeight: 'bold', color: balance > 0 ? '#4ade80' : '#f97316' }}>
-          ${balance.toFixed(4)}
+          {isLoading ? "..." : `$${balance.toFixed(4)}`}
         </div>
-        {balance < 5 && (
+        {balance < 5 && !isLoading && (
           <div style={{ fontSize: 10, color: '#fbbf24', marginTop: 8 }}>
-            ⚠️ Saldo baixo! Consiga USDC grátis no faucet da Arc Testnet
+            ⚠️ Saldo baixo! {currentNetwork?.isTestnet ? "Consiga USDC grátis no faucet" : "Adicione fundos na carteira"}
           </div>
         )}
       </div>
@@ -111,22 +135,22 @@ export function RealTradingDashboard({ account }: RealTradingDashboardProps) {
           </button>
         )}
         <button 
-          onClick={addMockFunds}
-          style={{ flex: 1, background: '#f59e0b', color: '#0f172a', padding: 12, borderRadius: 10, border: 'none', cursor: 'pointer', fontWeight: 'bold' }}
+          onClick={refreshBalance}
+          style={{ flex: 1, background: '#3b82f6', color: '#fff', padding: 12, borderRadius: 10, border: 'none', cursor: 'pointer', fontWeight: 'bold' }}
         >
-          +$10 (Mock)
+          🔄 Atualizar
         </button>
       </div>
 
       {/* Informação */}
       <div style={{ fontSize: 10, color: '#475569', textAlign: 'center' }}>
-        💡 Para obter USDC grátis na Arc Testnet, use o faucet oficial:
-        <br />
-        <a href="https://faucet.arc.network" target="_blank" style={{ color: '#3a6cc8' }}>https://faucet.arc.network</a>
-        <br />
-        <span style={{ fontSize: 9, color: '#6b7280', marginTop: 4, display: 'block' }}>
-          ⚠️ Modo demonstração - Trades são simulados para teste
-        </span>
+        💡 Rede: {currentNetwork?.name || "..."} · {currentNetwork?.isTestnet ? "Testnet (faucet)" : "Mainnet (dinheiro real)"}
+        {currentNetwork?.isTestnet && (
+          <>
+            <br />
+            <a href="https://faucet.arc.network" target="_blank" style={{ color: '#3a6cc8' }}>Obter USDC do faucet</a>
+          </>
+        )}
       </div>
     </div>
   );

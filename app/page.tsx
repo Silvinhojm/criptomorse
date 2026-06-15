@@ -1,6 +1,7 @@
-"use client";
+﻿"use client";
 import { PanicButton } from "@/app/components/PanicButton";
 import { RealAutomatedTrader } from "./components/RealAutomatedTrader";
+import { NETWORKS } from "@/lib/real-swap-executor";
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import { ethers } from "ethers";
@@ -108,11 +109,11 @@ const BASE_MAINNET = {
 const POLYGON_MAINNET = {
   name: "Polygon (POL)",
   shortName: "Polygon",
-  rpc: "https://polygon-rpc.com",
+  rpc: "https://polygon.publicnode.com",
   chainId: 137,
   chainIdHex: "0x89",
   usdc: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
-  eurc: "0xE0B52e49357Fd4DAf2c15e02058DCE6BC0057db4",
+  eurc: "0xc52d20D70d2B1E27C2cb85AA0E3a9F5b4AEBf7e7",
   erc8183: "0x0747EEf0706327138c69792bF28Cd525089e4583",
   explorer: "https://polygonscan.com",
   icon: "🟣",
@@ -137,6 +138,13 @@ const ETHEREUM_MAINNET = {
 };
 
 type Network = typeof ARC_TESTNET | typeof BASE_MAINNET | typeof POLYGON_MAINNET | typeof ETHEREUM_MAINNET;
+
+const NETWORK_KEY_MAP: Record<number, keyof typeof NETWORKS> = {
+  5042002: "arc",
+  8453: "base",
+  137: "polygon",
+  1: "ethereum",
+};
 
 const short = (a: string) => a ? a.slice(0, 6) + "..." + a.slice(-4) : "";
 
@@ -902,7 +910,7 @@ export default function Home() {
   const loadBalance = useCallback(async (addr: string) => {
     if (!addr) return;
     try {
-      const provider = new ethers.BrowserProvider(window.ethereum);
+      const provider = new ethers.JsonRpcProvider(currentNetwork.rpc);
       const usdc = new ethers.Contract(currentNetwork.usdc, ERC20_ABI, provider);
       const [bal, dec] = await Promise.all([
         usdc.balanceOf(addr),
@@ -1082,10 +1090,10 @@ export default function Home() {
             
             {/* NOVOS COMPONENTES INTEGRADOS */}
            <BridgeWidget userAddress={account} />
-            <RealTradingDashboard account={account} />
-            <RealAutomatedTrader account={account} currentNetwork="arc" />
+            <RealTradingDashboard account={account} currentNetwork={currentNetwork} />
+            <RealAutomatedTrader account={account} currentNetwork={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} />
             <NanopaymentDashboard agentScores={agentScores} />
-            <TradingNanopaymentDashboard />
+            <TradingNanopaymentDashboard account={account} currentNetwork={currentNetwork} />
           </>
         )}
 
@@ -1100,3 +1108,4 @@ export default function Home() {
     </div>
   );
 }
+

@@ -1,5 +1,5 @@
-// lib/real-automated-trader.ts
-// Robô de trading REAL — estratégia baseada em spread USDC/EURC
+﻿// lib/real-automated-trader.ts
+// RobÃ´ de trading REAL â€” estratÃ©gia baseada em spread USDC/EURC
 // Cada trade executa swap real via LI.FI e confirma na blockchain
 
 import { realSwap, type SwapResult, NETWORKS } from "./real-swap-executor";
@@ -30,7 +30,7 @@ export interface TraderStats {
   eurcBalance: number;
 }
 
-// ─── Preços simulados de mercado (em produção, use Chainlink ou CoinGecko) ───
+// â”€â”€â”€ PreÃ§os simulados de mercado (em produÃ§Ã£o, use Chainlink ou CoinGecko) â”€â”€â”€
 
 async function fetchSpread(): Promise<{ usdc: number; eurc: number; spread: number }> {
   try {
@@ -50,7 +50,7 @@ async function fetchSpread(): Promise<{ usdc: number; eurc: number; spread: numb
   }
 }
 
-// ─── Classe Principal ─────────────────────────────────────────────────────────
+// â”€â”€â”€ Classe Principal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class RealAutomatedTrader {
   private isRunning = false;
@@ -64,7 +64,7 @@ class RealAutomatedTrader {
   private onTradeCallback: ((trade: TradeRecord) => void) | null = null;
   private onLogCallback: ((msg: string) => void) | null = null;
 
-  // ─── Setup ──────────────────────────────────────────────────────────────────
+  // â”€â”€â”€ Setup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   async initialize(
     privateKey: string,
@@ -90,7 +90,7 @@ class RealAutomatedTrader {
     this.onLogCallback?.(msg);
   }
 
-  // ─── Saldos ──────────────────────────────────────────────────────────────────
+  // â”€â”€â”€ Saldos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   async getBalances(): Promise<{ usdc: number; eurc: number }> {
     const [usdc, eurc] = await Promise.all([
@@ -100,31 +100,31 @@ class RealAutomatedTrader {
     return { usdc, eurc };
   }
 
-  // ─── Ciclo de Trading ─────────────────────────────────────────────────────────
+  // â”€â”€â”€ Ciclo de Trading â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   async runTradingCycle(tradeAmount: number = 10): Promise<TradeRecord> {
     const timestamp = Date.now();
     const id = `trade_${timestamp}`;
 
     if (!this.initialized) {
-      this.log("❌ Trader não inicializado");
-      return this._holdRecord(id, "Não inicializado", timestamp);
+      this.log("âŒ Trader nÃ£o inicializado");
+      return this._holdRecord(id, "NÃ£o inicializado", timestamp);
     }
 
     // 1. Ler saldos reais
     const { usdc, eurc } = await this.getBalances();
-    this.log(`💰 Saldos — USDC: $${usdc.toFixed(2)} | EURC: €${eurc.toFixed(2)}`);
+    this.log(`ðŸ’° Saldos â€” USDC: $${usdc.toFixed(2)} | EURC: â‚¬${eurc.toFixed(2)}`);
 
     // 2. Buscar spread de mercado
     const market = await fetchSpread();
-    this.log(`📊 Spread USDC/EURC: ${market.spread.toFixed(3)}% | EURC: $${market.eurc.toFixed(4)}`);
+    this.log(`ðŸ“Š Spread USDC/EURC: ${market.spread.toFixed(3)}% | EURC: $${market.eurc.toFixed(4)}`);
 
-    // 3. Estratégia baseada em spread
-    //    BUY  (USDC→EURC) se EURC > USDC+spread mínimo  → arbitragem
-    //    SELL (EURC→USDC) se temos EURC acumulado       → realizar lucro
+    // 3. EstratÃ©gia baseada em spread
+    //    BUY  (USDCâ†’EURC) se EURC > USDC+spread mÃ­nimo  â†’ arbitragem
+    //    SELL (EURCâ†’USDC) se temos EURC acumulado       â†’ realizar lucro
     //    HOLD se spread pequeno ou saldo insuficiente
 
-    const MIN_SPREAD = 0.4; // % mínimo para operar
+    const MIN_SPREAD = 0.4; // % mÃ­nimo para operar
     let action: "BUY" | "SELL" | "HOLD" = "HOLD";
 
     if (market.spread >= MIN_SPREAD && usdc >= tradeAmount) {
@@ -132,24 +132,20 @@ class RealAutomatedTrader {
     } else if (eurc >= tradeAmount * 0.9 && market.eurc > 1.001) {
       action = "SELL";
     } else {
-      this.log(`⏸️ HOLD — spread ${market.spread.toFixed(3)}% abaixo de ${MIN_SPREAD}% ou saldo insuficiente`);
+      this.log(`â¸ï¸ HOLD â€” spread ${market.spread.toFixed(3)}% abaixo de ${MIN_SPREAD}% ou saldo insuficiente`);
       this.lastAction = `HOLD (spread ${market.spread.toFixed(3)}%)`;
-      return this._holdRecord(id, `Spread ${market.spread.toFixed(3)}% — abaixo do mínimo`, timestamp);
+      return this._holdRecord(id, `Spread ${market.spread.toFixed(3)}% â€” abaixo do mÃ­nimo`, timestamp);
     }
 
     // 4. Executar swap REAL
-    this.log(`🚀 Executando ${action} de $${tradeAmount} via LI.FI...`);
-    const result: SwapResult = await realSwap.executeSwap(
-      action,
-      tradeAmount,
-      (msg) => this.log(msg)
-    );
+    this.log(`ðŸš€ Executando ${action} de $${tradeAmount} via LI.FI...`);
+    const result: SwapResult = await realSwap.executeSwap(action === "BUY" ? "USDC" : "EURC", action === "BUY" ? "EURC" : "USDC", tradeAmount, (msg: string) => this.log(msg));
 
     // 5. Calcular lucro real
     let profit = 0;
     if (result.success && result.confirmed) {
       if (action === "BUY") {
-        // Compramos EURC: lucro = (EURC recebido * preço EURC) - USDC gasto
+        // Compramos EURC: lucro = (EURC recebido * preÃ§o EURC) - USDC gasto
         profit = result.toAmount * market.eurc - tradeAmount;
       } else {
         // Vendemos EURC: lucro = USDC recebido - EURC gasto (em USD)
@@ -158,7 +154,7 @@ class RealAutomatedTrader {
     }
 
     this.totalProfit += profit;
-    this.lastAction = `${action} $${tradeAmount} → TX ${result.txHash.slice(0, 8)}...`;
+    this.lastAction = `${action} $${tradeAmount} â†’ TX ${result.txHash.slice(0, 8)}...`;
 
     const record: TradeRecord = {
       id,
@@ -178,12 +174,12 @@ class RealAutomatedTrader {
     return record;
   }
 
-  // ─── Controle ─────────────────────────────────────────────────────────────────
+  // â”€â”€â”€ Controle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   startAutomatedTrading(intervalSeconds = 60, tradeAmount = 10) {
     if (this.isRunning) return;
     this.isRunning = true;
-    this.log(`\n🤖 TRADING REAL INICIADO — $${tradeAmount} a cada ${intervalSeconds}s`);
+    this.log(`\nðŸ¤– TRADING REAL INICIADO â€” $${tradeAmount} a cada ${intervalSeconds}s`);
 
     // Primeiro ciclo imediato
     this.runTradingCycle(tradeAmount);
@@ -200,7 +196,7 @@ class RealAutomatedTrader {
       this.intervalId = null;
     }
     this.isRunning = false;
-    this.log("⏹️ Trading parado");
+    this.log("â¹ï¸ Trading parado");
   }
 
   getStats(): TraderStats {
@@ -234,7 +230,7 @@ class RealAutomatedTrader {
       profit: 0,
       txHash: "",
       explorerUrl: "",
-      message: `⏸️ HOLD — ${reason}`,
+      message: `â¸ï¸ HOLD â€” ${reason}`,
       timestamp,
       confirmed: false,
     };
@@ -242,3 +238,4 @@ class RealAutomatedTrader {
 }
 
 export const realAutomatedTrader = new RealAutomatedTrader();
+

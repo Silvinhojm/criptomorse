@@ -5,5 +5,9 @@
 }
 
 body {
-  font-family: system-ui, sans-serif;
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+code, pre, kbd, samp {
+  font-family: var(--font-geist-mono), monospace;
 }

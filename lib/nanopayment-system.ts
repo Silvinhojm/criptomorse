@@ -223,7 +223,7 @@ class NanopaymentSystem {
       }
       return false;
     } else {
-      return await realBalance.transferUSDC(userAddress, amount);
+      return false;
     }
   }
 }

@@ -26,7 +26,6 @@ export function AutomatedTraderDashboard({ account }: AutomatedTraderDashboardPr
     // Tentar buscar saldo real
     if (account) {
       try {
-        await realBalance.initialize(account);
         const bal = await realBalance.getRealUSDCBalance(account);
         setBalance(bal);
         console.log(`💰 Saldo atualizado: $${bal}`);
@@ -52,7 +51,6 @@ export function AutomatedTraderDashboard({ account }: AutomatedTraderDashboardPr
 
     setIsLoading(true);
     try {
-      await realBalance.initialize(account);
       automatedTrader.initialize(account);
       automatedTrader.startAutomatedTrading(intervalSec, tradeAmount);
       setIsRunning(true);
@@ -79,7 +77,6 @@ export function AutomatedTraderDashboard({ account }: AutomatedTraderDashboardPr
 
     toast.loading("Consultando agentes e executando trade...", { id: "manual" });
     try {
-      await realBalance.initialize(account);
       automatedTrader.initialize(account);
       const result = await automatedTrader.runTradingCycle(tradeAmount);
       await refreshData();

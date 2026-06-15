@@ -1,389 +1,279 @@
 // lib/trading-nanopayments.ts
-// Sistema de trading automatizado usando nanopagamentos TLAY
+// Trading automático multi-par usando saldo REAL da carteira conectada
+// Arc Testnet = faucet (sem risco) | Outras redes = dinheiro real
 
-import { nanopaymentSystem, AgentWallet } from "./nanopayment-system";
+import { realSwap, NETWORKS, TRADING_PAIRS, type NetworkKey, type TokenSymbol, type SwapResult } from "./real-swap-executor";
 
 export interface TradeOrder {
   id: string;
-  fromAgent: string;
-  toAgent: string;
+  fromToken: TokenSymbol;
+  toToken: TokenSymbol;
   amount: number;
-  price: number;
-  type: 'BUY' | 'SELL';
-  status: 'pending' | 'completed' | 'failed';
+  toAmount: number;
+  type: "BUY" | "SELL" | "HOLD";
+  status: "pending" | "completed" | "failed";
   timestamp: number;
-  profit?: number;
+  profit: number;
+  txHash?: string;
+  explorerUrl?: string;
+  agentName: string;
+  route?: string;
+  networkKey: NetworkKey;
 }
 
-export interface MarketPrice {
-  usdc: number;
-  eurc: number;
-  spread: number;
-  timestamp: number;
+export interface AgentStrategy {
+  name: string;
+  strategy: "best_pair" | "momentum" | "arbitrage" | "scalping";
+  maxAmount: number;
+  minProfitThreshold: number;
+  description: string;
+}
+
+export interface TradingStats {
+  totalOrders: number;
+  totalBuys: number;
+  totalSells: number;
+  totalVolume: number;
+  totalProfit: number;
+  winRate: number;
+  bestPair: string;
+  networkKey: NetworkKey;
 }
 
 class TradingNanopaymentSystem {
   private orders: TradeOrder[] = [];
-  private marketPrices: MarketPrice[] = [];
-  private activeTrades: Map<string, TradeOrder> = new Map();
-  
-  // Agentes traders (cada um com sua estratégia)
-  private tradingAgents = [
-    { name: 'QuantumTrader', strategy: 'momentum', minProfit: 0.001, maxAmount: 10 },
-    { name: 'ArbitrageHunter', strategy: 'arbitrage', minProfit: 0.0005, maxAmount: 5 },
-    { name: 'ScalpingBot', strategy: 'scalping', minProfit: 0.0002, maxAmount: 2 },
-    { name: 'MarketMaker', strategy: 'liquidity', minProfit: 0.0003, maxAmount: 8 }
+  private isInitialized = false;
+  private currentNetwork: NetworkKey = "arc";
+  private walletAddress = "";
+
+  // Agentes com estratégias diferentes
+  private agents: AgentStrategy[] = [
+    {
+      name: "QuantumTrader",
+      strategy: "best_pair",
+      maxAmount: 10,
+      minProfitThreshold: 0.0001,
+      description: "Escolhe sempre o melhor par disponível",
+    },
+    {
+      name: "ArbitrageHunter",
+      strategy: "arbitrage",
+      maxAmount: 5,
+      minProfitThreshold: 0.0005,
+      description: "Busca oportunidades de arbitragem entre pares estáveis",
+    },
+    {
+      name: "ScalpingBot",
+      strategy: "scalping",
+      maxAmount: 2,
+      minProfitThreshold: 0.0001,
+      description: "Micro trades rápidos em pares de alta liquidez",
+    },
+    {
+      name: "MarketMaker",
+      strategy: "momentum",
+      maxAmount: 8,
+      minProfitThreshold: 0.0002,
+      description: "Segue tendência do mercado com pares voláteis",
+    },
   ];
 
-  constructor() {
-    // Inicializar carteiras para agentes traders com saldo inicial
-    this.tradingAgents.forEach(agent => {
-      try {
-        const balance = nanopaymentSystem.getBalance(agent.name);
-        if (balance === 0 || balance < 50) {
-          // Dar crédito inicial de $100 para cada agente trader
-          nanopaymentSystem.addCredits(agent.name, 100);
-          console.log(`✅ Saldo inicial de $100 adicionado para ${agent.name}`);
-        }
-      } catch (e) {
-        console.log(`Agente ${agent.name} não encontrado, criando carteira com $100...`);
-        nanopaymentSystem.addCredits(agent.name, 100);
-      }
-    });
-  }
+  // ─── Inicialização ─────────────────────────────────────────────────────────
+  async initialize(walletAddress: string, networkKey: NetworkKey, privateKey?: string): Promise<boolean> {
+    try {
+      this.walletAddress = walletAddress;
+      this.currentNetwork = networkKey;
 
-  // Atualizar preço de mercado
-  updateMarketPrice(usdcPrice: number, eurcPrice: number) {
-    const spread = Math.abs((eurcPrice - usdcPrice) / usdcPrice) * 100;
-    this.marketPrices.push({
-      usdc: usdcPrice,
-      eurc: eurcPrice,
-      spread,
-      timestamp: Date.now()
-    });
-    
-    // Manter apenas últimos 100 preços
-    if (this.marketPrices.length > 100) {
-      this.marketPrices.shift();
-    }
-  }
-
-  // Obter preço atual
-  getCurrentPrice(): MarketPrice {
-    if (this.marketPrices.length === 0) {
-      return { usdc: 1.00, eurc: 1.002, spread: 0.2, timestamp: Date.now() };
-    }
-    return this.marketPrices[this.marketPrices.length - 1];
-  }
-
-  // Agente compra USDC de outro agente
-  async buyUSDC(buyerAgent: string, sellerAgent: string, amount: number, price: number): Promise<TradeOrder> {
-    const orderId = `buy_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-    const totalCost = amount * price;
-    
-    // Verificar se comprador tem saldo
-    const buyerBalance = nanopaymentSystem.getBalance(buyerAgent);
-    if (buyerBalance < totalCost) {
-      console.log(`${buyerAgent} saldo insuficiente: $${buyerBalance}, adicionando crédito...`);
-      // ADICIONADO: dar crédito automático se saldo insuficiente
-      nanopaymentSystem.addCredits(buyerAgent, totalCost + 50);
-      const newBalance = nanopaymentSystem.getBalance(buyerAgent);
-      if (newBalance < totalCost) {
-        throw new Error(`${buyerAgent} não tem saldo suficiente mesmo após crédito. Saldo: $${newBalance}, Necessário: $${totalCost}`);
-      }
-    }
-    
-    // Verificar se vendedor tem saldo de USDC (simulado)
-    const sellerBalance = nanopaymentSystem.getBalance(sellerAgent);
-    if (sellerBalance < amount && sellerAgent !== 'SystemAPI') {
-      console.log(`${sellerAgent} saldo USDC insuficiente, adicionando crédito...`);
-      nanopaymentSystem.addCredits(sellerAgent, amount + 50);
-    }
-    
-    // Realizar pagamento
-    const payment = await nanopaymentSystem.makePayment(
-      buyerAgent,
-      sellerAgent,
-      totalCost,
-      `Compra de ${amount} USDC a $${price}`
-    );
-    
-    const order: TradeOrder = {
-      id: orderId,
-      fromAgent: buyerAgent,
-      toAgent: sellerAgent,
-      amount,
-      price,
-      type: 'BUY',
-      status: 'completed',
-      timestamp: Date.now()
-    };
-    
-    this.orders.push(order);
-    this.activeTrades.set(orderId, order);
-    
-    console.log(`📈 COMPRA: ${buyerAgent} comprou ${amount} USDC de ${sellerAgent} por $${totalCost.toFixed(4)}`);
-    return order;
-  }
-
-  // Agente vende USDC para outro agente
-  async sellUSDC(sellerAgent: string, buyerAgent: string, amount: number, price: number): Promise<TradeOrder> {
-    const orderId = `sell_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-    const totalValue = amount * price;
-    
-    let sellerBalance = nanopaymentSystem.getBalance(sellerAgent);
-    if (sellerBalance < amount) {
-      console.log(`${sellerAgent} saldo USDC insuficiente: $${sellerBalance}, adicionando crédito...`);
-      nanopaymentSystem.addCredits(sellerAgent, amount + 50);
-      sellerBalance = nanopaymentSystem.getBalance(sellerAgent);
-    }
-    
-    const payment = await nanopaymentSystem.makePayment(
-      buyerAgent,
-      sellerAgent,
-      totalValue,
-      `Venda de ${amount} USDC a $${price}`
-    );
-    
-    const order: TradeOrder = {
-      id: orderId,
-      fromAgent: sellerAgent,
-      toAgent: buyerAgent,
-      amount,
-      price,
-      type: 'SELL',
-      status: 'completed',
-      timestamp: Date.now()
-    };
-    
-    this.orders.push(order);
-    this.activeTrades.set(orderId, order);
-    
-    console.log(`📉 VENDA: ${sellerAgent} vendeu ${amount} USDC para ${buyerAgent} por $${totalValue.toFixed(4)}`);
-    return order;
-  }
-
-  // Estratégia de Arbitragem - compra barato, vende caro
-  async arbitrageOpportunity(agentName: string): Promise<TradeOrder | null> {
-    // Garantir que o agente tem saldo
-    let balance = nanopaymentSystem.getBalance(agentName);
-    if (balance < 10) {
-      nanopaymentSystem.addCredits(agentName, 100);
-      balance = nanopaymentSystem.getBalance(agentName);
-      console.log(`💸 Crédito automático de $100 para ${agentName}`);
-    }
-    
-    const price = this.getCurrentPrice();
-    const spread = price.spread;
-    
-    if (spread > 0.3) { // Spread > 0.3% é oportunidade (reduzido para mais oportunidades)
-      const amount = 3; // $3 por trade (reduzido)
-      const buyPrice = Math.min(price.usdc, price.eurc);
-      const sellPrice = Math.max(price.usdc, price.eurc);
-      const expectedProfit = amount * ((sellPrice - buyPrice) / buyPrice);
-      
-      if (expectedProfit > 0.001) { // Lucro > $0.001
-        const partnerAgent = this.findTradingPartner(agentName);
-        if (partnerAgent) {
-          try {
-            await this.buyUSDC(agentName, partnerAgent, amount, buyPrice);
-            await this.sellUSDC(agentName, partnerAgent, amount, sellPrice);
-            
-            const profit = amount * (sellPrice - buyPrice);
-            console.log(`💰 ARBITRAGEM: ${agentName} lucrou $${profit.toFixed(4)} com spread de ${spread.toFixed(2)}%`);
-            nanopaymentSystem.addCredits(agentName, profit);
-            return this.orders[this.orders.length - 1];
-          } catch (error) {
-            console.error(`Erro na arbitragem: ${error}`);
-            return null;
-          }
-        }
-      }
-    }
-    return null;
-  }
-
-  // Estratégia de Scalping - micro lucros rápidos
-  async scalpingStrategy(agentName: string): Promise<TradeOrder | null> {
-    // Garantir saldo
-    let balance = nanopaymentSystem.getBalance(agentName);
-    if (balance < 5) {
-      nanopaymentSystem.addCredits(agentName, 50);
-    }
-    
-    const prices = this.marketPrices.slice(-5);
-    if (prices.length < 5) return null;
-    
-    const priceChange = prices[prices.length - 1].usdc - prices[0].usdc;
-    const amount = 1.5; // $1.50 por trade
-    
-    if (Math.abs(priceChange) > 0.0003) { // Pequena tendência
-      const partner = this.findTradingPartner(agentName);
-      if (partner) {
-        try {
-          if (priceChange > 0) {
-            const order = await this.buyUSDC(agentName, partner, amount, prices[prices.length - 1].usdc);
-            console.log(`⚡ SCALPING: ${agentName} comprou ${amount} USDC - tendência de alta`);
-            return order;
-          } else {
-            const order = await this.sellUSDC(agentName, partner, amount, prices[prices.length - 1].usdc);
-            console.log(`⚡ SCALPING: ${agentName} vendeu ${amount} USDC - tendência de baixa`);
-            return order;
-          }
-        } catch (error) {
-          console.error(`Erro no scalping: ${error}`);
-          return null;
-        }
-      }
-    }
-    return null;
-  }
-
-  // Estratégia de Market Making - oferecer liquidez
-  async marketMakingStrategy(agentName: string): Promise<TradeOrder[]> {
-    // Garantir saldo
-    let balance = nanopaymentSystem.getBalance(agentName);
-    if (balance < 20) {
-      nanopaymentSystem.addCredits(agentName, 100);
-    }
-    
-    const orders: TradeOrder[] = [];
-    const currentPrice = this.getCurrentPrice();
-    const amount = 2;
-    
-    const buyPrice = currentPrice.usdc * 0.999;
-    const sellPrice = currentPrice.usdc * 1.001;
-    
-    const partners = this.findMultiplePartners(agentName, 2);
-    
-    for (const partner of partners) {
-      try {
-        const buyOrder = await this.buyUSDC(agentName, partner, amount, buyPrice);
-        orders.push(buyOrder);
-        
-        const sellOrder = await this.sellUSDC(agentName, partner, amount, sellPrice);
-        orders.push(sellOrder);
-        
-        const profit = amount * (sellPrice - buyPrice);
-        nanopaymentSystem.addCredits(agentName, profit);
-        console.log(`🏦 MARKET MAKING: ${agentName} lucrou $${profit.toFixed(4)}`);
-      } catch (e) {
-        console.error(`Erro no market making: ${e}`);
-      }
-    }
-    
-    return orders;
-  }
-
-  // Executar trades automáticos com todos os agentes
-  async executeAutomatedTrading(): Promise<void> {
-    console.log("🤖 Iniciando ciclo de trades automáticos...");
-    
-    for (const agent of this.tradingAgents) {
-      try {
-        // Garantir que cada agente tem saldo antes de executar
-        let balance = nanopaymentSystem.getBalance(agent.name);
-        if (balance < 10) {
-          nanopaymentSystem.addCredits(agent.name, 100);
-          console.log(`💸 Crédito automático para ${agent.name}: $100`);
-        }
-        
-        let result: TradeOrder | null = null;
-        
-        switch (agent.strategy) {
-          case 'arbitrage':
-            result = await this.arbitrageOpportunity(agent.name);
-            break;
-          case 'scalping':
-            result = await this.scalpingStrategy(agent.name);
-            break;
-          case 'liquidity':
-            await this.marketMakingStrategy(agent.name);
-            break;
-          case 'momentum':
-            const prices = this.marketPrices.slice(-10);
-            if (prices.length >= 10) {
-              const trend = prices[prices.length - 1].usdc - prices[0].usdc;
-              const partner = this.findTradingPartner(agent.name);
-              if (partner) {
-                if (trend > 0) {
-                  result = await this.buyUSDC(agent.name, partner, agent.maxAmount, prices[prices.length - 1].usdc);
-                } else {
-                  result = await this.sellUSDC(agent.name, partner, agent.maxAmount, prices[prices.length - 1].usdc);
-                }
-              }
-            }
-            break;
-        }
-        
-        if (result) {
-          console.log(`✅ ${agent.name} (${agent.strategy}) executou trade de $${result.amount} USDC`);
-        }
-      } catch (error) {
-        console.error(`Erro no trade do agente ${agent.name}:`, error);
-      }
-    }
-  }
-
-  // Encontrar parceiro de trade
-  private findTradingPartner(agentName: string): string | null {
-    const partners = this.tradingAgents.filter(a => a.name !== agentName);
-    if (partners.length === 0) return null;
-    const randomPartner = partners[Math.floor(Math.random() * partners.length)];
-    return randomPartner.name;
-  }
-
-  // Encontrar múltiplos parceiros
-  private findMultiplePartners(agentName: string, count: number): string[] {
-    const partners = this.tradingAgents.filter(a => a.name !== agentName);
-    return partners.slice(0, count).map(p => p.name);
-  }
-
-  // Obter estatísticas de trading
-  getTradingStats() {
-    const totalBuys = this.orders.filter(o => o.type === 'BUY').length;
-    const totalSells = this.orders.filter(o => o.type === 'SELL').length;
-    const totalVolume = this.orders.reduce((sum, o) => sum + (o.amount * o.price), 0);
-    const avgTradeSize = totalVolume / (this.orders.length || 1);
-    
-    const buys = this.orders.filter(o => o.type === 'BUY');
-    const sells = this.orders.filter(o => o.type === 'SELL');
-    const avgBuyPrice = buys.reduce((sum, o) => sum + o.price, 0) / (buys.length || 1);
-    const avgSellPrice = sells.reduce((sum, o) => sum + o.price, 0) / (sells.length || 1);
-    const estimatedProfit = (avgSellPrice - avgBuyPrice) * 100;
-    
-    return {
-      totalOrders: this.orders.length,
-      totalBuys,
-      totalSells,
-      totalVolume: totalVolume.toFixed(4),
-      avgTradeSize: avgTradeSize.toFixed(4),
-      avgBuyPrice: avgBuyPrice.toFixed(6),
-      avgSellPrice: avgSellPrice.toFixed(6),
-      estimatedProfitPercent: estimatedProfit.toFixed(4)
-    };
-  }
-
-  // Obter histórico de ordens
-  getOrderHistory(agentName?: string): TradeOrder[] {
-    if (agentName) {
-      return this.orders.filter(o => o.fromAgent === agentName || o.toAgent === agentName);
-    }
-    return this.orders;
-  }
-
-  // Simular preço de mercado em tempo real
-  startPriceSimulation(intervalMs: number = 5000) {
-    setInterval(() => {
-      const lastPrice = this.getCurrentPrice();
-      const usdcChange = (Math.random() - 0.5) * 0.0015;
-      const eurcChange = (Math.random() - 0.5) * 0.002;
-      
-      this.updateMarketPrice(
-        Math.max(0.99, Math.min(1.01, lastPrice.usdc + usdcChange)),
-        Math.max(0.99, Math.min(1.01, lastPrice.eurc + eurcChange))
+      const ok = await realSwap.initialize(
+        privateKey || walletAddress,
+        networkKey,
+        !privateKey
       );
-    }, intervalMs);
+
+      if (ok) {
+        this.isInitialized = true;
+        const net = NETWORKS[networkKey];
+        console.log(`✅ TradingSystem: ${net.name} | ${walletAddress} | ${net.isTestnet ? "TESTNET (faucet)" : "MAINNET (dinheiro real)"}`);
+      }
+
+      return ok;
+    } catch (err) {
+      console.error("❌ Erro ao inicializar TradingSystem:", err);
+      return false;
+    }
+  }
+
+  // ─── Saldos reais da carteira ──────────────────────────────────────────────
+  async getRealBalances() {
+    if (!this.isInitialized) return [];
+    await realSwap.refreshAllBalances();
+    return realSwap.getAllBalances().filter(b => b.balance > 0);
+  }
+
+  // ─── Encontrar melhor par para um agente ──────────────────────────────────
+  async findBestPairForAgent(agent: AgentStrategy): Promise<{ from: TokenSymbol; to: TokenSymbol; label: string } | null> {
+    const pairs = TRADING_PAIRS[this.currentNetwork];
+    const net   = NETWORKS[this.currentNetwork];
+
+    // Filtrar pares onde o agente tem saldo suficiente
+    const affordable = pairs.filter(p => {
+      const bal = realSwap.getBalance(p.from);
+      return bal >= agent.maxAmount * 0.9;
+    });
+
+    if (affordable.length === 0) return null;
+
+    // Estratégia: retornar par com mais saldo disponível (mais seguro)
+    if (agent.strategy === "scalping") {
+      // Scalping prefere stablecoins (menor risco)
+      const stables = affordable.filter(p =>
+        ["USDC", "USDT", "DAI", "EURC"].includes(p.from) &&
+        ["USDC", "USDT", "DAI", "EURC"].includes(p.to)
+      );
+      return stables[0] ?? affordable[0];
+    }
+
+    if (agent.strategy === "arbitrage") {
+      // Arbitragem prefere pares estáveis com spread
+      const stables = affordable.filter(p =>
+        ["USDC", "USDT", "DAI", "EURC"].includes(p.from)
+      );
+      return stables[Math.floor(Math.random() * stables.length)] ?? affordable[0];
+    }
+
+    // best_pair e momentum: qualquer par com saldo
+    return affordable[Math.floor(Math.random() * affordable.length)];
+  }
+
+  // ─── Executar trade de um agente ──────────────────────────────────────────
+  async executeAgentTrade(
+    agent: AgentStrategy,
+    onLog?: (msg: string) => void
+  ): Promise<TradeOrder | null> {
+    if (!this.isInitialized) return null;
+
+    const net = NETWORKS[this.currentNetwork];
+    const log = (msg: string) => { console.log(`[${agent.name}] ${msg}`); onLog?.(msg); };
+
+    log(`🤖 ${agent.name} (${agent.strategy}) analisando ${net.name}...`);
+
+    let result: SwapResult;
+
+    if (agent.strategy === "best_pair") {
+      // Usa o sistema inteligente de busca do melhor par
+      result = await realSwap.executeSmartSwap(agent.maxAmount, (msg) => log(msg));
+    } else {
+      const pair = await this.findBestPairForAgent(agent);
+      if (!pair) {
+        log(`⚠️ Sem saldo suficiente para qualquer par em ${net.name}`);
+        return null;
+      }
+      log(`📊 Par escolhido: ${pair.label}`);
+      result = await realSwap.executeSwap(pair.from, pair.to, agent.maxAmount, (msg) => log(msg));
+    }
+
+    const order: TradeOrder = {
+      id: `${agent.name}_${Date.now()}`,
+      fromToken: result.fromToken,
+      toToken:   result.toToken,
+      amount:    result.fromAmount,
+      toAmount:  result.toAmount,
+      type:      result.success ? "BUY" : "HOLD",
+      status:    result.success ? "completed" : "failed",
+      timestamp: result.timestamp,
+      profit:    result.profit ?? 0,
+      txHash:    result.txHash || undefined,
+      explorerUrl: result.explorerUrl || undefined,
+      agentName: agent.name,
+      networkKey: this.currentNetwork,
+    };
+
+    this.orders.push(order);
+
+    if (result.success) {
+      log(`✅ Trade confirmado! Lucro: $${order.profit.toFixed(6)}`);
+    } else {
+      log(`❌ Trade falhou: ${result.message}`);
+    }
+
+    return order;
+  }
+
+  // ─── Ciclo automático de todos os agentes ─────────────────────────────────
+  async executeAutomatedCycle(onLog?: (msg: string) => void): Promise<TradeOrder[]> {
+    const results: TradeOrder[] = [];
+    const net = NETWORKS[this.currentNetwork];
+    onLog?.(`🔄 Ciclo automático — ${net.name} | ${net.isTestnet ? "🧪 TESTNET" : "💰 MAINNET"}`);
+
+    // Atualizar saldos antes do ciclo
+    await realSwap.refreshAllBalances();
+    const balances = realSwap.getAllBalances().filter(b => b.balance > 0);
+    onLog?.(`💼 Saldos: ${balances.map(b => `${b.symbol}:${b.balance.toFixed(4)}`).join(" | ")}`);
+
+    for (const agent of this.agents) {
+      try {
+        const order = await this.executeAgentTrade(agent, onLog);
+        if (order) results.push(order);
+        // Pequena pausa entre agentes para não sobrecarregar RPC
+        await new Promise(r => setTimeout(r, 1000));
+      } catch (err: any) {
+        onLog?.(`❌ ${agent.name} erro: ${err?.message}`);
+      }
+    }
+
+    return results;
+  }
+
+  // ─── Estatísticas ──────────────────────────────────────────────────────────
+  getStats(): TradingStats {
+    const completed = this.orders.filter(o => o.status === "completed");
+    const profitable = completed.filter(o => o.profit > 0);
+    const totalVolume = completed.reduce((s, o) => s + o.amount, 0);
+    const totalProfit = completed.reduce((s, o) => s + o.profit, 0);
+
+    // Par mais lucrativo
+    const pairProfits = new Map<string, number>();
+    completed.forEach(o => {
+      const key = `${o.fromToken}→${o.toToken}`;
+      pairProfits.set(key, (pairProfits.get(key) ?? 0) + o.profit);
+    });
+    let bestPair = "-";
+    let bestProfit = -Infinity;
+    pairProfits.forEach((profit, pair) => {
+      if (profit > bestProfit) { bestProfit = profit; bestPair = pair; }
+    });
+
+    return {
+      totalOrders:  this.orders.length,
+      totalBuys:    this.orders.filter(o => o.type === "BUY").length,
+      totalSells:   this.orders.filter(o => o.type === "SELL").length,
+      totalVolume,
+      totalProfit,
+      winRate:      completed.length > 0 ? (profitable.length / completed.length) * 100 : 0,
+      bestPair,
+      networkKey:   this.currentNetwork,
+    };
+  }
+
+  getOrderHistory(agentName?: string): TradeOrder[] {
+    if (agentName) return this.orders.filter(o => o.agentName === agentName);
+    return [...this.orders].reverse();
+  }
+
+  getAvailablePairs(): Array<{ from: TokenSymbol; to: TokenSymbol; label: string }> {
+    return TRADING_PAIRS[this.currentNetwork] ?? [];
+  }
+
+  getAgents(): AgentStrategy[] {
+    return this.agents;
+  }
+
+  isReady(): boolean {
+    return this.isInitialized;
+  }
+
+  getCurrentNetwork(): NetworkKey {
+    return this.currentNetwork;
   }
 }
 
