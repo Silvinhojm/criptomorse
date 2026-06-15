@@ -12,11 +12,9 @@ class VolumeAgent {
 
   private cached: { ratio: number; momentum: number } = { ratio: 1, momentum: 0 };
 
-  async refreshFromMarket() {
+  async refreshFromMarket(externalData?: any) {
     try {
-      const res = await fetch('/api/market-data', { signal: AbortSignal.timeout(5000) });
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = externalData ?? await (await fetch('/api/market-data', { signal: AbortSignal.timeout(5000) })).json();
       const mkt = data.market ?? {};
       const vol = mkt.volume24h ?? 0;
       const cap = mkt.totalMarketCap ?? 1;

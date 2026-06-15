@@ -11,11 +11,9 @@ class MarketAgent {
   private losses = 0;
   private trades = 0;
 
-  async updateMarketInsights() {
+  async updateMarketInsights(externalData?: any) {
     try {
-      const res = await fetch('/api/market-data', { signal: AbortSignal.timeout(5000) });
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = externalData ?? await (await fetch('/api/market-data', { signal: AbortSignal.timeout(5000) })).json();
       const fg = data.fearGreed ?? {};
       const mkt = data.market ?? {};
 

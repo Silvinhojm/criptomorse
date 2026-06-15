@@ -43,6 +43,12 @@ class AutomatedTrader {
 
     console.log("📡 Coletando sinais dos agentes...");
 
+    let marketData: any;
+    try {
+      const res = await fetch('/api/market-data', { signal: AbortSignal.timeout(5000) });
+      if (res.ok) marketData = await res.json();
+    } catch { /* fallback sem dados */ }
+
     // 1. QuantumAgent
     try {
       await nanopaymentSystem.makePayment('RealTrader', 'QuantumAgent', 0.02, 'Consulta quântica');
@@ -82,7 +88,7 @@ class AutomatedTrader {
     // 3. NewsAgent
     try {
       await nanopaymentSystem.makePayment('RealTrader', 'NewsAgent', 0.005, 'Consulta notícias');
-      const newsDecision = await newsAgent.decide();
+      const newsDecision = await newsAgent.decide(marketData);
       votes.push({
         agentName: newsAgent.getScore().agentName,
         action: newsDecision.action as any,
@@ -97,7 +103,7 @@ class AutomatedTrader {
     // 4. MarketAgent
     try {
       await nanopaymentSystem.makePayment('RealTrader', 'MarketAgent', 0.01, 'Consulta mercado');
-      await marketAgent.updateMarketInsights();
+      await marketAgent.updateMarketInsights(marketData);
       const marketOpinion = marketAgent.getAdvice();
       votes.push({
         agentName: marketOpinion.agentName,
@@ -113,7 +119,7 @@ class AutomatedTrader {
     // 5. VolumeAgent
     try {
       await nanopaymentSystem.makePayment('RealTrader', 'VolumeAgent', 0.007, 'Consulta volume');
-      await volumeAgent.refreshFromMarket();
+      await volumeAgent.refreshFromMarket(marketData);
       const volumeAnalysis = volumeAgent.analyzeVolume(1000000, 2, 5);
       votes.push({
         agentName: volumeAgent.getScore().agentName,

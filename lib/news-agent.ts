@@ -16,11 +16,9 @@ class NewsAgent {
   private losses = 0;
   private trades = 0;
 
-  private async fetchRealNews(): Promise<NewsSentiment> {
+  private async fetchRealNews(externalData?: any): Promise<NewsSentiment> {
     try {
-      const res = await fetch('/api/market-data', { signal: AbortSignal.timeout(5000) });
-      if (!res.ok) throw new Error('API error');
-      const data = await res.json();
+      const data = externalData ?? await (await fetch('/api/market-data', { signal: AbortSignal.timeout(5000) })).json();
       const headlines: string[] = data.headlines ?? [];
       if (headlines.length === 0) throw new Error('No headlines');
 
@@ -47,8 +45,8 @@ class NewsAgent {
     return this.sentiment;
   }
 
-  async decide(): Promise<AgentDecision> {
-    await this.updateSentiment();
+  async decide(externalData?: any): Promise<AgentDecision> {
+    this.sentiment = await this.fetchRealNews(externalData);
     const { score, bias } = this.sentiment;
     const action: "buy" | "sell" | "hold" = bias === "positive" ? "buy" : bias === "negative" ? "sell" : "hold";
     const confidence = Math.round(35 + Math.abs(score - 50) * 0.6);
@@ -75,11 +73,9 @@ class NewsAgent {
 }
 
 class EnhancedMarketAnalyzer {
-  async getCompleteMarketAnalysis() {
+  async getCompleteMarketAnalysis(externalData?: any) {
     try {
-      const res = await fetch('/api/market-data', { signal: AbortSignal.timeout(5000) });
-      if (!res.ok) throw new Error('API error');
-      const data = await res.json();
+      const data = externalData ?? await (await fetch('/api/market-data', { signal: AbortSignal.timeout(5000) })).json();
       const headlines = (data.headlines ?? []).slice(0, 3);
       const fg = data.fearGreed ?? {};
       const score = fg.value ?? 50;
