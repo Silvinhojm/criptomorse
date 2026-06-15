@@ -15,6 +15,7 @@ import { TradingNanopaymentDashboard } from "./components/TradingNanopaymentDash
 import { RealTradingDashboard } from "./components/RealTradingDashboard";
 import { BridgeWidget } from "./components/BridgeWidget";
 import { BotBank } from "./components/BotBank";
+import { ProjectionDashboard } from "./components/ProjectionDashboard";
 import { MarketMonitor } from "./marketMonitor";
 
 // Agents
@@ -1279,6 +1280,7 @@ export default function Home() {
         {/* Seções de Agentes */}
         {account && (
           <>
+            <ProjectionDashboard />
             <BotBank />
             <MarketMonitor />
             <AutoTradeControl account={account} onTradeExecuted={handleTradeExecuted} network={currentNetwork} />
