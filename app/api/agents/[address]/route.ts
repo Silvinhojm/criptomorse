@@ -21,8 +21,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return Response.json({ error: 'Invalid address' }, { status: 400 });
     }
 
+    const currentBlock = await provider.getBlockNumber();
+    const fromBlock = Math.max(0, currentBlock - 10000);
     const filter = contract.filters.Transfer(ethers.ZeroAddress, address);
-    const events = await contract.queryFilter(filter, -100000, 'latest');
+    const events = await contract.queryFilter(filter, fromBlock, 'latest');
 
     if (events.length === 0) {
       return Response.json({ agent: null, message: 'No agent found for this address' });

@@ -113,6 +113,7 @@ class AutomatedTrader {
     // 5. VolumeAgent
     try {
       await nanopaymentSystem.makePayment('RealTrader', 'VolumeAgent', 0.007, 'Consulta volume');
+      await volumeAgent.refreshFromMarket();
       const volumeAnalysis = volumeAgent.analyzeVolume(1000000, 2, 5);
       votes.push({
         agentName: volumeAgent.getScore().agentName,

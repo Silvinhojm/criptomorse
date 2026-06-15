@@ -75,8 +75,10 @@ class AgentRegistry {
     const contract = new ethers.Contract(IDENTITY_REGISTRY, IDENTITY_ABI, provider);
 
     try {
+      const currentBlock = await provider.getBlockNumber();
+      const fromBlock = Math.max(0, currentBlock - 10000);
       const filter = contract.filters.Transfer(ethers.ZeroAddress, ownerAddress);
-      const events = await contract.queryFilter(filter, -100000, 'latest');
+      const events = await contract.queryFilter(filter, fromBlock, 'latest');
       if (events.length === 0) return null;
 
       const lastEvent = events[events.length - 1] as ethers.EventLog;
@@ -110,8 +112,10 @@ class AgentRegistry {
     const contract = new ethers.Contract(IDENTITY_REGISTRY, IDENTITY_ABI, provider);
 
     try {
+      const currentBlock = await provider.getBlockNumber();
+      const fromBlock = Math.max(0, currentBlock - 10000);
       const filter = contract.filters.Transfer(ethers.ZeroAddress);
-      const events = await contract.queryFilter(filter, -100000, 'latest');
+      const events = await contract.queryFilter(filter, fromBlock, 'latest');
       if (events.length === 0) return 0;
       return Number((events[events.length - 1] as ethers.EventLog).args?.tokenId ?? 0);
     } catch {
