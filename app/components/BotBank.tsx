@@ -34,14 +34,17 @@ export function BotBank() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
+  const POLL_INTERVAL = 5000;
+
   useEffect(() => {
-    (async () => {
+    let mounted = true;
+
+    async function fetchTrades() {
       try {
-        // Tenta API (server-side persistence) primeiro
         const res = await fetch("/api/trades");
         if (res.ok) {
           const data = await res.json();
-          if (Array.isArray(data) && data.length > 0) {
+          if (Array.isArray(data) && data.length > 0 && mounted) {
             setTrades(data.reverse());
             setLoading(false);
             return;
@@ -49,18 +52,21 @@ export function BotBank() {
         }
       } catch { /* fallback */ }
 
-      // Fallback: localStorage
       try {
         const local = localStorage.getItem("arcflow_trade_history");
-        if (local) {
+        if (local && mounted) {
           const data = JSON.parse(local);
           if (Array.isArray(data)) {
             setTrades(data.reverse());
           }
         }
       } catch { /* no data */ }
-      setLoading(false);
-    })();
+      if (mounted) setLoading(false);
+    }
+
+    fetchTrades();
+    const interval = setInterval(fetchTrades, POLL_INTERVAL);
+    return () => { mounted = false; clearInterval(interval); };
   }, []);
 
   const totalProfit = trades.reduce((acc, t) => acc + (t.profit ?? 0), 0);

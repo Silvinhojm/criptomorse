@@ -29,7 +29,7 @@ export interface TradeOrder {
 
 export interface AgentStrategy {
   name: string;
-  strategy: "best_pair" | "momentum" | "arbitrage" | "scalping" | "btc_eth" | "position_holder";
+  strategy: "best_pair" | "momentum" | "arbitrage" | "scalping" | "btc_eth" | "position_holder" | "nim";
   maxAmount: number;
   minProfitThreshold: number;
   description: string;
@@ -64,16 +64,13 @@ async function getTokenPrice(token: TokenSymbol): Promise<number> {
   if (!coinId) return 1.0;
 
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch(
-      `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd`,
-      { signal: controller.signal }
-    );
-    clearTimeout(timeoutId);
+    const res = await fetch(`/api/price?ids=${coinId}`);
+    if (!res.ok) return priceCache.find(p => p.token === token)?.price ?? 1.0;
     const data = await res.json();
-    const price = data[coinId]?.usd ?? 1.0;
-    priceCache.push({ price, timestamp: Date.now(), token });
+    const price = data[coinId] ?? 1.0;
+    if (price > 0) {
+      priceCache.push({ price, timestamp: Date.now(), token });
+    }
     return price;
   } catch {
     return priceCache.find(p => p.token === token)?.price ?? 1.0;
@@ -127,6 +124,14 @@ class TradingNanopaymentSystem {
       minProfitThreshold: 0.02,
       description: "Trading BTC/ETH com analise de spread e momentum",
       maxOpenPositions: 1,
+    },
+    {
+      name: "NVIDIAgent",
+      strategy: "nim",
+      maxAmount: 10,
+      minProfitThreshold: 0.01,
+      description: "LLM-powered agent via NVIDIA NIM (Nemotron-3)",
+      maxOpenPositions: 2,
     },
   ];
 
@@ -260,6 +265,11 @@ class TradingNanopaymentSystem {
         volatilePairs.sort((a, b) => b.spread - a.spread);
         return volatilePairs[0].pair;
       }
+    }
+
+    if (agent.strategy === "nim") {
+      scored.sort((a, b) => b.spread - a.spread);
+      return scored[0]?.pair ?? affordable[0];
     }
 
     return affordable[0];
@@ -405,6 +415,38 @@ class TradingNanopaymentSystem {
           if (!pair) return null;
           const fromPrice = await getTokenPrice(pair.from);
           const toPrice = await getTokenPrice(pair.to);
+
+          if (agent.strategy === "nim") {
+            const marketData = await fetch('/api/market-data').then(r => r.json()).catch(() => ({}));
+            const prices = { [pair.from]: fromPrice, [pair.to]: toPrice };
+            const nimRes = await fetch('/api/nim', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                model: 'nvidia/nemotron-3-nano-30b-a3b',
+                messages: [
+                  {
+                    role: 'system',
+                    content: `You are a crypto trading AI. Analyze market data and respond with JSON: {"action":"buy|sell|hold","confidence":0-100,"reasoning":"..."}`,
+                  },
+                  {
+                    role: 'user',
+                    content: JSON.stringify({ pair: pair.label, prices, spread: Math.abs((toPrice - fromPrice) / fromPrice) * 100, marketData }),
+                  },
+                ],
+                temperature: 0.3,
+                max_tokens: 256,
+              }),
+            });
+            if (!nimRes.ok) throw new Error('NIM API error');
+            const nimData = await nimRes.json();
+            const text = nimData.choices?.[0]?.message?.content ?? '{}';
+            const parsed = JSON.parse(text.replace(/```(?:json)?\s*/g, '').trim());
+            const action = parsed.action === 'sell' ? 'sell' : parsed.action === 'buy' ? 'buy' : 'hold';
+            const confidence = Math.min(95, Math.max(10, parsed.confidence ?? 50));
+            return { agentName: agent.name, action, confidence, reason: `NIM: ${parsed.reasoning ?? 'LLM decision'}` } as AgentVote;
+          }
+
           const spread = Math.abs(toPrice - fromPrice);
           const confidence = Math.min(95, spread * 5000 + 30);
           const action = toPrice > fromPrice ? "buy" : toPrice < fromPrice ? "sell" : "hold";

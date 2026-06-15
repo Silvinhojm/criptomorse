@@ -596,15 +596,15 @@ function SwapBridgeModal({
   const getSwapUrl = () => {
     const fromTokenAddress = getTokenAddress(currentNetwork, fromToken);
     const toTokenAddress = getTokenAddress(currentNetwork, toToken);
-    const amountInWei = parseFloat(swapAmount) * 1000000 || 0;
-    return `https://jumper.exchange/?fromChain=${currentNetwork.chainId}&fromToken=${fromTokenAddress}&toChain=${currentNetwork.chainId}&toToken=${toTokenAddress}&integrator=arcflow${account ? `&toAddress=${account}` : ""}&fromAmount=${amountInWei}`;
+    const amount = parseFloat(swapAmount) || 0;
+    return `https://jumper.exchange/?fromChain=${currentNetwork.chainId}&fromToken=${fromTokenAddress}&toChain=${currentNetwork.chainId}&toToken=${toTokenAddress}&integrator=arcflow${account ? `&toAddress=${account}` : ""}&fromAmount=${amount}`;
   };
 
   const getBridgeUrl = () => {
     const fromTokenAddress = getTokenAddress(currentNetwork, bridgeToken);
     const toTokenAddress = getTokenAddress(targetNetwork, bridgeToken);
-    const amountInWei = parseFloat(swapAmount) * 1000000 || 0;
-    return `https://jumper.exchange/?fromChain=${currentNetwork.chainId}&fromToken=${fromTokenAddress}&toChain=${targetNetwork.chainId}&toToken=${toTokenAddress}&integrator=arcflow${account ? `&toAddress=${account}` : ""}&fromAmount=${amountInWei}`;
+    const amount = parseFloat(swapAmount) || 0;
+    return `https://jumper.exchange/?fromChain=${currentNetwork.chainId}&fromToken=${fromTokenAddress}&toChain=${targetNetwork.chainId}&toToken=${toTokenAddress}&integrator=arcflow${account ? `&toAddress=${account}` : ""}&fromAmount=${amount}`;
   };
 
   const handleSwap = async () => {

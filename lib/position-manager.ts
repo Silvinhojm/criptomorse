@@ -169,16 +169,13 @@ class PositionManager {
     if (!coinId) return 1.0;
 
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(
-        `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd`,
-        { signal: controller.signal }
-      );
-      clearTimeout(timeoutId);
+      const res = await fetch(`/api/price?ids=${coinId}`);
+      if (!res.ok) return this.priceCache.get(token)?.price ?? 1.0;
       const data = await res.json();
-      const price = data[coinId]?.usd ?? 1.0;
-      this.priceCache.set(token, { price, timestamp: Date.now() });
+      const price = data[coinId] ?? 1.0;
+      if (price > 0) {
+        this.priceCache.set(token, { price, timestamp: Date.now() });
+      }
       return price;
     } catch {
       return this.priceCache.get(token)?.price ?? 1.0;

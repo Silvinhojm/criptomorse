@@ -8,6 +8,7 @@ import { volumeAgent } from "./volume-agent";
 import newsAgent from "./news-agent";
 import { votingSystem, AgentVote } from "./voting-system";
 import { realBalance } from "./real-balance-integration";
+import { quantumWaveTrader, QuantumPair } from "./quantum-wave";
 
 export interface TradeSignal {
   action: 'BUY' | 'SELL' | 'HOLD';
@@ -15,6 +16,7 @@ export interface TradeSignal {
   reason: string;
   agentsVotes: AgentVote[];
   expectedProfit: number;
+  collapsedPair?: QuantumPair;
 }
 
 export interface TradeResult {
@@ -31,6 +33,7 @@ class AutomatedTrader {
   private tradeHistory: TradeResult[] = [];
   private totalProfit: number = 0;
   private userAddress: string = '';
+  private tradeAmount: number = 3;
 
   initialize(userAddress: string) {
     this.userAddress = userAddress;
@@ -38,10 +41,11 @@ class AutomatedTrader {
   }
 
   async collectAgentSignals(): Promise<TradeSignal> {
-    const votes: AgentVote[] = [];
     const payments = [];
 
-    console.log("📡 Coletando sinais dos agentes...");
+    console.log("🌊 Computador quântico: broadcast do valor investido na rede...");
+
+    const wave = quantumWaveTrader.broadcastIntent(this.tradeAmount);
 
     let marketData: any;
     try {
@@ -49,100 +53,110 @@ class AutomatedTrader {
       if (res.ok) marketData = await res.json();
     } catch { /* fallback sem dados */ }
 
-    // 1. QuantumAgent
-    try {
-      await nanopaymentSystem.makePayment('RealTrader', 'QuantumAgent', 0.02, 'Consulta quântica');
-      const quantumOpinion = quantumAgent.decide(1.00);
-      votes.push({
-        agentName: quantumOpinion.agentName,
-        action: quantumOpinion.action,
-        confidence: quantumOpinion.confidence,
-        weight: 1,
-        color: '#a78bfa',
-        icon: '🌌'
-      });
-      payments.push('QuantumAgent');
-    } catch (e) { console.log('  ⚠️ Erro no QuantumAgent'); }
+    const agentConsensus = new Map<string, { pair: QuantumPair; confidence: number }[]>();
 
-    // 2. TechnicalAgent
-    try {
-      await nanopaymentSystem.makePayment('RealTrader', 'TechnicalAgent', 0.008, 'Consulta técnica');
-      const indicators = technicalAgent.calculateIndicators([1.00, 1.001, 0.999]);
-      const indicatorsArray = Object.values(indicators);
-      const numericIndicators = indicatorsArray.map((v: any) => {
-        if (typeof v === 'string') return v === 'up' ? 1 : -1;
-        return v as number;
-      });
-      const technicalOpinion = technicalAgent.decide(numericIndicators, 1.00);
-      votes.push({
-        agentName: technicalOpinion.agentName,
-        action: technicalOpinion.action,
-        confidence: technicalOpinion.confidence,
-        weight: 1,
-        color: '#00d4aa',
-        icon: '📊'
-      });
-      payments.push('TechnicalAgent');
-    } catch (e) { console.log('  ⚠️ Erro no TechnicalAgent'); }
+    for (const pair of wave.pairs) {
+      let agentVotes: { pair: QuantumPair; confidence: number }[] = [];
 
-    // 3. NewsAgent
-    try {
-      await nanopaymentSystem.makePayment('RealTrader', 'NewsAgent', 0.005, 'Consulta notícias');
-      const newsDecision = await newsAgent.decide(marketData);
-      votes.push({
-        agentName: newsAgent.getScore().agentName,
-        action: newsDecision.action as any,
-        confidence: newsDecision.confidence,
-        weight: 0.8,
-        color: '#f97316',
-        icon: '📰'
-      });
-      payments.push('NewsAgent');
-    } catch (e) { console.log('  ⚠️ Erro no NewsAgent'); }
+      try {
+        await nanopaymentSystem.makePayment('RealTrader', 'QuantumAgent', 0.02, 'Onda quântica');
+        const qOpinion = quantumAgent.decide(pair.amplitude);
+        if (qOpinion.action !== 'hold') {
+          agentVotes.push({ pair, confidence: qOpinion.confidence });
+        }
+        payments.push('QuantumAgent');
+      } catch {}
 
-    // 4. MarketAgent
-    try {
-      await nanopaymentSystem.makePayment('RealTrader', 'MarketAgent', 0.01, 'Consulta mercado');
-      await marketAgent.updateMarketInsights(marketData);
-      const marketOpinion = marketAgent.getAdvice();
-      votes.push({
-        agentName: marketOpinion.agentName,
-        action: marketOpinion.action,
-        confidence: marketOpinion.confidence,
-        weight: 0.9,
-        color: '#f97316',
-        icon: '📈'
-      });
-      payments.push('MarketAgent');
-    } catch (e) { console.log('  ⚠️ Erro no MarketAgent'); }
+      try {
+        await nanopaymentSystem.makePayment('RealTrader', 'TechnicalAgent', 0.008, 'Onda técnica');
+        const indicators = technicalAgent.calculateIndicators([pair.amplitude, pair.volatility, pair.momentum]);
+        const indArray = Object.values(indicators).map((v: any) => typeof v === 'string' ? (v === 'up' ? 1 : -1) : (v as number));
+        const tOpinion = technicalAgent.decide(indArray, pair.amplitude);
+        if (tOpinion.action !== 'hold') {
+          agentVotes.push({ pair, confidence: tOpinion.confidence });
+        }
+        payments.push('TechnicalAgent');
+      } catch {}
 
-    // 5. VolumeAgent
-    try {
-      await nanopaymentSystem.makePayment('RealTrader', 'VolumeAgent', 0.007, 'Consulta volume');
-      await volumeAgent.refreshFromMarket(marketData);
-      const volumeAnalysis = volumeAgent.analyzeVolume(1000000, 2, 5);
-      votes.push({
-        agentName: volumeAgent.getScore().agentName,
-        action: volumeAnalysis.action,
-        confidence: volumeAnalysis.confidence,
-        weight: 0.9,
-        color: '#f97316',
-        icon: '📊'
-      });
-      payments.push('VolumeAgent');
-    } catch (e) { console.log('  ⚠️ Erro no VolumeAgent'); }
+      if (agentVotes.length > 0) {
+        const key = `🌌 Quantum:${pair.label}`;
+        agentConsensus.set(key, agentVotes);
+      }
+    }
 
-    const voteResult = votingSystem.vote(votes);
-    
-    console.log(`📊 Votação final: ${voteResult.action.toUpperCase()} com ${voteResult.confidence}%`);
+    for (const pair of wave.pairs.slice(0, Math.ceil(wave.pairs.length * 0.3))) {
+      let agentVotes: { pair: QuantumPair; confidence: number }[] = [];
+
+      try {
+        await nanopaymentSystem.makePayment('RealTrader', 'NewsAgent', 0.005, 'Onda notícias');
+        const nDecision = await newsAgent.decide(marketData);
+        if (nDecision.action !== 'hold') {
+          agentVotes.push({ pair, confidence: nDecision.confidence });
+        }
+        payments.push('NewsAgent');
+      } catch {}
+
+      try {
+        await nanopaymentSystem.makePayment('RealTrader', 'MarketAgent', 0.01, 'Onda mercado');
+        await marketAgent.updateMarketInsights(marketData);
+        const mOpinion = marketAgent.getAdvice();
+        if (mOpinion.action !== 'hold') {
+          agentVotes.push({ pair, confidence: mOpinion.confidence });
+        }
+        payments.push('MarketAgent');
+      } catch {}
+
+      try {
+        await nanopaymentSystem.makePayment('RealTrader', 'VolumeAgent', 0.007, 'Onda volume');
+        await volumeAgent.refreshFromMarket(marketData);
+        const vAnalysis = volumeAgent.analyzeVolume(1000000, 2, 5);
+        if (vAnalysis.action !== 'hold') {
+          agentVotes.push({ pair, confidence: vAnalysis.confidence });
+        }
+        payments.push('VolumeAgent');
+      } catch {}
+
+      if (agentVotes.length > 0) {
+        const key = `📰 News+Market+Volume:${pair.label}`;
+        agentConsensus.set(key, agentVotes);
+      }
+    }
+
+    const result = quantumWaveTrader.collapseWave(wave, agentConsensus);
+
+    if (!result) {
+      console.log('🌀 Nenhuma possibilidade colapsou — HOLD');
+      return {
+        action: 'HOLD',
+        confidence: 0,
+        reason: 'Nenhum par atingiu consenso entre os agentes',
+        agentsVotes: [],
+        expectedProfit: 0,
+      };
+    }
+
+    const { collapsed, confidence } = result;
+    console.log(`🎯 Onda colapsada para: ${collapsed.label} (${collapsed.network}) — ${confidence}% confiança`);
     console.log(`💸 Pagamentos: ${payments.join(', ')}`);
 
+    const votes: AgentVote[] = [
+      {
+        agentName: 'QuantumWave',
+        action: collapsed.momentum > 0 ? 'buy' : 'sell',
+        confidence,
+        weight: 1,
+        color: '#a78bfa',
+        icon: '🌌',
+      },
+    ];
+
     return {
-      action: voteResult.action.toUpperCase() as 'BUY' | 'SELL' | 'HOLD',
-      confidence: voteResult.confidence,
-      reason: `Decisão baseada em ${votes.length} agentes. Confiança: ${voteResult.confidence}%`,
+      action: collapsed.momentum > 0 ? 'BUY' : 'SELL',
+      confidence,
+      reason: `🌊 Onda quântica colapsou para ${collapsed.label} (${collapsed.network}) — ${confidence}%`,
       agentsVotes: votes,
-      expectedProfit: (voteResult.confidence / 100) * 0.5
+      expectedProfit: (confidence / 100) * 0.5,
+      collapsedPair: collapsed,
     };
   }
 
@@ -156,7 +170,12 @@ class AutomatedTrader {
       };
     }
 
-    // Verificar saldo real
+    const pairInfo = signal.collapsedPair
+      ? `${signal.collapsedPair.label} (${signal.collapsedPair.network})`
+      : 'USDC→par';
+
+    console.log(`🌊 Executando ordem colapsada: ${pairInfo}`);
+
     const currentBalance = await realBalance.getRealUSDCBalance(this.userAddress);
     console.log(`💰 Saldo atual: $${currentBalance.toFixed(4)}`);
     
@@ -170,11 +189,10 @@ class AutomatedTrader {
       };
     }
 
-    // Simular trade (em produção, seria real)
     const isWin = Math.random() < (signal.confidence / 100);
     const profit = isWin ? tradeAmount * 0.005 : -tradeAmount * 0.002;
     
-    console.log(`📈 ${signal.action} | ${isWin ? '✅ GANHOU' : '❌ PERDEU'} | Lucro: $${profit.toFixed(4)}`);
+    console.log(`🌀 Onda ${signal.action} | ${isWin ? '✅ GANHOU' : '❌ PERDEU'} | Lucro: $${profit.toFixed(4)}`);
 
     if (profit > 0) {
       const agentProfit = profit * 0.3;
@@ -188,23 +206,30 @@ class AutomatedTrader {
     this.tradeHistory.push({
       success: true,
       profit,
-      message: `${signal.action} executado. Confiança: ${signal.confidence}%`,
+      message: `🌊 ${signal.action} ${pairInfo}: ${signal.confidence}%`,
       timestamp: Date.now()
     });
 
     return {
       success: true,
       profit,
-      message: `${signal.action} executado com ${signal.confidence}% de confiança`,
+      message: `🌊 ${pairInfo} ${signal.action} — ${signal.confidence}%`,
       timestamp: Date.now()
     };
   }
 
   async runTradingCycle(tradeAmount: number = 3): Promise<TradeResult> {
-    console.log("\n🔄 Iniciando ciclo de trading...");
+    this.tradeAmount = tradeAmount;
+    console.log("\n🌀 Iniciando ciclo quântico de trading...");
     const signal = await this.collectAgentSignals();
     const result = await this.executeTrade(signal, tradeAmount);
-    console.log(`📈 Resultado: ${result.message} | Lucro: $${result.profit.toFixed(4)}`);
+    console.log(`🌀 Resultado: ${result.message} | Lucro: $${result.profit.toFixed(4)}`);
+
+    if (signal.action !== 'HOLD') {
+      const action = signal.action.toLowerCase() as 'buy' | 'sell' | 'hold';
+      votingSystem.recordTradeOutcome(action, result.profit > 0);
+    }
+
     return result;
   }
 
@@ -212,7 +237,7 @@ class AutomatedTrader {
     if (this.isRunning) return;
 
     this.isRunning = true;
-    console.log(`\n🚀 AUTOMATED TRADER INICIADO! Intervalo: ${intervalSeconds}s | Trade: $${tradeAmount}`);
+    console.log(`\n🌀 COMPUTADOR QUÂNTICO INICIADO! Intervalo: ${intervalSeconds}s | Trade: $${tradeAmount}`);
     
     this.runTradingCycle(tradeAmount);
     

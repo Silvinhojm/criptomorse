@@ -6,11 +6,13 @@ class CoingeckoAgent {
     if (cached && Date.now() - cached.ts < 60000) return cached.price;
 
     try {
-      const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd`);
-      if (!res.ok) throw new Error("CoinGecko error");
+      const res = await fetch(`/api/price?ids=${coinId}`);
+      if (!res.ok) return 65000;
       const data = await res.json();
-      const price = data[coinId]?.usd ?? 65000;
-      this.cache.set(coinId, { price, ts: Date.now() });
+      const price = data[coinId] ?? 65000;
+      if (price > 0) {
+        this.cache.set(coinId, { price, ts: Date.now() });
+      }
       return price;
     } catch {
       return 65000;

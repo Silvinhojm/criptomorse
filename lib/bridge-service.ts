@@ -16,7 +16,7 @@ class BridgeService {
   executeBridge(fromChain: ChainKey, toChain: ChainKey, amount: number, toAddress: string) {
     const from = CHAINS[fromChain];
     const to = CHAINS[toChain];
-    return { url: `https://jumper.exchange/?fromChain=${from.id}&fromToken=${from.usdc}&toChain=${to.id}&toToken=${to.usdc}&toAddress=${toAddress}&fromAmount=${Math.floor(amount * 1e6)}` };
+    return { url: `https://jumper.exchange/?fromChain=${from.id}&fromToken=${from.usdc}&toChain=${to.id}&toToken=${to.usdc}&toAddress=${toAddress}&fromAmount=${amount}` };
   }
 
   getUniARCBridgeUrl(toChain: string, toAddress: string) { 

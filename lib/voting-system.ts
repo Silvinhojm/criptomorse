@@ -1,6 +1,3 @@
-// lib/voting-system.ts
-// ✅ VERSÃO OTIMIZADA - Com timeouts e resiliência
-
 export interface AgentVote {
   agentName: string;
   action: "buy" | "sell" | "hold";
@@ -19,33 +16,41 @@ interface VoteResult {
   failedAgents: string[];
 }
 
+interface AgentScoreEntry {
+  wins: number;
+  losses: number;
+  totalVotes: number;
+  dynamicWeight: number;
+}
+
 class VotingSystem {
   private history: VoteResult[] = [];
   private wins = 0;
   private losses = 0;
-  
-  // ⏱️ Configurações de timeout
-  private readonly DEFAULT_TIMEOUT_MS = 5000; // 5 segundos
-  private readonly MAX_RETRIES = 2;
 
-  /**
-   * ✅ NOVO: Executa votação com timeout e resiliência
-   * @param votePromises - Promessas dos votos dos agentes
-   * @param timeoutMs - Tempo máximo de espera (padrão: 5s)
-   */
+  private agentScores: Map<string, AgentScoreEntry> = new Map();
+  private lastFinalAction: "buy" | "sell" | "hold" | null = null;
+  private lastVotes: AgentVote[] = [];
+
+  private readonly DEFAULT_TIMEOUT_MS = 5000;
+
+  private getAgentEntry(name: string): AgentScoreEntry {
+    if (!this.agentScores.has(name)) {
+      this.agentScores.set(name, { wins: 0, losses: 0, totalVotes: 0, dynamicWeight: 1 });
+    }
+    return this.agentScores.get(name)!;
+  }
+
   async voteWithTimeout(
     votePromises: Promise<AgentVote>[],
     timeoutMs: number = this.DEFAULT_TIMEOUT_MS
   ): Promise<VoteResult> {
     const timeoutPromises = votePromises.map(p => this.withTimeout(p, timeoutMs));
-    
-    // Aguarda todos os votos (incluindo os que falharam/timeout)
     const settledVotes = await Promise.allSettled(timeoutPromises);
-    
-    // Extrai apenas os votos bem-sucedidos
+
     const validVotes: AgentVote[] = [];
     const failedAgents: string[] = [];
-    
+
     for (const result of settledVotes) {
       if (result.status === 'fulfilled' && result.value !== null) {
         validVotes.push(result.value);
@@ -53,23 +58,18 @@ class VotingSystem {
         failedAgents.push('unknown-agent');
       }
     }
-    
+
     console.log(`📊 Voting completed: ${validVotes.length}/${votePromises.length} agents responded`);
-    
     if (failedAgents.length > 0) {
       console.warn(`⚠️ ${failedAgents.length} agents timed out or failed`);
     }
-    
-    // Se nenhum agente respondeu, decisão padrão é HOLD
+
     if (validVotes.length === 0) {
       console.warn('⚠️ No agents responded - defaulting to HOLD');
       return this.createDefaultResult('hold', 0, [], failedAgents.length);
     }
-    
-    // Executa a votação apenas com os votos válidos
+
     const result = this.vote(validVotes);
-    
-    // Adiciona metadados de timeout
     return {
       ...result,
       timeoutCount: failedAgents.length,
@@ -77,9 +77,6 @@ class VotingSystem {
     };
   }
 
-  /**
-   * ⏱️ Adiciona timeout a uma promessa
-   */
   private withTimeout<T>(
     promise: Promise<T>,
     timeoutMs: number
@@ -95,44 +92,109 @@ class VotingSystem {
     ]);
   }
 
-  /**
-   * 🛡️ Votação síncrona original (mantida para compatibilidade)
-   */
   vote(votes: AgentVote[]): VoteResult {
+    this.lastVotes = votes;
+
     const scores: Record<string, number> = { buy: 0, sell: 0, hold: 0 };
     let totalWeight = 0;
+    let agentCount = 0;
 
     for (const v of votes) {
-      const w = v.weight * (v.confidence / 100);
+      const entry = this.getAgentEntry(v.agentName);
+      const adaptiveWeight = entry.dynamicWeight * v.weight;
+      const w = adaptiveWeight * (v.confidence / 100);
       scores[v.action] = (scores[v.action] || 0) + w;
-      totalWeight += v.weight;
+      totalWeight += adaptiveWeight;
+      agentCount++;
     }
 
-    const action = (
-      Object.entries(scores).sort((a, b) => b[1] - a[1])[0][0]
-    ) as "buy" | "sell" | "hold";
+    const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+    const action = sorted[0][0] as "buy" | "sell" | "hold";
+    const topScore = sorted[0][1];
+    const secondScore = sorted[1]?.[1] ?? 0;
 
-    const confidence = totalWeight > 0
-      ? Math.round((scores[action] / totalWeight) * 100)
-      : 0;
+    const majorityWeight = scores[action];
+    const confidence = totalWeight > 0 ? Math.round((majorityWeight / totalWeight) * 100) : 0;
+
+    const agreeingAgents = votes.filter(v => v.action === action).length;
+    const minMajority = Math.ceil(votes.length * 0.5) + 1;
+    const hasMajority = agreeingAgents >= 3 || (agreeingAgents >= 2 && (topScore / (secondScore || 1)) > 2);
+
+    this.lastFinalAction = hasMajority ? action : 'hold';
+
+    const finalAction = hasMajority ? action : 'hold';
+    const finalConfidence = hasMajority ? confidence : Math.min(confidence, 40);
+
+    if (!hasMajority) {
+      console.log(`⚖️ Sem maioria (${agreeingAgents}/${votes.length} concordaram) — HOLD forçado`);
+    }
 
     const result: VoteResult = {
-      action,
-      confidence,
+      action: finalAction,
+      confidence: finalConfidence,
       votes,
       breakdown: scores,
       timeoutCount: 0,
       failedAgents: []
     };
-    
+
     this.history.push(result);
     if (this.history.length > 100) this.history.shift();
     return result;
   }
 
-  /**
-   * 📊 Cria resultado padrão (usado quando todos os agentes falham)
-   */
+  recordTradeOutcome(finalAction: "buy" | "sell" | "hold", wasProfitable: boolean) {
+    const votes = this.lastVotes;
+    if (votes.length === 0) return;
+
+    for (const v of votes) {
+      const entry = this.getAgentEntry(v.agentName);
+      const votedWithMajority = v.action === finalAction;
+
+      if (wasProfitable && votedWithMajority) {
+        entry.wins++;
+        entry.dynamicWeight = Math.min(2, entry.dynamicWeight + 0.1);
+      } else if (wasProfitable && !votedWithMajority) {
+        entry.losses++;
+        entry.dynamicWeight = Math.max(0.3, entry.dynamicWeight - 0.05);
+      } else if (!wasProfitable && votedWithMajority) {
+        entry.losses++;
+        entry.dynamicWeight = Math.max(0.3, entry.dynamicWeight - 0.1);
+      } else if (!wasProfitable && !votedWithMajority) {
+        entry.wins++;
+        entry.dynamicWeight = Math.min(2, entry.dynamicWeight + 0.05);
+      }
+
+      entry.totalVotes++;
+    }
+
+    this.printAgentRankings();
+  }
+
+  private printAgentRankings() {
+    const sorted = [...this.agentScores.entries()]
+      .map(([name, s]) => ({
+        name,
+        winRate: s.totalVotes > 0 ? Math.round((s.wins / s.totalVotes) * 100) : 0,
+        weight: Math.round(s.dynamicWeight * 100) / 100,
+        total: s.totalVotes,
+      }))
+      .sort((a, b) => b.winRate - a.winRate);
+
+    console.log('🏆 Agent Rankings:');
+    for (const a of sorted) {
+      console.log(`  ${a.name}: ${a.winRate}% win rate (${a.total} votes) — weight: ${a.weight}`);
+    }
+  }
+
+  getAgentWeights(): Record<string, number> {
+    const weights: Record<string, number> = {};
+    for (const [name, entry] of this.agentScores) {
+      weights[name] = Math.round(entry.dynamicWeight * 100) / 100;
+    }
+    return weights;
+  }
+
   private createDefaultResult(
     action: "buy" | "sell" | "hold",
     confidence: number,
@@ -149,9 +211,6 @@ class VotingSystem {
     };
   }
 
-  /**
-   * 📈 Registra resultado real do trade
-   */
   recordResult(won: boolean) {
     if (won) {
       this.wins++;
@@ -162,9 +221,6 @@ class VotingSystem {
     }
   }
 
-  /**
-   * 📊 Obtém estatísticas
-   */
   getStats() {
     const totalVotes = this.history.length;
     if (totalVotes === 0) {
@@ -176,7 +232,6 @@ class VotingSystem {
     );
 
     const totalTimeouts = this.history.reduce((s, r) => s + (r.timeoutCount || 0), 0);
-    
     const totalResolved = this.wins + this.losses;
     const winRate = totalResolved > 0
       ? Math.round((this.wins / totalResolved) * 100)
@@ -192,13 +247,11 @@ class VotingSystem {
     };
   }
 
-  /**
-   * 🔄 Reset do sistema
-   */
   reset() {
     this.history = [];
     this.wins = 0;
     this.losses = 0;
+    this.agentScores.clear();
     console.log('🔄 Voting system reset');
   }
 }

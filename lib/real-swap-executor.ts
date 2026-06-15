@@ -122,10 +122,6 @@ export const TRADING_PAIRS: Record<NetworkKey, Array<{ from: TokenSymbol; to: To
     { from: "WMATIC", to: "USDC",   label: "MATIC→USDC" },
     { from: "USDC",   to: "WETH",   label: "USDC→ETH" },
     { from: "WETH",   to: "USDC",   label: "ETH→USDC" },
-    { from: "USDC",   to: "WBTC",   label: "USDC→BTC" },
-    { from: "WBTC",   to: "USDC",   label: "BTC→USDC" },
-    { from: "WETH",   to: "WBTC",   label: "ETH→BTC" },
-    { from: "WBTC",   to: "WETH",   label: "BTC→ETH" },
     { from: "USDC",   to: "DAI",    label: "USDC→DAI" },
     { from: "DAI",    to: "USDC",   label: "DAI→USDC" },
   ],
@@ -204,7 +200,6 @@ export interface BestPairResult {
 }
 
 // ─── Executor principal ───────────────────────────────────────────────────────
-const COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price";
 const COIN_IDS: Record<string, string> = {
   WETH: "ethereum", WMATIC: "matic-network", WBTC: "bitcoin",
   ARB: "arbitrum", SOL: "solana",
@@ -225,13 +220,13 @@ class RealSwapExecutor {
     const coinId = COIN_IDS[token];
     if (!coinId) return 1.0;
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(`${COINGECKO_URL}?ids=${coinId}&vs_currencies=usd`, { signal: controller.signal });
-      clearTimeout(timeoutId);
+      const res = await fetch(`/api/price?ids=${coinId}`);
+      if (!res.ok) return this.priceCache.get(token)?.price ?? 1.0;
       const data = await res.json();
-      const price = data[coinId]?.usd ?? 1.0;
-      this.priceCache.set(token, { price, timestamp: Date.now() });
+      const price = data[coinId] ?? 1.0;
+      if (price > 0) {
+        this.priceCache.set(token, { price, timestamp: Date.now() });
+      }
       return price;
     } catch {
       return this.priceCache.get(token)?.price ?? 1.0;
