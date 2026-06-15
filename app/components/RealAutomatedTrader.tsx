@@ -265,14 +265,14 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
                   gap: 8,
                 }}
               >
-                <span style={{ color: t.action === "HOLD" ? "#64748b" : t.profit >= 0 ? "#4ade80" : "#f87171", minWidth: 40 }}>
+                <span style={{ color: t.action === "HOLD" ? "#64748b" : (t.profit ?? 0) >= 0 ? "#4ade80" : "#f87171", minWidth: 40 }}>
                   {t.action}
                 </span>
                 <span style={{ color: "#94a3b8", flex: 1 }}>
-                  ${t.fromAmount.toFixed(2)}
+                  ${(t.fromAmount ?? 0).toFixed(2)}
                 </span>
-                <span style={{ color: t.profit >= 0 ? "#4ade80" : "#f87171", minWidth: 60 }}>
-                  {t.profit >= 0 ? "+" : ""}${t.profit.toFixed(4)}
+                <span style={{ color: (t.profit ?? 0) >= 0 ? "#4ade80" : "#f87171", minWidth: 60 }}>
+                  {(t.profit ?? 0) >= 0 ? "+" : ""}${(t.profit ?? 0).toFixed(4)}
                 </span>
                 {t.txHash ? (
                   <a
@@ -287,7 +287,7 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
                 ) : (
                   <span style={{ color: "#475569" }}>sem tx</span>
                 )}
-                <span style={{ color: "#475569" }}>{new Date(t.timestamp).toLocaleTimeString()}</span>
+                <span style={{ color: "#475569" }}>{t.timestamp ? new Date(t.timestamp).toLocaleTimeString() : "-"}</span>
               </div>
             ))}
           </div>
