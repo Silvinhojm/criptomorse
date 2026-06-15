@@ -2,9 +2,10 @@
 // Robo de trading REAL - estrategia baseada em spread USDC/EURC
 // Cada trade executa swap real via LI.FI e confirma na blockchain
 
-import { realSwap, NETWORKS, type SwapResult } from "./real-swap-executor";
+import { realSwap, NETWORKS, type SwapResult, type NetworkKey } from "./real-swap-executor";
 import { blockIfPanicked } from "./circuit-breaker";
 import { saveTradeHistory, loadTradeHistory, saveTraderState, loadTraderState } from "./persistence";
+import { ethers } from "ethers";
 
 export interface TradeRecord {
   id: string;
@@ -69,8 +70,7 @@ class RealAutomatedTrader {
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private tradeHistory: TradeRecord[] = [];
   private totalProfit = 0;
-  private privateKey = "";
-  private networkKey: keyof typeof NETWORKS = "arc";
+  private networkKey: NetworkKey = "arc";
   private initialized = false;
   private lastAction = "Aguardando...";
   private persistEnabled = true;
@@ -78,10 +78,10 @@ class RealAutomatedTrader {
   private onLogCallback: ((msg: string) => void) | null = null;
 
   async initialize(
-    privateKey: string,
-    networkKey: keyof typeof NETWORKS = "arc"
+    account: string,
+    networkKey: NetworkKey,
+    externalSigner?: ethers.Signer
   ): Promise<boolean> {
-    this.privateKey = privateKey;
     this.networkKey = networkKey;
 
     // Restaurar estado persistido
@@ -92,7 +92,15 @@ class RealAutomatedTrader {
     }
     this.tradeHistory = loadTradeHistory();
 
-    const ok = await realSwap.initialize(privateKey, networkKey);
+    // Usar a wallet conectada (MetaMask) para ler saldos
+    // Se um signer externo foi fornecido, usa ele para assinar
+    let ok: boolean;
+    if (externalSigner) {
+      ok = await realSwap.initializeWithSigner(account, networkKey, externalSigner);
+    } else {
+      // Fallback: modo read-only, mostra saldos da wallet conectada
+      ok = await realSwap.initialize(account, networkKey, true);
+    }
     this.initialized = ok;
     return ok;
   }

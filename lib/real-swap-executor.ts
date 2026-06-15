@@ -206,7 +206,7 @@ export interface BestPairResult {
 // ─── Executor principal ───────────────────────────────────────────────────────
 class RealSwapExecutor {
   private provider: ethers.JsonRpcProvider | null = null;
-  private signer: ethers.Wallet | null = null;
+  private signer: ethers.Signer | null = null;
   private networkKey: NetworkKey = "arc";
   private userAddress: string = "";
   private tokenBalances: Map<TokenSymbol, TokenBalance> = new Map();
@@ -223,7 +223,6 @@ class RealSwapExecutor {
       this.provider = new ethers.JsonRpcProvider(net.rpcUrl);
 
       if (readOnly || !privateKeyOrAddress.startsWith("0x") || privateKeyOrAddress.length === 42) {
-        // Modo somente leitura — usa endereço da carteira conectada
         this.userAddress = privateKeyOrAddress;
         console.log(`👁️ RealSwapExecutor (read-only): ${net.name} | ${this.userAddress}`);
       } else {
@@ -232,6 +231,28 @@ class RealSwapExecutor {
         console.log(`✅ RealSwapExecutor: ${net.name} | ${this.userAddress}`);
       }
 
+      await this.refreshAllBalances();
+      return true;
+    } catch (err) {
+      console.error("❌ Erro ao inicializar:", err);
+      return false;
+    }
+  }
+
+  // Inicializar com um signer externo (ex: BrowserProvider do MetaMask)
+  // Usa a wallet conectada para assinar, mantendo o provider RPC para leitura
+  async initializeWithSigner(
+    userAddress: string,
+    networkKey: NetworkKey,
+    externalSigner: ethers.Signer
+  ): Promise<boolean> {
+    try {
+      this.networkKey = networkKey;
+      const net = NETWORKS[networkKey];
+      this.provider = new ethers.JsonRpcProvider(net.rpcUrl);
+      this.signer = externalSigner;
+      this.userAddress = userAddress;
+      console.log(`✅ RealSwapExecutor (external signer): ${net.name} | ${this.userAddress}`);
       await this.refreshAllBalances();
       return true;
     } catch (err) {

@@ -5,8 +5,7 @@
 import { useState, useEffect, useRef } from "react";
 import { realAutomatedTrader, type TradeRecord, type TraderStats } from "@/lib/real-automated-trader";
 import { NETWORKS } from "@/lib/real-swap-executor";
-
-const PRIVATE_KEY = process.env.NEXT_PUBLIC_PRIVATE_KEY || "";
+import { ethers } from "ethers";
 
 interface Props {
   account: string;
@@ -47,19 +46,31 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
     setHistory(realAutomatedTrader.getHistory());
   };
 
-  // Inicializar trader
+  // Inicializar trader com a wallet conectada (MetaMask)
   const handleInit = async () => {
     setIsInitializing(true);
-    addLog("🔑 Inicializando trader com private key...");
-    const ok = await realAutomatedTrader.initialize(PRIVATE_KEY, currentNetwork);
+    addLog("🔑 Conectando carteira MetaMask...");
+
+    let externalSigner: ethers.Signer | undefined;
+    try {
+      if (typeof window !== "undefined" && (window as any).ethereum) {
+        const provider = new ethers.BrowserProvider((window as any).ethereum);
+        externalSigner = await provider.getSigner();
+        addLog(`✅ Signer obtido do MetaMask: ${account?.slice(0, 6)}...`);
+      }
+    } catch {
+      addLog("⚠️ MetaMask nao disponivel, modo somente leitura");
+    }
+
+    const ok = await realAutomatedTrader.initialize(account, currentNetwork, externalSigner);
     if (ok) {
       realAutomatedTrader.onLog(addLog);
       realAutomatedTrader.onTrade(() => refreshStats());
       setInitialized(true);
-      addLog(`✅ Conectado à ${net.name}`);
+      addLog(`✅ Conectado à ${net.name} — wallet: ${account?.slice(0, 6)}...${account?.slice(-4)}`);
       await refreshStats();
     } else {
-      addLog("❌ Falha ao inicializar — verifique PRIVATE_KEY e RPC");
+      addLog("❌ Falha ao conectar — verifique conexao com MetaMask e RPC");
     }
     setIsInitializing(false);
   };
