@@ -1104,9 +1104,20 @@ export default function Home() {
   const getPortfolioTokens = useCallback(() => {
     const common: { symbol: string; name: string; icon: string; address: string; decimals: number; isNative: boolean }[] = [
       { symbol: currentNetwork.nativeCurrency.symbol, name: currentNetwork.nativeCurrency.name, icon: "🪙", address: "", decimals: currentNetwork.nativeCurrency.decimals, isNative: true },
+    ];
+    // Arc: USDC é nativo, EURC é ERC-20
+    if (currentNetwork.chainId === 5042002) {
+      common.push(
+        { symbol: "USDC", name: "USD Coin", icon: "💵", address: "", decimals: 6, isNative: true },
+        { symbol: "EURC", name: "Euro Coin", icon: "💶", address: currentNetwork.eurc, decimals: 6, isNative: false },
+      );
+      return common; // Arc só tem USDC (nativo) + EURC
+    }
+    // Demais redes: USDC é ERC-20 real
+    common.push(
       { symbol: "USDC", name: "USD Coin", icon: "💵", address: currentNetwork.usdc, decimals: 6, isNative: false },
       { symbol: "EURC", name: "Euro Coin", icon: "💶", address: currentNetwork.eurc, decimals: 6, isNative: false },
-    ];
+    );
     if (currentNetwork.chainId === 137) { // Polygon
       common.push(
         { symbol: "WMATIC", name: "Wrapped MATIC", icon: "🔷", address: "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270", decimals: 18, isNative: false },
