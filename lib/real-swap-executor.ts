@@ -7,6 +7,15 @@ import { getQuote, toTokenUnits } from "./lifi-executor";
 import { getCircuitBreakerState, recordError, recordTradeResult } from "./circuit-breaker";
 
 // ─── Redes suportadas ────────────────────────────────────────────────────────
+// Custo estimado de gas em USD por rede (para deducao do lucro)
+export const GAS_COST_ESTIMATE: Record<string, number> = {
+  arc: 0.001,
+  base: 0.05,
+  polygon: 0.08,
+  ethereum: 1.50,
+  arbitrum: 0.03,
+};
+
 export const NETWORKS = {
   arc: {
     chainId: 5042002,
@@ -32,6 +41,7 @@ export const NETWORKS = {
       EURC: "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42",
       DAI:  "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
       WETH: "0x4200000000000000000000000000000000000006",
+      WBTC: "0x0555E30dD009B6f21Bcb7A78FeE496525DbD919e",
     },
   },
   polygon: {
@@ -48,6 +58,7 @@ export const NETWORKS = {
       WMATIC:"0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270",
       WETH:  "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619",
       EURC:  "0xc52d20D70d2B1E27C2cb85AA0E3a9F5b4AEBf7e7",
+      WBTC:  "0x1bfd67037b42cf73acF2047067bd4F2C47D9BfD6",
     },
   },
   ethereum: {
@@ -63,6 +74,7 @@ export const NETWORKS = {
       DAI:  "0x6B175474E89094C44Da98b954EedeAC495271d0F",
       WETH: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
       EURC: "0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c",
+      WBTC: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
     },
   },
   arbitrum: {
@@ -77,6 +89,7 @@ export const NETWORKS = {
       USDT: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
       WETH: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
       ARB:  "0x912CE59144191C1204E64559FE8253a0e49E6548",
+      WBTC: "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f",
     },
   },
 };
@@ -94,6 +107,10 @@ export const TRADING_PAIRS: Record<NetworkKey, Array<{ from: TokenSymbol; to: To
     { from: "USDC", to: "EURC",  label: "USDC→EURC" },
     { from: "USDC", to: "WETH",  label: "USDC→ETH" },
     { from: "WETH", to: "USDC",  label: "ETH→USDC" },
+    { from: "USDC", to: "WBTC",  label: "USDC→BTC" },
+    { from: "WBTC", to: "USDC",  label: "BTC→USDC" },
+    { from: "WETH", to: "WBTC",  label: "ETH→BTC" },
+    { from: "WBTC", to: "WETH",  label: "BTC→ETH" },
     { from: "EURC", to: "USDC",  label: "EURC→USDC" },
     { from: "DAI",  to: "USDC",  label: "DAI→USDC" },
   ],
@@ -104,12 +121,20 @@ export const TRADING_PAIRS: Record<NetworkKey, Array<{ from: TokenSymbol; to: To
     { from: "WMATIC", to: "USDC",   label: "MATIC→USDC" },
     { from: "USDC",   to: "WETH",   label: "USDC→ETH" },
     { from: "WETH",   to: "USDC",   label: "ETH→USDC" },
+    { from: "USDC",   to: "WBTC",   label: "USDC→BTC" },
+    { from: "WBTC",   to: "USDC",   label: "BTC→USDC" },
+    { from: "WETH",   to: "WBTC",   label: "ETH→BTC" },
+    { from: "WBTC",   to: "WETH",   label: "BTC→ETH" },
     { from: "USDC",   to: "DAI",    label: "USDC→DAI" },
     { from: "DAI",    to: "USDC",   label: "DAI→USDC" },
   ],
   ethereum: [
     { from: "USDC", to: "WETH",  label: "USDC→ETH" },
     { from: "WETH", to: "USDC",  label: "ETH→USDC" },
+    { from: "USDC", to: "WBTC",  label: "USDC→BTC" },
+    { from: "WBTC", to: "USDC",  label: "BTC→USDC" },
+    { from: "WETH", to: "WBTC",  label: "ETH→BTC" },
+    { from: "WBTC", to: "WETH",  label: "BTC→ETH" },
     { from: "USDC", to: "DAI",   label: "USDC→DAI" },
     { from: "DAI",  to: "USDC",  label: "DAI→USDC" },
     { from: "USDC", to: "EURC",  label: "USDC→EURC" },
@@ -117,6 +142,10 @@ export const TRADING_PAIRS: Record<NetworkKey, Array<{ from: TokenSymbol; to: To
   arbitrum: [
     { from: "USDC", to: "WETH",  label: "USDC→ETH" },
     { from: "WETH", to: "USDC",  label: "ETH→USDC" },
+    { from: "USDC", to: "WBTC",  label: "USDC→BTC" },
+    { from: "WBTC", to: "USDC",  label: "BTC→USDC" },
+    { from: "WETH", to: "WBTC",  label: "ETH→BTC" },
+    { from: "WBTC", to: "WETH",  label: "BTC→ETH" },
     { from: "USDC", to: "ARB",   label: "USDC→ARB" },
     { from: "ARB",  to: "USDC",  label: "ARB→USDC" },
     { from: "USDC", to: "USDT",  label: "USDC→USDT" },
@@ -130,8 +159,11 @@ function isStable(token: TokenSymbol): boolean {
   return STABLE_TOKENS.has(token);
 }
 
-// Lucro mínimo em USD para executar um trade (evita perda com gas)
-const MIN_PROFIT_THRESHOLD = 0.01;
+// Lucro mínimo dinâmico por rede (cobre gas + margem)
+function getMinProfitThreshold(networkKey: NetworkKey): number {
+  const gasEstimate = GAS_COST_ESTIMATE[networkKey] ?? 0.05;
+  return Math.max(0.01, gasEstimate * 3); // 3x o gas estimado de margem
+}
 
 const ERC20_ABI = [
   "function balanceOf(address owner) view returns (uint256)",
@@ -300,10 +332,14 @@ class RealSwapExecutor {
 
     if (results.length === 0) return null;
 
-    // Filtrar pares com lucro mínimo (só para pares estáveis)
-    const profitable = results.filter(r =>
-      !isStable(r.pair.to) || r.expectedProfit >= MIN_PROFIT_THRESHOLD
-    );
+    const minProfit = getMinProfitThreshold(this.networkKey);
+
+    // Filtrar pares com lucro mínimo (deduzindo gas)
+    const profitable = results.filter(r => {
+      if (!isStable(r.pair.to)) return true; // pares voláteis acumulam posição
+      const gasCost = GAS_COST_ESTIMATE[this.networkKey] ?? 0.05;
+      return r.expectedProfit >= minProfit + gasCost;
+    });
 
     if (profitable.length === 0) return null;
 
@@ -364,14 +400,17 @@ class RealSwapExecutor {
       const toAmount   = parseFloat(quote.toAmount) / Math.pow(10, toDecimals);
       log(`✅ Rota via ${quote.tool} | Estimativa: ${toAmount.toFixed(6)} ${toToken}`);
 
-      // Verificar lucro mínimo (só para pares onde TO é stablecoin)
+      // Verificar lucro mínimo (deduzindo gas)
       let estimatedProfit = 0;
+      const gasCost = GAS_COST_ESTIMATE[this.networkKey] ?? 0.05;
       if (isStable(toToken)) {
         estimatedProfit = toAmount - amountUsd;
       }
-      if (estimatedProfit < MIN_PROFIT_THRESHOLD && isStable(toToken)) {
-        log(`⏸️ Lucro estimado $${estimatedProfit.toFixed(4)} abaixo do mínimo $${MIN_PROFIT_THRESHOLD}`);
-        return this._fail(fromToken, toToken, amountUsd, `Lucro mínimo não atingido: $${estimatedProfit.toFixed(4)}`, timestamp);
+      const netProfit = estimatedProfit - gasCost;
+      const minProfit = getMinProfitThreshold(this.networkKey);
+      if (estimatedProfit < minProfit && isStable(toToken)) {
+        log(`⏸️ Lucro estimado $${estimatedProfit.toFixed(4)} - gas $${gasCost.toFixed(3)} = $${netProfit.toFixed(4)} (min: $${minProfit})`);
+        return this._fail(fromToken, toToken, amountUsd, `Lucro líquido não atinge mínimo: $${netProfit.toFixed(4)}`, timestamp);
       }
 
       // Determinar direção da ação
@@ -416,11 +455,14 @@ class RealSwapExecutor {
       // Atualizar saldos após trade
       await this.refreshAllBalances();
 
-      // Calcular lucro pós-trade usando refreshAllBalances
+      // Calcular lucro pós-trade (deduzindo gas)
       let profit = 0;
+      const postGas = GAS_COST_ESTIMATE[this.networkKey] ?? 0.05;
       if (isStable(toToken)) {
-        profit = toAmount - amountUsd;
+        profit = toAmount - amountUsd - postGas;
       }
+
+      log(`💵 Lucro líquido (pós-gas): $${profit.toFixed(4)}`);
 
       // Registrar resultado no circuit breaker
       const { isPanicActive } = recordTradeResult(profit);

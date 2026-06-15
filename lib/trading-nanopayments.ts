@@ -1,10 +1,13 @@
 // lib/trading-nanopayments.ts
-// Trading automatico multi-par usando saldo REAL da carteira conectada
-// Arc Testnet = faucet (sem risco) | Outras redes = dinheiro real
+// Trading automatico multi-par com votacao entre agentes,
+// gerenciamento de posicoes (trailing stop), e relatorio do contador
 
-import { realSwap, NETWORKS, TRADING_PAIRS, type NetworkKey, type TokenSymbol, type SwapResult } from "./real-swap-executor";
+import { realSwap, NETWORKS, TRADING_PAIRS, GAS_COST_ESTIMATE, type NetworkKey, type TokenSymbol, type SwapResult } from "./real-swap-executor";
 import { getCircuitBreakerState, blockIfPanicked, recordTradeResult } from "./circuit-breaker";
 import { saveTradeHistory, loadTradeHistory } from "./persistence";
+import { positionManager, type OpenPosition } from "./position-manager";
+import { accountant, type TradeReport } from "./accountant";
+import { agentVoting, type AgentVote } from "./agent-voting";
 
 export interface TradeOrder {
   id: string;
@@ -16,6 +19,7 @@ export interface TradeOrder {
   status: "pending" | "completed" | "failed";
   timestamp: number;
   profit: number;
+  profitPercent: number;
   txHash?: string;
   explorerUrl?: string;
   agentName: string;
@@ -25,10 +29,11 @@ export interface TradeOrder {
 
 export interface AgentStrategy {
   name: string;
-  strategy: "best_pair" | "momentum" | "arbitrage" | "scalping";
+  strategy: "best_pair" | "momentum" | "arbitrage" | "scalping" | "btc_eth" | "position_holder";
   maxAmount: number;
   minProfitThreshold: number;
   description: string;
+  maxOpenPositions: number;
 }
 
 export interface TradingStats {
@@ -42,20 +47,18 @@ export interface TradingStats {
   networkKey: NetworkKey;
 }
 
-// Tokens estaveis (USD peg)
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"]);
 
-// Cache de preco para analise de spread
 let priceCache: { price: number; timestamp: number; token: string }[] = [];
 
 async function getTokenPrice(token: TokenSymbol): Promise<number> {
   const cached = priceCache.find(p => p.token === token);
   if (cached && Date.now() - cached.timestamp < 60000) return cached.price;
-
   if (STABLES.has(token)) return 1.0;
 
   const coinIds: Record<string, string> = {
     WETH: "ethereum", WMATIC: "matic-network", ARB: "arbitrum",
+    WBTC: "bitcoin",
   };
   const coinId = coinIds[token];
   if (!coinId) return 1.0;
@@ -73,7 +76,7 @@ async function getTokenPrice(token: TokenSymbol): Promise<number> {
     priceCache.push({ price, timestamp: Date.now(), token });
     return price;
   } catch {
-    return 1.0;
+    return priceCache.find(p => p.token === token)?.price ?? 1.0;
   }
 }
 
@@ -82,6 +85,7 @@ class TradingNanopaymentSystem {
   private isInitialized = false;
   private currentNetwork: NetworkKey = "arc";
   private walletAddress = "";
+  private positionMonitorInterval: ReturnType<typeof setInterval> | null = null;
 
   private agents: AgentStrategy[] = [
     {
@@ -89,28 +93,40 @@ class TradingNanopaymentSystem {
       strategy: "best_pair",
       maxAmount: 10,
       minProfitThreshold: 0.01,
-      description: "Escolhe sempre o melhor par disponivel",
+      description: "Escolhe o melhor par via LI.FI findBestPair",
+      maxOpenPositions: 2,
     },
     {
       name: "ArbitrageHunter",
       strategy: "arbitrage",
       maxAmount: 5,
       minProfitThreshold: 0.02,
-      description: "Busca oportunidades de arbitragem entre pares estaveis",
+      description: "Arbitragem entre stablecoins com maior spread",
+      maxOpenPositions: 1,
     },
     {
       name: "ScalpingBot",
       strategy: "scalping",
       maxAmount: 2,
       minProfitThreshold: 0.005,
-      description: "Micro trades rapidos em pares de alta liquidez",
+      description: "Micro trades em pares estaveis de alta liquidez",
+      maxOpenPositions: 3,
     },
     {
       name: "MarketMaker",
-      strategy: "momentum",
+      strategy: "position_holder",
       maxAmount: 8,
       minProfitThreshold: 0.01,
-      description: "Segue tendencia com pares via findBestPair",
+      description: "Abre posicoes em tokens volatil (WETH/WBTC) com trailing stop",
+      maxOpenPositions: 2,
+    },
+    {
+      name: "BTCTrader",
+      strategy: "btc_eth",
+      maxAmount: 15,
+      minProfitThreshold: 0.02,
+      description: "Trading BTC/ETH com analise de spread e momentum",
+      maxOpenPositions: 1,
     },
   ];
 
@@ -118,26 +134,73 @@ class TradingNanopaymentSystem {
     try {
       this.walletAddress = walletAddress;
       this.currentNetwork = networkKey;
-
-      // Restaurar historico persistido
       this.orders = loadTradeHistory().filter((o: any) => o.agentName);
 
-      const ok = await realSwap.initialize(
-        privateKey || walletAddress,
-        networkKey,
-        !privateKey
-      );
-
+      const ok = await realSwap.initialize(privateKey || walletAddress, networkKey, !privateKey);
       if (ok) {
         this.isInitialized = true;
         const net = NETWORKS[networkKey];
         console.log(`TradingSystem: ${net.name} | ${walletAddress} | ${net.isTestnet ? "TESTNET" : "MAINNET"}`);
       }
 
+      // Iniciar monitoramento de posicoes a cada 15s
+      this._startPositionMonitor();
+
       return ok;
     } catch (err) {
       console.error("Erro ao inicializar TradingSystem:", err);
       return false;
+    }
+  }
+
+  private _startPositionMonitor() {
+    if (this.positionMonitorInterval) clearInterval(this.positionMonitorInterval);
+    this.positionMonitorInterval = setInterval(async () => {
+      await this._checkPositions();
+    }, 15000);
+  }
+
+  private async _checkPositions() {
+    const positions = positionManager.getOpenPositions();
+    for (const pos of positions) {
+      try {
+        const price = await positionManager.fetchTokenPrice(pos.boughtToken);
+        const decision = positionManager.updatePrice(pos.id, price);
+
+        if (decision === "close") {
+          console.log(`Fechando posicao ${pos.boughtToken} automaticamente...`);
+          // Vender o token volatil de volta para USDC
+          const result = await realSwap.executeSwap(
+            pos.boughtToken as TokenSymbol,
+            "USDC",
+            pos.amountBought,
+          );
+
+          if (result.success) {
+            positionManager.closePosition(pos.id, price);
+            const profit = (price - pos.entryPrice) * pos.amountBought;
+            accountant.addReport({
+              id: `close_${pos.id}`,
+              agentName: "PositionManager",
+              action: "sell",
+              fromToken: pos.boughtToken,
+              toToken: "USDC",
+              amount: pos.amountBought,
+              toAmount: result.toAmount,
+              profit,
+              profitPercent: pos.currentProfitPercent,
+              entryPrice: pos.entryPrice,
+              exitPrice: price,
+              status: "completed",
+              duration: Date.now() - pos.entryTimestamp,
+              timestamp: Date.now(),
+              networkKey: pos.networkKey,
+            });
+          }
+        }
+      } catch (err) {
+        console.warn(`Erro no monitoramento de ${pos.boughtToken}:`, err);
+      }
     }
   }
 
@@ -149,16 +212,12 @@ class TradingNanopaymentSystem {
 
   async findBestPairForAgent(agent: AgentStrategy): Promise<{ from: TokenSymbol; to: TokenSymbol; label: string } | null> {
     const pairs = TRADING_PAIRS[this.currentNetwork];
-    const net = NETWORKS[this.currentNetwork];
-
     const affordable = pairs.filter(p => {
       const bal = realSwap.getBalance(p.from);
       return bal >= agent.maxAmount * 0.9;
     });
-
     if (affordable.length === 0) return null;
 
-    // Calcular spread estimado para cada par e escolher o melhor
     const scored = await Promise.all(
       affordable.map(async (pair) => {
         const fromPrice = await getTokenPrice(pair.from);
@@ -169,35 +228,37 @@ class TradingNanopaymentSystem {
     );
 
     if (agent.strategy === "scalping") {
-      // Scalping: maior spread entre stables
-      const stables = scored.filter(p =>
-        STABLES.has(p.pair.from) && STABLES.has(p.pair.to)
-      );
+      const stables = scored.filter(p => STABLES.has(p.pair.from) && STABLES.has(p.pair.to));
       if (stables.length === 0) return affordable[0];
       stables.sort((a, b) => b.spread - a.spread);
-      console.log(`[Scalping] Maior spread: ${stables[0].pair.label} (${stables[0].spread.toFixed(3)}%)`);
       return stables[0].pair;
     }
 
     if (agent.strategy === "arbitrage") {
-      // Arbitrage: par estavel com maior spread positivo
       const stables = scored.filter(p =>
         STABLES.has(p.pair.from) && STABLES.has(p.pair.to) &&
         p.spread > agent.minProfitThreshold * 10
       );
       if (stables.length === 0) return affordable[0];
       stables.sort((a, b) => b.spread - a.spread);
-      console.log(`[Arbitrage] Melhor spread: ${stables[0].pair.label} (${stables[0].spread.toFixed(3)}%)`);
       return stables[0].pair;
     }
 
-    // momentum: par com maior potencial (volatil)
-    if (agent.strategy === "momentum") {
-      const volatiles = scored.filter(p => !STABLES.has(p.pair.from) || !STABLES.has(p.pair.to));
-      if (volatiles.length > 0) {
-        volatiles.sort((a, b) => b.spread - a.spread);
-        console.log(`[Momentum] Par volatil escolhido: ${volatiles[0].pair.label} (spread ${volatiles[0].spread.toFixed(3)}%)`);
-        return volatiles[0].pair;
+    if (agent.strategy === "btc_eth") {
+      const btcEth = scored.filter(p =>
+        (p.pair.from === "WBTC" && p.pair.to === "WETH") ||
+        (p.pair.from === "WETH" && p.pair.to === "WBTC")
+      );
+      if (btcEth.length > 0) return btcEth[0].pair;
+      const btcUsdc = scored.filter(p => p.pair.from === "WBTC" || p.pair.to === "WBTC");
+      if (btcUsdc.length > 0) return btcUsdc[0].pair;
+    }
+
+    if (agent.strategy === "position_holder") {
+      const volatilePairs = scored.filter(p => !STABLES.has(p.pair.from) || !STABLES.has(p.pair.to));
+      if (volatilePairs.length > 0) {
+        volatilePairs.sort((a, b) => b.spread - a.spread);
+        return volatilePairs[0].pair;
       }
     }
 
@@ -209,56 +270,92 @@ class TradingNanopaymentSystem {
     onLog?: (msg: string) => void
   ): Promise<TradeOrder | null> {
     if (!this.isInitialized) return null;
-
-    // Circuit breaker
-    if (blockIfPanicked()) {
-      onLog?.("Circuit breaker bloqueou trade");
-      return null;
-    }
+    if (blockIfPanicked()) { onLog?.("Circuit breaker bloqueou"); return null; }
 
     const net = NETWORKS[this.currentNetwork];
     const log = (msg: string) => { console.log(`[${agent.name}] ${msg}`); onLog?.(msg); };
 
     log(`${agent.name} (${agent.strategy}) analisando ${net.name}...`);
 
-    let result: SwapResult;
+    // Verificar limite de posicoes abertas
+    const openPositions = positionManager.getOpenPositions().length;
+    if (openPositions >= agent.maxOpenPositions) {
+      log(`Limite de ${agent.maxOpenPositions} posicoes abertas atingido`);
+      return null;
+    }
 
-    if (agent.strategy === "best_pair" || agent.strategy === "momentum") {
+    let result: SwapResult;
+    let chosenPair: { from: TokenSymbol; to: TokenSymbol; label: string } | null = null;
+
+    if (agent.strategy === "best_pair") {
       result = await realSwap.executeSmartSwap(agent.maxAmount, (msg) => log(msg));
     } else {
       const pair = await this.findBestPairForAgent(agent);
-      if (!pair) {
-        log(`Sem saldo suficiente para qualquer par em ${net.name}`);
-        return null;
-      }
+      if (!pair) { log(`Sem saldo para pares`); return null; }
+      chosenPair = pair;
       log(`Par escolhido: ${pair.label}`);
       result = await realSwap.executeSwap(pair.from, pair.to, agent.maxAmount, (msg) => log(msg));
     }
 
+    const actionType: "BUY" | "SELL" | "HOLD" = result.success ? result.action : "HOLD";
+
     const order: TradeOrder = {
       id: `${agent.name}_${Date.now()}`,
       fromToken: result.fromToken,
-      toToken:   result.toToken,
-      amount:    result.fromAmount,
-      toAmount:  result.toAmount,
-      type:      result.success ? result.action : "HOLD",
-      status:    result.success ? "completed" : "failed",
+      toToken: result.toToken,
+      amount: result.fromAmount,
+      toAmount: result.toAmount,
+      type: actionType,
+      status: result.success ? "completed" : "failed",
       timestamp: result.timestamp,
-      profit:    result.profit ?? 0,
-      txHash:    result.txHash || undefined,
+      profit: result.profit ?? 0,
+      profitPercent: result.fromAmount > 0 ? ((result.profit ?? 0) / result.fromAmount) * 100 : 0,
+      txHash: result.txHash || undefined,
       explorerUrl: result.explorerUrl || undefined,
       agentName: agent.name,
       networkKey: this.currentNetwork,
     };
-
     this.orders.push(order);
-
-    // Persistir historico
     saveTradeHistory(this.orders);
 
+    // Registrar no contador
+    const entryPrice = result.fromAmount > 0 ? result.fromAmount / result.toAmount : 1;
+    const reportAction: "buy" | "sell" | "hold" = actionType === "BUY" ? "buy" : actionType === "SELL" ? "sell" : "hold";
+    accountant.addReport({
+      id: order.id,
+      agentName: agent.name,
+      action: reportAction,
+      fromToken: result.fromToken,
+      toToken: result.toToken,
+      amount: result.fromAmount,
+      toAmount: result.toAmount,
+      profit: result.profit ?? 0,
+      profitPercent: order.profitPercent,
+      entryPrice,
+      exitPrice: result.toAmount > 0 ? result.toAmount / result.fromAmount : 1,
+      status: result.success ? "completed" : "failed",
+      duration: 0,
+      timestamp: Date.now(),
+      networkKey: this.currentNetwork,
+    });
+
+    // Se comprou token volatil, abrir posicao com trailing stop
+    if (result.success && chosenPair && !STABLES.has(chosenPair.to) && STABLES.has(chosenPair.from)) {
+      const boughtPrice = await getTokenPrice(chosenPair.to);
+      positionManager.openPosition(
+        this.currentNetwork,
+        chosenPair.to,
+        chosenPair.from,
+        result.toAmount,
+        result.fromAmount,
+        boughtPrice
+      );
+      log(`Posicao aberta: ${result.toAmount.toFixed(6)} ${chosenPair.to} @ $${boughtPrice.toFixed(4)}`);
+    }
+
     if (result.success) {
-      log(`Trade confirmado! Lucro: $${order.profit.toFixed(6)}`);
-      recordTradeResult(order.profit);
+      log(`Trade confirmado! Lucro: $${(result.profit ?? 0).toFixed(6)}`);
+      recordTradeResult(result.profit ?? 0);
     } else {
       log(`Trade falhou: ${result.message}`);
     }
@@ -271,19 +368,66 @@ class TradingNanopaymentSystem {
     const net = NETWORKS[this.currentNetwork];
     onLog?.(`Ciclo automatico - ${net.name} | ${net.isTestnet ? "TESTNET" : "MAINNET"}`);
 
-    // Verificar circuit breaker antes do ciclo
     const cb = getCircuitBreakerState();
     if (cb.isPanicActive) {
-      onLog?.(`Circuit breaker ativo desde ${cb.panicTimestamp}. Motivo: ${cb.panicReason}`);
+      onLog?.(`Circuit breaker ativo: ${cb.panicReason}`);
       return results;
+    }
+
+    // Mostrar ranking dos agentes
+    const ranking = accountant.getRanking();
+    if (ranking.length > 0) {
+      onLog?.("Ranking dos agentes:");
+      ranking.slice(0, 5).forEach((r, i) => {
+        onLog?.(`  #${i + 1} ${r.agentName}: ${r.winRate.toFixed(1)}% acertos (score: ${r.score.toFixed(0)})`);
+      });
     }
 
     await realSwap.refreshAllBalances();
     const balances = realSwap.getAllBalances().filter(b => b.balance > 0);
     onLog?.(`Saldos: ${balances.map(b => `${b.symbol}:${b.balance.toFixed(4)}`).join(" | ")}`);
 
+    // Mostrar posicoes abertas
+    const positions = positionManager.getOpenPositions();
+    if (positions.length > 0) {
+      onLog?.(`Posicoes abertas: ${positions.length}`);
+      positions.forEach(p => {
+        onLog?.(`  ${p.boughtToken}: ${p.currentProfitPercent.toFixed(2)}% (pico: ${p.peakProfitPercent.toFixed(2)}%)`);
+      });
+    }
+
+    // Votacao entre agentes
+    agentVoting.clearVotes();
+    const agentVotes = await Promise.all(
+      this.agents.map(async (agent) => {
+        try {
+          const pair = await this.findBestPairForAgent(agent);
+          if (!pair) return null;
+          const fromPrice = await getTokenPrice(pair.from);
+          const toPrice = await getTokenPrice(pair.to);
+          const spread = Math.abs(toPrice - fromPrice);
+          const confidence = Math.min(95, spread * 5000 + 30);
+          const action = toPrice > fromPrice ? "buy" : toPrice < fromPrice ? "sell" : "hold";
+          return { agentName: agent.name, action, confidence, reason: `${pair.label} spread ${spread.toFixed(4)}%` } as AgentVote;
+        } catch { return null; }
+      })
+    );
+
+    agentVotes.filter(Boolean).forEach(v => agentVoting.registerVote(v!));
+    const voteResult = agentVoting.resolve();
+    onLog?.(`Votacao: ${voteResult.action} (${voteResult.confidence.toFixed(0)}% confianca, ${voteResult.votes.length} votos, desempate: ${voteResult.tiebreaker || "nenhum"})`);
+
+    if (!voteResult.approved) {
+      onLog?.(`Votacao reprovou o trade: ${voteResult.reason}`);
+      return results;
+    }
+
+    // Executar trades dos agentes aprovados
     for (const agent of this.agents) {
       try {
+        // Sair se voto foi hold
+        if (voteResult.action === "hold") { onLog?.("Votacao decidiu HOLD, nenhum trade executado"); break; }
+
         const order = await this.executeAgentTrade(agent, onLog);
         if (order) results.push(order);
         await new Promise(r => setTimeout(r, 1000));
@@ -313,14 +457,14 @@ class TradingNanopaymentSystem {
     });
 
     return {
-      totalOrders:  this.orders.length,
-      totalBuys:    this.orders.filter(o => o.type === "BUY").length,
-      totalSells:   this.orders.filter(o => o.type === "SELL").length,
+      totalOrders: this.orders.length,
+      totalBuys: this.orders.filter(o => o.type === "BUY").length,
+      totalSells: this.orders.filter(o => o.type === "SELL").length,
       totalVolume,
       totalProfit,
-      winRate:      completed.length > 0 ? (profitable.length / completed.length) * 100 : 0,
+      winRate: completed.length > 0 ? (profitable.length / completed.length) * 100 : 0,
       bestPair,
-      networkKey:   this.currentNetwork,
+      networkKey: this.currentNetwork,
     };
   }
 
@@ -343,6 +487,29 @@ class TradingNanopaymentSystem {
 
   getCurrentNetwork(): NetworkKey {
     return this.currentNetwork;
+  }
+
+  getOpenPositions(): OpenPosition[] {
+    return positionManager.getOpenPositions();
+  }
+
+  getAgentRanking() {
+    return accountant.getRanking();
+  }
+
+  getAccountantStats() {
+    return accountant.getStats();
+  }
+
+  getAccountantReports(limit = 50) {
+    return accountant.getReports(limit);
+  }
+
+  destroy() {
+    if (this.positionMonitorInterval) {
+      clearInterval(this.positionMonitorInterval);
+      this.positionMonitorInterval = null;
+    }
   }
 }
 
