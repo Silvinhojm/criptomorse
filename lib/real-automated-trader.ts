@@ -2,10 +2,9 @@
 // Robo de trading REAL - estrategia baseada em spread USDC/EURC
 // Cada trade executa swap real via LI.FI e confirma na blockchain
 
-import { realSwap, NETWORKS, type SwapResult, type NetworkKey } from "./real-swap-executor";
+import { realSwap, type NetworkKey } from "./real-swap-executor";
 import { blockIfPanicked } from "./circuit-breaker";
 import { saveTradeHistory, loadTradeHistory, saveTraderState, loadTraderState } from "./persistence";
-import { pairScanner, type ScannedPair } from "./pair-scanner";
 import { ethers } from "ethers";
 
 export interface TradeRecord {
@@ -96,16 +95,6 @@ class RealAutomatedTrader {
     return { usdc, eurc };
   }
 
-  private _trySwap(
-    fromToken: string,
-    toToken: string,
-    amount: number,
-  ): Promise<SwapResult | null> {
-    return realSwap.executeSwap(fromToken, toToken, amount, (m) => this.log(m))
-      .then(r => r.success ? r : null)
-      .catch(() => null);
-  }
-
   async runTradingCycle(tradeAmount: number = 10): Promise<TradeRecord> {
     const timestamp = Date.now();
     const id = `trade_${timestamp}`;
@@ -120,95 +109,53 @@ class RealAutomatedTrader {
       return this._holdRecord(id, "Circuit breaker bloqueou", timestamp);
     }
 
-    const { usdc, eurc } = await this.getBalances();
-    this.log(`Saldos - USDC: $${usdc.toFixed(2)} | EURC: ${eurc.toFixed(2)}`);
+    // Mostrar saldos disponiveis
+    await realSwap.refreshAllBalances();
+    const balances = realSwap.getAllBalances().filter(b => b.balance > 0);
+    this.log(`Saldos: ${balances.map(b => `${b.symbol}:$${b.balance.toFixed(2)}`).join(" | ") || "vazio"}`);
 
-    // Escanear pares disponiveis na LI.FI para esta rede
-    const net = NETWORKS[this.networkKey];
-    this.log(`Escaneando pares LI.FI em ${net.name} (chain ${net.chainId})...`);
-    const scanned = await pairScanner.scanPairs(net.chainId, 20);
-    this.log(`${scanned.length} pares encontrados`);
+    // Usar findBestPair do RealSwapExecutor que ja testa todos os pares
+    // da config contra LI.FI e retorna o mais lucrativo
+    this.log(`Buscando melhor par via LI.FI...`);
+    const best = await realSwap.findBestPair(tradeAmount);
 
-    if (scanned.length === 0) {
+    if (!best) {
+      this.log(`Nenhum par com lucro viavel encontrado`);
+      // Fallback: tentar USDC->WETH diretamente (entrar em posicao volatil)
+      const usdcBal = realSwap.getBalance("USDC");
+      if (usdcBal >= tradeAmount) {
+        this.log(`Fallback: USDC->WETH (entrada em posicao volatil)`);
+        const result = await realSwap.executeSwap("USDC", "WETH", tradeAmount, (m) => this.log(m));
+        if (result.success) {
+          const profit = result.profit ?? 0;
+          this.totalProfit += profit;
+          this.lastAction = `BUY $${tradeAmount} USDC->WETH`;
+          const record: TradeRecord = { id, action: "BUY", fromAmount: tradeAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: result.message, timestamp, confirmed: result.confirmed };
+          this.tradeHistory.push(record); this._persist(); this.onTradeCallback?.(record);
+          return record;
+        }
+      }
       this.lastAction = "HOLD (sem pares)";
-      return this._holdRecord(id, "Nenhum par encontrado na LI.FI", timestamp);
+      return this._holdRecord(id, "Nenhum par viavel", timestamp);
     }
 
-    // Mostrar top 5 pares
-    scanned.slice(0, 5).forEach(p => {
-      this.log(`  ${p.fromSymbol}→${p.toSymbol} (${p.type}) spread ${p.spread.toFixed(3)}%`);
-    });
+    this.log(`Melhor par: ${best.pair.label} | lucro esperado: $${best.expectedProfit.toFixed(4)} via ${best.route}`);
+    const result = await realSwap.executeSwap(best.pair.from, best.pair.to, tradeAmount, (m) => this.log(m));
 
-    // Encontrar o melhor par viavel com saldo
-    let chosen: ScannedPair | undefined;
-    for (const pair of scanned) {
-      if (pair.type === "stable_stable" && pair.spread < 0.3) continue; // spread muito baixo
-      const fromBal = await realSwap.getBalance(pair.fromSymbol);
-      if (fromBal >= tradeAmount) {
-        chosen = pair;
-        break;
-      }
-    }
-
-    if (!chosen) {
-      // Tentar qualquer par que tenha saldo, mesmo com spread baixo
-      for (const pair of scanned) {
-        const fromBal = await realSwap.getBalance(pair.fromSymbol);
-        if (fromBal >= tradeAmount) {
-          chosen = pair;
-          break;
-        }
-      }
-    }
-
-    if (!chosen) {
-      this.log(`HOLD - sem saldo para nenhum par`);
-      this.lastAction = "HOLD (sem saldo)";
-      return this._holdRecord(id, "Sem saldo para pares disponiveis", timestamp);
-    }
-
-    this.log(`Par escolhido: ${chosen.fromSymbol}→${chosen.toSymbol} (spread ${chosen.spread.toFixed(3)}%)`);
-    const action: "BUY" | "SELL" = "BUY";
-    const fromToken = chosen.fromSymbol;
-    const toToken = chosen.toSymbol;
-
-    const result = await this._trySwap(fromToken, toToken, tradeAmount);
-
-    let profit = 0;
-    if (result && result.success && result.confirmed) {
-      profit = result.profit ?? 0;
-      this.log(`Lucro: $${profit.toFixed(4)}`);
+    const profit = result.profit ?? 0;
+    if (result.success) {
+      this.log(`Trade concluido! Lucro: $${profit.toFixed(4)}`);
     } else {
-      this.log(`Trade falhou, tentando proximo par viavel...`);
-      // Tentar segundo par
-      for (const pair of scanned) {
-        if (pair.fromSymbol === chosen.fromSymbol && pair.toSymbol === chosen.toSymbol) continue;
-        const fromBal = await realSwap.getBalance(pair.fromSymbol);
-        if (fromBal >= tradeAmount) {
-          this.log(`Fallback: ${pair.fromSymbol}→${pair.toSymbol}...`);
-          const r2 = await this._trySwap(pair.fromSymbol, pair.toSymbol, tradeAmount);
-          if (r2 && r2.success && r2.confirmed) {
-            profit = r2.profit ?? 0;
-            break;
-          }
-        }
-      }
+      this.log(`Trade falhou: ${result.message}`);
     }
 
     this.totalProfit += profit;
-    this.lastAction = `${action} $${tradeAmount} -> ${result?.txHash?.slice(0, 8) || "..."}`;
+    this.lastAction = `${best.pair.from}->${best.pair.to} $${tradeAmount}`;
 
     const record: TradeRecord = {
-      id,
-      action,
-      fromAmount: tradeAmount,
-      toAmount: result?.toAmount ?? 0,
-      profit,
-      txHash: result?.txHash ?? "",
-      explorerUrl: result?.explorerUrl ?? "",
-      message: result?.message ?? "",
-      timestamp,
-      confirmed: result?.confirmed ?? false,
+      id, action: "BUY", fromAmount: tradeAmount, toAmount: result.toAmount, profit,
+      txHash: result.txHash, explorerUrl: result.explorerUrl, message: result.message,
+      timestamp, confirmed: result.confirmed,
     };
 
     this.tradeHistory.push(record);
