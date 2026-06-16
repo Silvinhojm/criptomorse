@@ -11,7 +11,7 @@ const NETWORKS = {
   },
   arc: {
     chainId: 5042002, rpc: "https://rpc.testnet.arc.network",
-    tokens: { USDC: "0x3600000000000000000000000000000000000000", WETH: "0x7E8861F97E1C77c27d23Be9b213F2eA81C2Cc36c" },
+    tokens: { USDC: "0x3600000000000000000000000000000000000000", EURC: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a", WETH: "0x7E8861F97E1C77c27d23Be9b213F2eA81C2Cc36c" },
   },
 };
 
@@ -98,7 +98,9 @@ export async function POST(req) {
     ]);
     const toAmount = parseFloat(ethers.formatUnits(toBalance, toDecimals));
 
-    const explorerUrl = `https://${network === "polygon" ? "polygonscan" : network === "base" ? "basescan" : "explorer.arc.network"}.com/tx/${tx.hash}`;
+    const explorerUrl = network === "arc"
+      ? `https://testnet.arcscan.app/tx/${tx.hash}`
+      : `https://${network === "polygon" ? "polygonscan" : network === "base" ? "basescan" : "etherscan"}.com/tx/${tx.hash}`;
 
     return Response.json({
       success: true,

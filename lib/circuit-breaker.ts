@@ -7,6 +7,7 @@
   totalLoss: number;
   totalProfit: number;
   maxDrawdownPercent: number;
+  isTestnet: boolean;
 };
 
 const initialState: CircuitBreakerState = {
@@ -18,6 +19,7 @@ const initialState: CircuitBreakerState = {
   totalLoss: 0,
   totalProfit: 0,
   maxDrawdownPercent: 10,
+  isTestnet: false,
 };
 
 let state: CircuitBreakerState = { ...initialState };
@@ -26,8 +28,27 @@ export function getCircuitBreakerState(): CircuitBreakerState {
   return { ...state };
 }
 
+export function setTestnetMode(isTestnet: boolean): void {
+  state.isTestnet = isTestnet;
+  if (isTestnet) {
+    state.maxLossesBeforePanic = 20;
+    state.maxDrawdownPercent = 50;
+    console.log(`🧪 Modo testnet: circuit breaker relaxado (max ${state.maxLossesBeforePanic} perdas, ${state.maxDrawdownPercent}% drawdown)`);
+  } else {
+    state.maxLossesBeforePanic = 5;
+    state.maxDrawdownPercent = 10;
+  }
+}
+
 export function recordTradeResult(profit: number): CircuitBreakerState {
   if (isNaN(profit)) return { ...state };
+
+  // Em testnet: perdas de até $0.50 são ignoradas (LI.FI reverts, fees simuladas)
+  if (state.isTestnet && profit < 0 && Math.abs(profit) <= 0.50) {
+    console.log(`🧪 Testnet: perda $${Math.abs(profit).toFixed(4)} ignorada`);
+    return { ...state };
+  }
+
   if (profit < 0) {
     state.consecutiveLosses++;
     state.totalLoss += Math.abs(profit);
@@ -37,14 +58,16 @@ export function recordTradeResult(profit: number): CircuitBreakerState {
     state.totalProfit += profit;
     console.log(`📈 Lucro: $${profit.toFixed(4)} | Total lucro: $${state.totalProfit.toFixed(4)}`);
   }
-  const totalInvested = state.totalLoss + state.totalProfit;
-  const drawdown = totalInvested > 0 ? (state.totalLoss / totalInvested) * 100 : 0;
-  if ((state.consecutiveLosses >= state.maxLossesBeforePanic || drawdown >= state.maxDrawdownPercent) && !state.isPanicActive) {
-    if (state.consecutiveLosses >= state.maxLossesBeforePanic) {
-      activatePanic(`${state.consecutiveLosses} perdas consecutivas`);
-    } else {
+  // Só verifica drawdown em mainnet (testnet: perdas não são reais)
+  if (!state.isTestnet) {
+    const totalInvested = state.totalLoss + state.totalProfit;
+    const drawdown = totalInvested > 0 ? (state.totalLoss / totalInvested) * 100 : 0;
+    if (drawdown >= state.maxDrawdownPercent && !state.isPanicActive) {
       activatePanic(`Drawdown de ${drawdown.toFixed(1)}% (limite: ${state.maxDrawdownPercent}%)`);
     }
+  }
+  if (state.consecutiveLosses >= state.maxLossesBeforePanic && !state.isPanicActive) {
+    activatePanic(`${state.consecutiveLosses} perdas consecutivas`);
   }
   return { ...state };
 }
@@ -76,11 +99,15 @@ export function activatePanic(reason: string): void {
 }
 
 export function resumeFromPanic(): void {
+  const wasTestnet = state.isTestnet;
   state = { ...initialState };
+  if (wasTestnet) setTestnetMode(true);
   console.log('✅ Sistema retomado do modo pânico');
 }
 
 export function resetCircuitBreaker(): void {
+  const wasTestnet = state.isTestnet;
   state = { ...initialState };
+  if (wasTestnet) setTestnetMode(true);
   console.log('🔄 Circuit breaker resetado');
 }

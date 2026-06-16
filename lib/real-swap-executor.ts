@@ -3,14 +3,17 @@
 // Suporte a múltiplos pares e saldo real por rede
 
 import { ethers } from "ethers";
-import { getQuote, toTokenUnits } from "./lifi-executor";
-import { getCircuitBreakerState, recordError, recordTradeResult } from "./circuit-breaker";
+import { getQuote, isLifiCooldown, toTokenUnits } from "./lifi-executor";
+import type { QuoteResult } from "./lifi-executor";
+import { getCircuitBreakerState, recordError, recordTradeResult, setTestnetMode } from "./circuit-breaker";
 import { gasPriceOracle } from "./gas-price-oracle";
+import { getArcFeeParams } from "./arc-gas";
+import { generateSyntheticQuote, executeDirectSwap } from "./arc-direct-swap";
 
 // ─── Redes suportadas ────────────────────────────────────────────────────────
 // Custo estimado de gas em USD por rede (para deducao do lucro)
 export const GAS_COST_ESTIMATE: Record<string, number> = {
-  arc: 0.001,
+  arc: 0.006,
   base: 0.05,
   polygon: 0.08,
   ethereum: 1.50,
@@ -28,6 +31,8 @@ export const NETWORKS = {
     tokens: {
       USDC: "0x3600000000000000000000000000000000000000",
       EURC: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+      cirBTC: "0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF",
+      mcirBTC: "0x8cad4951192853D14f8Cb813695146b5Ae00EA6d",
     },
   },
   base: {
@@ -103,6 +108,14 @@ export const TRADING_PAIRS: Record<NetworkKey, Array<{ from: TokenSymbol; to: To
   arc: [
     { from: "USDC", to: "EURC", label: "USDC→EURC" },
     { from: "EURC", to: "USDC", label: "EURC→USDC" },
+    { from: "USDC", to: "cirBTC", label: "USDC→cirBTC" },
+    { from: "cirBTC", to: "USDC", label: "cirBTC→USDC" },
+    { from: "EURC", to: "cirBTC", label: "EURC→cirBTC" },
+    { from: "cirBTC", to: "EURC", label: "cirBTC→EURC" },
+    { from: "USDC", to: "mcirBTC", label: "USDC→mcirBTC" },
+    { from: "mcirBTC", to: "USDC", label: "mcirBTC→USDC" },
+    { from: "EURC", to: "mcirBTC", label: "EURC→mcirBTC" },
+    { from: "mcirBTC", to: "EURC", label: "mcirBTC→EURC" },
   ],
   base: [
     { from: "USDC", to: "EURC",  label: "USDC→EURC" },
@@ -202,7 +215,9 @@ export interface BestPairResult {
 // ─── Executor principal ───────────────────────────────────────────────────────
 const COIN_IDS: Record<string, string> = {
   WETH: "ethereum", WMATIC: "matic-network", WBTC: "bitcoin",
+  USDC: "usd-coin", USDT: "tether", DAI: "dai", EURC: "eurc",
   ARB: "arbitrum", SOL: "solana",
+  cirBTC: "bitcoin", mcirBTC: "bitcoin",
 };
 
 class RealSwapExecutor {
@@ -212,9 +227,17 @@ class RealSwapExecutor {
   private userAddress: string = "";
   private tokenBalances: Map<TokenSymbol, TokenBalance> = new Map();
   private priceCache: Map<TokenSymbol, { price: number; timestamp: number }> = new Map();
+  private quoteCache: Map<string, { quote: QuoteResult | null; timestamp: number }> = new Map();
+
+  private _getCachedQuote(key: string): QuoteResult | null | undefined {
+    const cached = this.quoteCache.get(key);
+    return (cached && Date.now() - cached.timestamp < 60000) ? cached.quote : undefined;
+  }
+  private _setCachedQuote(key: string, quote: QuoteResult | null): void {
+    this.quoteCache.set(key, { quote, timestamp: Date.now() });
+  }
 
   private async _getTokenPrice(token: TokenSymbol): Promise<number> {
-    if (isStable(token)) return 1.0;
     const cached = this.priceCache.get(token);
     if (cached && Date.now() - cached.timestamp < 15000) return cached.price;
     const coinId = COIN_IDS[token];
@@ -223,7 +246,7 @@ class RealSwapExecutor {
       const res = await fetch(`/api/price?ids=${coinId}`);
       if (!res.ok) return this.priceCache.get(token)?.price ?? 1.0;
       const data = await res.json();
-      const price = data[coinId] ?? 1.0;
+      const price = data[coinId] || 1.0;
       if (price > 0) {
         this.priceCache.set(token, { price, timestamp: Date.now() });
       }
@@ -261,6 +284,7 @@ class RealSwapExecutor {
       }
 
       await this.refreshAllBalances();
+      setTestnetMode(NETWORKS[networkKey].isTestnet);
       return true;
     } catch (err) {
       console.error("❌ Erro ao inicializar:", err);
@@ -283,11 +307,27 @@ class RealSwapExecutor {
       this.userAddress = userAddress;
       console.log(`✅ RealSwapExecutor (external signer): ${net.name} | ${this.userAddress}`);
       await this.refreshAllBalances();
+      setTestnetMode(NETWORKS[networkKey].isTestnet);
       return true;
     } catch (err) {
       console.error("❌ Erro ao inicializar:", err);
       return false;
     }
+  }
+
+  // Trocar de rede sem perder o signer — usado ao alternar entre redes na UI
+  async switchNetwork(networkKey: NetworkKey): Promise<void> {
+    this.networkKey = networkKey;
+    const net = NETWORKS[networkKey];
+    this.provider = new ethers.JsonRpcProvider(net.rpcUrl);
+    // Reconectar signer (Wallet) ao novo provider
+    if (this.signer && typeof (this.signer as any).connect === "function") {
+      this.signer = (this.signer as ethers.Wallet).connect(this.provider);
+    }
+    this.priceCache.clear();
+    await this.refreshAllBalances();
+    setTestnetMode(net.isTestnet);
+    console.log(`🔀 RealSwapExecutor switch: ${net.name}`);
   }
 
   // Atualizar todos os saldos de tokens da rede atual
@@ -320,78 +360,64 @@ class RealSwapExecutor {
     return this.tokenBalances.get(token)?.balance ?? 0;
   }
 
+  hasToken(token: TokenSymbol): boolean {
+    const net = NETWORKS[this.networkKey];
+    return token in net.tokens;
+  }
+
   getAllBalances(): TokenBalance[] {
     return Array.from(this.tokenBalances.values());
   }
 
   // Encontrar o melhor par para trade (maior retorno esperado)
+  // Usa quotes sintéticas para comparação (rápido, sem LI.FI).
   async findBestPair(amountUsd: number): Promise<BestPairResult | null> {
+    const log = (msg: string) => console.log(msg);
     const pairs = TRADING_PAIRS[this.networkKey];
     const net = NETWORKS[this.networkKey];
     const results: BestPairResult[] = [];
 
-    await Promise.all(
-      pairs.map(async (pair) => {
-        try {
-          // Verificar endereços dos tokens
-          const fromTokenAddr = (net.tokens as any)[pair.from];
-          const toTokenAddr   = (net.tokens as any)[pair.to];
-          if (!fromTokenAddr || !toTokenAddr) return;
+    for (const pair of pairs) {
+      try {
+        const fromTokenAddr = (net.tokens as any)[pair.from];
+        const toTokenAddr   = (net.tokens as any)[pair.to];
+        if (!fromTokenAddr || !toTokenAddr) continue;
 
-          // Preços dos tokens (estáveis = $1.00, voláteis via CoinGecko)
-          const fromPrice = await this._getTokenPrice(pair.from);
-          const toPrice   = await this._getTokenPrice(pair.to);
+        const fromPrice = await this._getTokenPrice(pair.from);
+        const toPrice   = await this._getTokenPrice(pair.to);
 
-          // Saldo do fromToken em USD
-          const fromBalanceTokens = this.getBalance(pair.from);
-          const fromBalanceUsd    = fromBalanceTokens * fromPrice;
+        const fromBalanceTokens = this.getBalance(pair.from);
+        const fromBalanceUsd    = fromBalanceTokens * fromPrice;
 
-          // Usar o que for menor: amountUsd fixo ou 95% do saldo disponível
-          const actualAmount = Math.min(amountUsd, fromBalanceUsd * 0.95);
-          if (actualAmount < 0.5) return; // não vale a pena para < $0.50
+        const actualAmount = Math.min(amountUsd, fromBalanceUsd * 0.95);
+        if (actualAmount < 0.5) continue;
 
-          // Converter USD → raw units do fromToken
-          const fromDecimals    = this.tokenBalances.get(pair.from)?.decimals ?? 6;
-          const fromTokenAmount = actualAmount / fromPrice;
-          const fromAmountRaw   = toTokenUnits(fromTokenAmount, fromDecimals);
+        const fromDecimals    = this.tokenBalances.get(pair.from)?.decimals ?? 6;
+        const fromTokenAmount = actualAmount / fromPrice;
+        const fromAmountRaw   = toTokenUnits(fromTokenAmount, fromDecimals);
 
-          const quote = await getQuote({
-            fromChain:   net.chainId,
-            toChain:     net.chainId,
-            fromToken:   fromTokenAddr,
-            toToken:     toTokenAddr,
-            fromAmount:  fromAmountRaw,
-            fromAddress: this.userAddress,
-            toAddress:   this.userAddress,
-            slippage:    0.005,
-          });
+        // Quotes sintéticas para comparar pares (rápido, sem LI.FI)
+        const quote = generateSyntheticQuote(fromTokenAddr, toTokenAddr, fromAmountRaw, this.userAddress, net.chainId);
+        if (!quote) continue;
 
-          if (!quote) return;
-
-          // toAmount em unidades de toToken
-          let toAmount = 0;
-          if (quote.toAmount && quote.toAmount !== "0") {
-            const toDecimals = this.tokenBalances.get(pair.to)?.decimals ?? 6;
-            toAmount = parseFloat(quote.toAmount) / Math.pow(10, toDecimals);
-          }
-
-          // Calcular lucro esperado em USD
-          let expectedProfit = 0;
-          if (isStable(pair.to)) {
-            // TOKEN é stable → toAmount já é o valor em USD
-            expectedProfit = toAmount - actualAmount;
-          } else if (isStable(pair.from) && toAmount > 0) {
-            // Compra de volátil: estimar valor USD atual do que recebemos
-            expectedProfit = toAmount * toPrice - actualAmount;
-          }
-          // expectedProfit = 0 para pares sem toAmount (swap possível mas sem cotação)
-
-          results.push({ pair, expectedProfit, toAmount, route: quote.tool ?? "lifi" });
-        } catch {
-          // par sem rota disponível, ignorar
+        let toAmount = 0;
+        if (quote.toAmount && quote.toAmount !== "0") {
+          const toDecimals = this.tokenBalances.get(pair.to)?.decimals ?? 6;
+          toAmount = parseFloat(quote.toAmount) / Math.pow(10, toDecimals);
         }
-      })
-    );
+
+        let expectedProfit = 0;
+        if (isStable(pair.to)) {
+          expectedProfit = toAmount - actualAmount;
+        } else if (isStable(pair.from) && toAmount > 0) {
+          expectedProfit = toAmount * toPrice - actualAmount;
+        }
+
+        results.push({ pair, expectedProfit, toAmount, route: "synthetic" });
+      } catch {
+        continue;
+      }
+    }
 
     if (results.length === 0) return null;
 
@@ -401,8 +427,10 @@ class RealSwapExecutor {
     ]);
 
     // Filtrar: voláteis sempre passam, stable-stable só se lucrativos
+    const isTestnet = NETWORKS[this.networkKey].isTestnet;
     const profitable = results.filter(r => {
       if (!isStable(r.pair.to)) return true;
+      if (isTestnet) return true;
       return r.expectedProfit >= minProfit + gasCost;
     });
 
@@ -443,25 +471,81 @@ class RealSwapExecutor {
     try {
       const fromTokenAddr   = (net.tokens as any)[fromToken];
       const toTokenAddr     = (net.tokens as any)[toToken];
+
+      if (!fromTokenAddr) {
+        return this._fail(fromToken, toToken, amountUsd, `Token ${fromToken} não configurado na rede ${this.networkKey}`, timestamp);
+      }
+      if (!toTokenAddr) {
+        return this._fail(fromToken, toToken, amountUsd, `Token ${toToken} não configurado na rede ${this.networkKey}`, timestamp);
+      }
+
       const fromDecimals    = this.tokenBalances.get(fromToken)?.decimals ?? 6;
       const fromTokenAmount = amountUsd / fromPrice;
       const fromAmountRaw   = toTokenUnits(fromTokenAmount, fromDecimals);
 
-      log(`🔍 Buscando rota LI.FI: ${fromToken}→${toToken} ($${amountUsd} ≈ ${fromTokenAmount.toFixed(6)} ${fromToken})...`);
+      let quote: QuoteResult | null = null;
+      if (net.isTestnet) {
+        quote = generateSyntheticQuote(fromTokenAddr, toTokenAddr, fromAmountRaw, this.userAddress, net.chainId);
+      } else {
+        log(`🔍 Buscando rota LI.FI: ${fromToken}→${toToken} ($${amountUsd} ≈ ${fromTokenAmount.toFixed(6)} ${fromToken})...`);
+        try {
+          quote = await getQuote({
+            fromChain:   net.chainId,
+            toChain:     net.chainId,
+            fromToken:   fromTokenAddr,
+            toToken:     toTokenAddr,
+            fromAmount:  fromAmountRaw,
+            fromAddress: this.userAddress,
+            toAddress:   this.userAddress,
+            slippage:    0.005,
+          });
+        } catch {
+          quote = null;
+        }
+      }
 
-      const quote = await getQuote({
-        fromChain:   net.chainId,
-        toChain:     net.chainId,
-        fromToken:   fromTokenAddr,
-        toToken:     toTokenAddr,
-        fromAmount:  fromAmountRaw,
-        fromAddress: this.userAddress,
-        toAddress:   this.userAddress,
-        slippage:    0.005,
-      });
+      if (!quote) {
+        const motivo = isLifiCooldown() ? "LI.FI em cooldown (rate limit)" : "Nenhuma rota disponível";
+        return this._fail(fromToken, toToken, amountUsd, motivo, timestamp);
+      }
 
-      if (!quote || !quote.transactionRequest) {
-        return this._fail(fromToken, toToken, amountUsd, "Nenhuma rota LI.FI disponível", timestamp);
+      // Synthetic quote: testnet sem DEX — faz approve + simula
+      if (quote.tool === 'synthetic-direct') {
+        if (!net.isTestnet) {
+          return this._fail(fromToken, toToken, amountUsd, "LI.FI indisponível — trade adiado", timestamp);
+        }
+        log(`🧪 Modo testnet: swap direto (approve + simulação)`);
+        const result = await executeDirectSwap(
+          this.signer!,
+          fromTokenAddr,
+          toTokenAddr,
+          fromAmountRaw,
+          this.userAddress,
+          net.chainId,
+          (m) => log(m),
+        );
+        if (!result.success) {
+          return this._fail(fromToken, toToken, amountUsd, result.error || "Direct swap falhou", timestamp);
+        }
+        log(`✅ Swap simulado: ${fromToken}→${toToken} | approve OK`);
+        return {
+          success: true,
+          txHash: result.txHash || '',
+          explorerUrl: result.explorerUrl || '',
+          fromToken,
+          toToken,
+          fromAmount: amountUsd,
+          toAmount: amountUsd,
+          action: "BUY",
+          message: `✅ ${fromToken}→${toToken} (simulado testnet) | ${result.txHash?.slice(0, 10)}`,
+          timestamp,
+          confirmed: false,
+          profit: 0,
+        };
+      }
+
+      if (!quote.transactionRequest || !quote.transactionRequest.data) {
+        return this._fail(fromToken, toToken, amountUsd, "Rota LI.FI sem dados de transação", timestamp);
       }
 
       const toDecimals   = this.tokenBalances.get(toToken)?.decimals ?? 6;
@@ -479,7 +563,8 @@ class RealSwapExecutor {
       }
       const netProfit = estimatedProfit - gasCost;
       const minProfit = await getMinProfitThreshold(this.networkKey);
-      if (estimatedProfit < minProfit && isStable(toToken)) {
+      const isTestnet = NETWORKS[this.networkKey].isTestnet;
+      if (!isTestnet && estimatedProfit < minProfit && isStable(toToken)) {
         log(`⏸️ Lucro estimado $${estimatedProfit.toFixed(4)} - gas $${gasCost.toFixed(3)} = $${netProfit.toFixed(4)} (min: $${minProfit})`);
         return this._fail(fromToken, toToken, amountUsd, `Lucro líquido não atinge mínimo: $${netProfit.toFixed(4)}`, timestamp);
       }
@@ -503,11 +588,13 @@ class RealSwapExecutor {
 
       // Enviar transação
       log(`📝 Enviando transação na ${net.name}...`);
+      const arcFeeParams = net.chainId === 5042002 ? getArcFeeParams() : {};
       const txResponse = await this.signer.sendTransaction({
         to:       tx.to,
         data:     tx.data,
         value:    BigInt(tx.value ?? "0"),
         gasLimit: tx.gasLimit ? BigInt(tx.gasLimit) : undefined,
+        ...arcFeeParams,
       });
 
       log(`🔗 TX: ${txResponse.hash}`);

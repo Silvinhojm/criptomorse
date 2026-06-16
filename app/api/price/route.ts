@@ -8,6 +8,8 @@ const FALLBACK_PRICES: Record<string, number> = {
   'bitcoin': 68000,
   'arbitrum': 0.55,
   'solana': 145,
+  'eurc': 1.08,
+  'usd-coin': 1.0,
 };
 
 let priceCache: { data: Record<string, { usd: number }>; timestamp: number } | null = null;
@@ -24,7 +26,7 @@ export async function GET(request: NextRequest) {
     if (cached && Date.now() - cached.timestamp < 15000) {
       const result: Record<string, number> = {};
       for (const id of ids.split(',')) {
-        result[id] = cached.data[id]?.usd ?? FALLBACK_PRICES[id] ?? 0;
+        result[id] = cached.data[id]?.usd ?? FALLBACK_PRICES[id] ?? 1.0;
       }
       return Response.json(result);
     }

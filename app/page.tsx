@@ -1,6 +1,7 @@
 ﻿"use client";
 import { PanicButton } from "@/app/components/PanicButton";
 import { RealAutomatedTrader } from "./components/RealAutomatedTrader";
+import { PregãoDashboard } from "./components/PregãoDashboard";
 import { NETWORKS } from "@/lib/real-swap-executor";
 
 import { useState, useCallback, useEffect, useRef } from "react";
@@ -8,29 +9,19 @@ import { ethers } from "ethers";
 import { Toaster, toast } from "react-hot-toast";
 
 // Componentes
-import AgentIdentityCard from "./components/AgentIdentityCard";
-import { AgentDashboard } from "./components/AgentDashboard";
 import { NanopaymentDashboard } from "./components/NanopaymentDashboard";
-import { TradingNanopaymentDashboard } from "./components/TradingNanopaymentDashboard";
-import { RealTradingDashboard } from "./components/RealTradingDashboard";
 import { BridgeWidget } from "./components/BridgeWidget";
 import { BotBank } from "./components/BotBank";
-import { ProjectionDashboard } from "./components/ProjectionDashboard";
-import { MarketMonitor } from "./marketMonitor";
 
-// Agents
+// Agents (usados no connect)
 import { quantumAgent, technicalAgent, synthesisAgent } from "../lib/multi-agent-system";
-import { agentMemory } from "../lib/agent-memory";
-import { votingSystem, AgentVote } from "../lib/voting-system";
 import { marketAgent } from "../lib/market-agent";
 import { volumeAgent } from "../lib/volume-agent";
-import { tradingStrategies } from "../lib/trading-strategies";
 import newsAgent from "../lib/news-agent";
-import { enhancedMarketAnalyzer } from "../lib/news-agent";
 
 // Types
-import type { NewsSentiment } from "../lib/news-agent";
-import { agentRegistry, type AgentInfo } from "../lib/agent-registry";
+
+
 import { jobMarketplace, type JobData } from "../lib/job-marketplace";
 
 // APIs com fallback
@@ -75,7 +66,7 @@ const ORANGE = "#e05a3a";
 const GREEN = "#10b981";
 const RED = "#ef4444";
 const BORDER = "#c8cdd8";
-const GAS_PER_TRADE = 0.12;
+
 
 // Arc Testnet
 const ARC_TESTNET = {
@@ -90,7 +81,7 @@ const ARC_TESTNET = {
   explorer: "https://testnet.arcscan.app",
   icon: "🔵",
   isTestnet: true,
-  nativeCurrency: { name: "USD Coin", symbol: "USDC", decimals: 6 }
+  nativeCurrency: { name: "USD Coin", symbol: "USDC", decimals: 18 }
 };
 
 // Base Mainnet
@@ -294,6 +285,27 @@ function JobsPanel({ account, network }: { account: string; network: Network }) 
     if (!account) return;
     setLoading(true);
     try {
+      const { queryJobsByAddress } = await import('@/lib/subgraph-client');
+      const subgraphJobs = await queryJobsByAddress(account, 30);
+      if (subgraphJobs.length > 0) {
+        const mapped: JobData[] = subgraphJobs.map(j => ({
+          id: parseInt(j.id),
+          client: j.client,
+          provider: j.provider,
+          evaluator: j.evaluator || '0x0000000000000000000000000000000000000000',
+          description: j.description || 'N/A',
+          budget: j.budget || '0',
+          expiredAt: 0,
+          status: 0,
+          statusLabel: j.status,
+          hook: '0x0000000000000000000000000000000000000000',
+        }));
+        setJobs(mapped);
+        setLoading(false);
+        return;
+      }
+    } catch {}
+    try {
       if (network.shortName === 'ARC') {
         const jobsData = await jobMarketplace.getJobsByAddress(account, 30);
         setJobs(jobsData);
@@ -439,115 +451,6 @@ function JobsPanel({ account, network }: { account: string; network: Network }) 
               style={{ width: "100%", background: network.isTestnet ? ORANGE : GREEN, color: "#fff", padding: 12, borderRadius: 12, border: "none", cursor: "pointer", fontWeight: 600 }}
             >
               Criar Job
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ============================================================
-// COMPONENTE: AGENT IDENTITY PANEL (ERC-8004)
-// ============================================================
-
-function AgentIdentityPanel({ account, network }: { account: string; network: Network }) {
-  const [agent, setAgent] = useState<AgentInfo | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [showRegister, setShowRegister] = useState(false);
-  const [agentName, setAgentName] = useState('');
-
-  const fetchAgent = useCallback(async () => {
-    if (!account) return;
-    setLoading(true);
-    try {
-      if (network.shortName === 'ARC') {
-        const info = await agentRegistry.resolveAgentFromOwner(account);
-        setAgent(info);
-      } else {
-        const res = await fetch(`/api/agents/${account}`);
-        const data = await res.json();
-        setAgent(data.agent);
-      }
-    } catch {
-      setAgent(null);
-    }
-    setLoading(false);
-  }, [account, network.shortName]);
-
-  const registerAgent = async () => {
-    if (!agentName) { toast.error('Enter agent name'); return; }
-    try {
-      toast.loading('Registering agent on Arc Testnet...', { id: 'registerAgent' });
-      const metadataURI = `https://criptomorse-arc.vercel.app/api/agent-card/${account}`;
-      const result = await agentRegistry.registerAgent(metadataURI);
-      toast.success(`Agent #${result.agentId} registered! TX: ${result.txHash.slice(0, 10)}...`, { id: 'registerAgent' });
-      setShowRegister(false);
-      await fetchAgent();
-    } catch (err: any) {
-      toast.error(err.message?.slice(0, 80) || 'Registration failed', { id: 'registerAgent' });
-    }
-  };
-
-  useEffect(() => { fetchAgent(); }, [fetchAgent]);
-
-  return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <h3 style={{ margin: 0, fontSize: 16, color: '#333' }}>🤖 Agent Identity (ERC-8004)</h3>
-        {!agent && (
-          <button onClick={() => setShowRegister(true)} style={{ background: '#8b5cf6', color: '#fff', border: 'none', borderRadius: 8, padding: '6px 12px', cursor: 'pointer', fontSize: 12 }}>
-            + Register Agent
-          </button>
-        )}
-      </div>
-
-      {loading ? (
-        <div style={{ textAlign: 'center', color: '#9ca3af', padding: 20 }}>Loading...</div>
-      ) : agent ? (
-        <AgentIdentityCard
-          name={`Agent #${agent.agentId}`}
-          role="Trading Agent"
-          address={agent.owner}
-          status="active"
-          wins={agent.agentId * 2}
-          losses={agent.agentId}
-          icon="🤖"
-          color="#8b5cf6"
-        />
-      ) : (
-        <div style={{ textAlign: 'center', color: '#9ca3af', padding: 20 }}>
-          {network.shortName === 'ARC'
-            ? 'No agent registered for this wallet'
-            : 'Switch to Arc Testnet to register agents'}
-        </div>
-      )}
-
-      {showRegister && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}>
-          <div style={{ background: '#fff', borderRadius: 20, padding: 24, width: 380, maxWidth: '90%' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h3 style={{ margin: 0 }}>Register AI Agent (ERC-8004)</h3>
-              <button onClick={() => setShowRegister(false)} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer' }}>×</button>
-            </div>
-            <div style={{ fontSize: 10, color: '#059669', background: '#d1fae5', padding: '6px 10px', borderRadius: 8, marginBottom: 12 }}>
-              ✅ Registers on Arc Testnet · IdentityRegistry: 0x8004A8...BD9e
-            </div>
-            <input
-              placeholder="Agent name"
-              value={agentName}
-              onChange={e => setAgentName(e.target.value)}
-              style={{ width: '100%', padding: 10, marginBottom: 12, borderRadius: 8, border: `1px solid ${BORDER}`, boxSizing: 'border-box' }}
-            />
-            <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 16 }}>
-              Wallet: {short(account)}<br />
-              Metadata will point to your agent card API
-            </div>
-            <button
-              onClick={registerAgent}
-              style={{ width: '100%', background: '#8b5cf6', color: '#fff', padding: 12, borderRadius: 12, border: 'none', cursor: 'pointer', fontWeight: 600 }}
-            >
-              🚀 Register Agent (MetaMask)
             </button>
           </div>
         </div>
@@ -803,279 +706,6 @@ function ReceiveModal({ account, onClose, network }: { account: string; onClose:
 // ============================================================
 // COMPONENTE: AUTO-TRADE CONTROL
 // ============================================================
-
-function AutoTradeControl({ account, onTradeExecuted, network }: { account: string; onTradeExecuted: (profit: number) => void; network: Network }) {
-  const [isActive, setIsActive] = useState(false);
-  const [tradeCount, setTradeCount] = useState(0);
-  const [grossProfit, setGrossProfit] = useState(0);
-  const [lastTrade, setLastTrade] = useState<{ profit: number; time: string } | null>(null);
-  const [tradingMode, setTradingMode] = useState<'conservative' | 'moderate' | 'aggressive'>('moderate');
-  const [tradeSize, setTradeSize] = useState(network.isTestnet ? 20 : 3);
-  const [quantumAnalysis, setQuantumAnalysis] = useState('');
-  const [marketSentiment, setMarketSentiment] = useState<NewsSentiment | null>(null);
-  const [agentScores, setAgentScores] = useState<any[]>([]);
-  const [votingStats, setVotingStats] = useState({ totalVotes: 0, avgConfidence: 0, winRate: 0 });
-
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
-  const priceHistory = useRef<number[]>([1.00, 1.001, 0.999, 1.002, 1.000]);
-
-  const updateMarketSentiment = useCallback(async () => {
-    const analysis = await enhancedMarketAnalyzer.getCompleteMarketAnalysis();
-    setMarketSentiment(analysis.sentiment);
-    return analysis.sentiment;
-  }, []);
-
-  const consultAgents = useCallback(async (currentPrice: number, prices: number[]) => {
-    await enhancedMarketAnalyzer.getCompleteMarketAnalysis();
-
-    quantumAgent.updateMarketState(currentPrice, prices);
-    const quantumOpinion = quantumAgent.decide(currentPrice);
-
-    const indicators = technicalAgent.calculateIndicators(prices);
-    const indicatorsArray = Array.isArray(indicators) ? indicators : Object.values(indicators);
-    const numericIndicators = indicatorsArray.map((val: any) => {
-      if (typeof val === 'string') {
-        if (val === 'up') return 1;
-        if (val === 'down') return -1;
-        return 0;
-      }
-      return val as number;
-    });
-    const technicalOpinion = technicalAgent.decide(numericIndicators, currentPrice);
-
-    const newsDecision = await newsAgent.decide();
-    const newsOpinion = {
-      agentName: newsAgent.getScore().agentName,
-      action: newsDecision.action,
-      confidence: newsDecision.confidence,
-      reason: newsDecision.reason,
-    };
-
-    await marketAgent.updateMarketInsights();
-    const marketOpinion = marketAgent.getAdvice();
-
-    const volumeAnalysis = volumeAgent.analyzeVolume(1000000, 2, 5);
-    const volumeOpinion = {
-      agentName: volumeAgent.getScore().agentName,
-      action: volumeAnalysis.action,
-      confidence: volumeAnalysis.confidence,
-      reason: volumeAnalysis.reason,
-    };
-
-    const synthesisOpinion = synthesisAgent.decide(quantumOpinion, technicalOpinion, newsOpinion, marketOpinion);
-
-    const votes: AgentVote[] = [
-      { agentName: quantumOpinion.agentName, action: quantumOpinion.action, confidence: quantumOpinion.confidence, weight: 1, color: '#a78bfa', icon: '🌌' },
-      { agentName: technicalOpinion.agentName, action: technicalOpinion.action, confidence: technicalOpinion.confidence, weight: 1, color: '#00d4aa', icon: '📊' },
-      { agentName: newsOpinion.agentName, action: newsOpinion.action as any, confidence: newsOpinion.confidence, weight: 0.8, color: '#f97316', icon: '📰' },
-      { agentName: marketOpinion.agentName, action: marketOpinion.action, confidence: marketOpinion.confidence, weight: 0.9, color: '#f97316', icon: '📈' },
-      { agentName: volumeOpinion.agentName, action: volumeOpinion.action, confidence: volumeOpinion.confidence, weight: 0.9, color: '#f97316', icon: '📊' },
-      { agentName: synthesisOpinion.agentName, action: synthesisOpinion.action, confidence: synthesisOpinion.confidence, weight: 1.2, color: '#fbbf24', icon: '🧠' }
-    ];
-
-    const voteResult = votingSystem.vote(votes);
-    const votingStatsData = votingSystem.getStats();
-    setVotingStats(votingStatsData);
-
-    const scores = [quantumAgent.getScore(), technicalAgent.getScore(), newsAgent.getScore(), marketAgent.getScore(), volumeAgent.getScore(), synthesisAgent.getScore()];
-    setAgentScores(scores);
-
-    setQuantumAnalysis(
-      `🌌 Quântico: ${quantumOpinion.action} (${quantumOpinion.confidence}%) | 📊 Técnico: ${technicalOpinion.action} (${technicalOpinion.confidence}%) | 📰 Notícias: ${newsOpinion.action} (${newsOpinion.confidence}%) | ⚖️ FINAL: ${voteResult.action.toUpperCase()} (${voteResult.confidence}%)`
-    );
-
-    return { decision: voteResult };
-  }, []);
-
-  const getConfidenceThreshold = useCallback(() => {
-    if (tradingMode === 'aggressive') return 30;
-    if (tradingMode === 'moderate') return 50;
-    return 70;
-  }, [tradingMode]);
-
-  const executeTrade = useCallback(async () => {
-    if (!account) return;
-    try {
-      const currentMockPrice = 1.00 + (Math.random() * 0.02);
-      priceHistory.current = [...priceHistory.current.slice(-30), currentMockPrice];
-
-      const { decision } = await consultAgents(currentMockPrice, priceHistory.current);
-
-      const deliberation = await tradingStrategies.deliberate(
-        { action: decision.action, confidence: decision.confidence },
-        async () => ({ action: decision.action, confidence: decision.confidence })
-      );
-
-      const threshold = getConfidenceThreshold();
-      if (deliberation.shouldTrade || (decision.confidence >= threshold && deliberation.action !== 'hold')) {
-        const won = Math.random() > 0.4;
-        setTradeCount(prev => prev + 1);
-        const profit = tradeSize * 0.01;
-        setGrossProfit(prev => prev + profit);
-        setLastTrade({ profit, time: new Date().toLocaleTimeString() });
-        onTradeExecuted(profit);
-
-        agentMemory.update("Quantum", won, quantumAgent.getScore().avgConfidence);
-        agentMemory.update("Technical", won, technicalAgent.getScore().avgConfidence);
-        agentMemory.update("Synthesis", won, synthesisAgent.getScore().avgConfidence);
-
-        votingSystem.recordResult(won);
-
-        toast.success(`💰 TRADE ${network.isTestnet ? '🧪 TESTE' : '💰 REAL'} | ${deliberation.action.toUpperCase()} | Lucro: $${profit.toFixed(4)}`);
-      }
-    } catch (error) {
-      console.error("Erro no trade:", error);
-    }
-  }, [account, tradeSize, consultAgents, onTradeExecuted, network, tradingMode]);
-
-  const toggleAutoTrade = () => {
-    if (!account) { toast.error("Conecte a carteira primeiro"); return; }
-    if (isActive) {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      setIsActive(false);
-      toast("⏹️ Auto-Trade parado");
-    } else {
-      setIsActive(true);
-      updateMarketSentiment();
-      toast.success(`🌌 Auto-Trade iniciado em ${network.isTestnet ? 'TESTNET' : 'MAINNET'}! Trade: $${tradeSize}`);
-      setTimeout(() => executeTrade(), 2000);
-      const interval = network.isTestnet ? 25000 : 45000;
-      intervalRef.current = setInterval(executeTrade, interval);
-    }
-  };
-
-  useEffect(() => {
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, []);
-
-  return (
-    <div style={{ marginTop: '16px', padding: '16px', background: 'linear-gradient(135deg, #0a0a2e 0%, #1a1a4e 100%)', borderRadius: '16px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '24px' }}>🌌</span>
-          <span style={{ fontWeight: 'bold', color: '#8b5cf6' }}>Multi-Agent System</span>
-          <span style={{ fontSize: '9px', background: network.isTestnet ? ORANGE : GREEN, padding: '2px 6px', borderRadius: 10, color: '#fff' }}>
-            {network.isTestnet ? '🧪 TESTNET' : '💰 REAL'}
-          </span>
-          {isActive && <span style={{ fontSize: '10px', background: '#22c55e', color: '#fff', padding: '2px 8px', borderRadius: '20px' }}>🤖 ATIVO</span>}
-        </div>
-        <button onClick={toggleAutoTrade} style={{ padding: '8px 20px', background: isActive ? '#ef4444' : '#8b5cf6', border: 'none', borderRadius: '20px', color: '#fff', cursor: 'pointer' }}>
-          {isActive ? '⏹️ PARAR' : '🤖 INICIAR'}
-        </button>
-      </div>
-
-      {marketSentiment && (
-        <div style={{ marginBottom: '8px', padding: '8px', background: 'rgba(0,0,0,0.4)', borderRadius: '8px', fontSize: '11px', textAlign: 'center' }}>
-          📰 Sentimento: <span style={{ color: marketSentiment.bias === 'positive' ? '#4ade80' : marketSentiment.bias === 'negative' ? '#ef4444' : '#fbbf24' }}>
-            {marketSentiment.bias.toUpperCase()} ({marketSentiment.score})
-          </span>
-        </div>
-      )}
-
-      <AgentDashboard agentScores={agentScores} votingStats={votingStats} />
-
-      {quantumAnalysis && (
-        <div style={{ marginBottom: '12px', padding: '8px', background: 'rgba(139, 92, 246, 0.15)', borderRadius: '8px', fontSize: '9px', color: '#a78bfa', textAlign: 'center' }}>
-          {quantumAnalysis}
-        </div>
-      )}
-
-      {/* Modo de Trading */}
-      <div style={{ marginBottom: '12px' }}>
-        <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '6px' }}>🎯 Modo de Trading:</div>
-        <div style={{ display: 'flex', gap: '6px' }}>
-          {(['conservative', 'moderate', 'aggressive'] as const).map(mode => (
-            <button
-              key={mode}
-              onClick={() => setTradingMode(mode)}
-              style={{
-                flex: 1, padding: '6px 0', fontSize: '10px',
-                background: tradingMode === mode
-                  ? mode === 'aggressive' ? '#ef4444' : mode === 'moderate' ? '#f59e0b' : '#3b82f6'
-                  : 'rgba(255,255,255,0.1)',
-                color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer',
-                fontWeight: tradingMode === mode ? 'bold' : 'normal'
-              }}
-            >
-              {mode === 'aggressive' ? '🔴 Agressivo' : mode === 'moderate' ? '🟡 Moderado' : '🔵 Conservador'}
-            </button>
-          ))}
-        </div>
-        <div style={{ fontSize: '9px', color: '#94a3b8', marginTop: '4px', textAlign: 'center' }}>
-          Threshold: {getConfidenceThreshold()}% · Intervalo: {network.isTestnet ? '25s' : '45s'}
-        </div>
-      </div>
-
-      <div style={{ marginBottom: '16px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-          <span style={{ fontSize: '11px', color: '#94a3b8' }}>💰 Valor por trade:</span>
-          <span style={{ fontSize: '13px', color: '#a78bfa', fontWeight: 'bold' }}>${tradeSize} USDC</span>
-        </div>
-        <input type="range" min={2} max={network.isTestnet ? 50 : 15} step={1} value={tradeSize} onChange={(e) => setTradeSize(Number(e.target.value))} style={{ width: '100%' }} />
-        <div style={{ fontSize: '9px', color: '#fbbf24', marginTop: 4 }}>⚡ Micro-trades ativos: ${tradeSize} por trade</div>
-      </div>
-
-      <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '12px', padding: '12px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-          <span style={{ fontSize: '11px', color: '#94a3b8' }}>Lucro Bruto:</span>
-          <span style={{ fontSize: '12px', color: '#fbbf24' }}>${grossProfit.toFixed(4)}</span>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span style={{ fontSize: '13px', color: '#4ade80', fontWeight: 'bold' }}>LUCRO LÍQUIDO:</span>
-          <span style={{ fontSize: '16px', color: '#22c55e', fontWeight: 'bold' }}>${(grossProfit - (tradeCount * GAS_PER_TRADE)).toFixed(4)}</span>
-        </div>
-      </div>
-
-      <div style={{ color: '#fff', fontSize: '13px', marginTop: '8px' }}>
-        <div>💰 Trades: <span style={{ fontWeight: 'bold', color: '#a78bfa' }}>{tradeCount}</span></div>
-        {lastTrade && <div style={{ fontSize: '11px' }}>🕐 Último: ${lastTrade.profit.toFixed(4)}</div>}
-      </div>
-
-      {network.shortName === 'ARC' && (
-        <div style={{ marginTop: '12px', padding: '10px', background: 'rgba(0, 180, 216, 0.12)', borderRadius: '10px', border: '1px solid rgba(0, 180, 216, 0.25)' }}>
-          <div style={{ fontSize: '10px', color: '#48cae4', marginBottom: '6px', display: 'flex', justifyContent: 'space-between' }}>
-            <span>⚡ ARC Micro-Trading Engine</span>
-            <span>USDC gas</span>
-          </div>
-          <div style={{ fontSize: '9px', color: '#94a3b8', display: 'flex', justifyContent: 'space-between' }}>
-            <span>🔵 Gas: ~$0.006 · Finalidade: &lt;1s</span>
-            <span>📝 Memos: ON</span>
-          </div>
-          <div style={{ fontSize: '9px', color: '#94a3b8', display: 'flex', justifyContent: 'space-between', marginTop: '2px' }}>
-            <span>📦 Batch: {network.isTestnet ? '10s window' : 'OFF'}</span>
-            <span>💠 Unified Balance: ON</span>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ============================================================
-// COMPONENTE: PROFIT POOL
-// ============================================================
-
-function ProfitPool({ totalProfit, onReinvest, network }: { totalProfit: number; onReinvest: (amount: number) => void; network: Network }) {
-  return (
-    <div style={{ marginTop: '12px', padding: '12px', background: '#fef3c7', borderRadius: '12px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-        <span>🏦 Bolsão de Lucros {network.isTestnet && '(Teste)'}</span>
-        <span style={{ fontWeight: 'bold', color: '#16a34a' }}>${totalProfit.toFixed(4)}</span>
-      </div>
-      {totalProfit > 1 && (
-        <button onClick={() => onReinvest(totalProfit * 0.7)} style={{ width: '100%', marginTop: '8px', padding: '6px', background: '#f59e0b', border: 'none', borderRadius: '8px', color: '#fff', cursor: 'pointer' }}>
-          🔄 Reinvestir
-        </button>
-      )}
-    </div>
-  );
-}
-
-// ============================================================
-// COMPONENTE: MARKET MONITOR
-// ============================================================
-
-// ============================================================
 // COMPONENTE PRINCIPAL HOME
 // ============================================================
 
@@ -1089,7 +719,6 @@ export default function Home() {
   const [dest, setDest] = useState("");
   const [amount, setAmount] = useState("");
   const [sending, setSending] = useState(false);
-  const [totalProfit, setTotalProfit] = useState(0);
   const [agentScores, setAgentScores] = useState<any[]>([]);
   
   const [currentNetwork, setCurrentNetwork] = useState<Network>(() => {
@@ -1240,8 +869,6 @@ export default function Home() {
     toast.success(`🔄 Rede alterada para ${newNetwork.name}`);
   };
 
-  const handleTradeExecuted = (profit: number) => { setTotalProfit(prev => prev + profit); };
-  const handleReinvest = (amt: number) => { toast.success(`💰 ${amt.toFixed(4)} USDC reinvestido!`); };
 
   const portfoliosWithBalance = portfolios.filter(p => p.balance > 0n);
   const usdcEntry = portfolios.find(p => p.symbol === "USDC");
@@ -1357,25 +984,20 @@ export default function Home() {
           )}
 
           {tab === "agents" && account && (
-            <AgentIdentityPanel account={account} network={currentNetwork} />
+            <div style={{ padding: 20, color: "#94a3b8", fontSize: 12, textAlign: "center" }}>
+              🤖 Trading agents rodando nos painéis abaixo
+            </div>
           )}
         </div>
 
-        {/* Seções de Agentes */}
+        {/* Seções de Trading Real */}
         {account && (
           <>
-            <ProjectionDashboard />
             <BotBank />
-            <MarketMonitor />
-            <AutoTradeControl account={account} onTradeExecuted={handleTradeExecuted} network={currentNetwork} />
-            <ProfitPool totalProfit={totalProfit} onReinvest={handleReinvest} network={currentNetwork} />
-            
-            {/* NOVOS COMPONENTES INTEGRADOS */}
-           <BridgeWidget userAddress={account} />
-            <RealTradingDashboard account={account} currentNetwork={currentNetwork} />
+            <BridgeWidget userAddress={account} />
             <RealAutomatedTrader account={account} currentNetwork={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} />
             <NanopaymentDashboard agentScores={agentScores} />
-            <TradingNanopaymentDashboard account={account} currentNetwork={currentNetwork} />
+            <PregãoDashboard rede={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} />
           </>
         )}
 

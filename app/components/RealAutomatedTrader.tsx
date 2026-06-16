@@ -22,6 +22,9 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
   const [logs, setLogs] = useState<string[]>([]);
   const [tradeAmount, setTradeAmount] = useState(5);
   const [intervalSec, setIntervalSec] = useState(30);
+  const [privateKey, setPrivateKey] = useState("");
+  const [showPkInput, setShowPkInput] = useState(false);
+  const [usingPkMode, setUsingPkMode] = useState(false);
   const logsRef = useRef<HTMLDivElement>(null);
 
   const net = NETWORKS[currentNetwork];
@@ -46,11 +49,39 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
     setHistory(realAutomatedTrader.getHistory());
   };
 
-  // Inicializar trader com server auto-sign (env) ou MetaMask
+  // Inicializar trader: private key local > server auto-sign > MetaMask
   const handleInit = async () => {
     setIsInitializing(true);
 
-    // Verificar se o servidor tem PRIVATE_KEY configurada
+    // 1. Se tem private key no input, usar direto no frontend
+    if (privateKey.length >= 64) {
+      const cleanKey = privateKey.trim();
+      const pk = cleanKey.startsWith("0x") ? cleanKey : "0x" + cleanKey;
+      try {
+        const provider = new ethers.JsonRpcProvider(net.rpcUrl);
+        const wallet = new ethers.Wallet(pk, provider);
+        const address = await wallet.getAddress();
+        addLog(`🔑 Private key detectada — assinando localmente (sem MetaMask)`);
+        addLog(`👤 Wallet: ${address.slice(0, 6)}...${address.slice(-4)}`);
+        setUsingPkMode(true);
+        const ok = await realAutomatedTrader.initialize(address, currentNetwork, wallet);
+        if (ok) {
+          realAutomatedTrader.onLog(addLog);
+          realAutomatedTrader.onTrade(() => refreshStats());
+          setInitialized(true);
+          addLog(`✅ Auto-sign local ativo na ${net.name}`);
+          await refreshStats();
+        } else {
+          addLog("❌ Falha ao conectar — verifique RPC e chave");
+        }
+      } catch (err: any) {
+        addLog(`❌ Chave inválida: ${err?.message?.slice(0, 60) || "erro"}`);
+      }
+      setIsInitializing(false);
+      return;
+    }
+
+    // 2. Verificar se o servidor tem PRIVATE_KEY configurada
     try {
       const signStatus = await fetch("/api/swap/sign").then(r => r.json());
       if (signStatus.autoSignAvailable) {
@@ -73,6 +104,7 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
       // servidor sem suporte a auto-sign, fallback para MetaMask
     }
 
+    // 3. Fallback: MetaMask
     addLog("🔑 Conectando carteira MetaMask...");
     let externalSigner: ethers.Signer | undefined;
     try {
@@ -98,24 +130,12 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
     setIsInitializing(false);
   };
 
-  const handleStart = () => {
-    if (!initialized) return;
-    realAutomatedTrader.startAutomatedTrading(intervalSec, tradeAmount);
-    setIsRunning(true);
-    addLog(`🚀 Trading REAL iniciado — $${tradeAmount} a cada ${intervalSec}s`);
-  };
-
-  const handleStop = () => {
+  const handleDisconnect = () => {
     realAutomatedTrader.stopAutomatedTrading();
+    setInitialized(false);
     setIsRunning(false);
-    refreshStats();
-  };
-
-  const handleManual = async () => {
-    if (!initialized) return;
-    addLog("🔄 Ciclo manual iniciado...");
-    await realAutomatedTrader.runTradingCycle(tradeAmount);
-    await refreshStats();
+    setUsingPkMode(false);
+    addLog("🔌 Desconectado");
   };
 
   useEffect(() => {
@@ -125,6 +145,8 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
     setBalances({ usdc: 0, eurc: 0 });
     setHistory([]);
     setLogs([]);
+    setUsingPkMode(false);
+    setPrivateKey("");
   }, [currentNetwork]);
 
   useEffect(() => {
@@ -209,6 +231,48 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
         </div>
       )}
 
+      {/* Private Key (opcional) — assinatura local sem MetaMask */}
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+          <span style={{ fontSize: 9, color: "#64748b" }}>🔑 Private Key (opcional — auto-sign local)</span>
+          <button
+            onClick={() => setShowPkInput(!showPkInput)}
+            style={{ background: "none", border: "none", color: "#3b82f6", cursor: "pointer", fontSize: 10, padding: 0 }}
+          >
+            {showPkInput ? "esconder" : "mostrar"}
+          </button>
+        </div>
+        {showPkInput && (
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              type="password"
+              value={privateKey}
+              onChange={(e) => setPrivateKey(e.target.value)}
+              placeholder="0x... ou 64 hex chars (não sai do navegador)"
+              style={{ flex: 1, background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, padding: "8px 10px", color: "#e2e8f0", fontSize: 11, fontFamily: "monospace" }}
+            />
+            {privateKey.length > 0 && (
+              <button
+                onClick={() => setPrivateKey("")}
+                style={{ background: "#1e293b", border: "none", borderRadius: 8, color: "#64748b", cursor: "pointer", padding: "0 10px", fontSize: 11 }}
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        )}
+        {usingPkMode && (
+          <div style={{ fontSize: 9, color: "#22c55e", marginTop: 4 }}>
+            ✅ Assinando localmente com private key
+          </div>
+        )}
+        {!usingPkMode && initialized && (
+          <div style={{ fontSize: 9, color: "#f59e0b", marginTop: 4 }}>
+            ⚠️ Conectado via MetaMask. Digite uma private key e clique em "Conectar" para trocar.
+          </div>
+        )}
+      </div>
+
       {/* Configurações */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
         <div>
@@ -237,35 +301,26 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
 
       {/* Botões */}
       <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-        {!initialized ? (
+        {!initialized || (initialized && privateKey.length >= 64 && !usingPkMode) ? (
           <button
-            onClick={handleInit}
+            onClick={initialized ? () => { handleDisconnect(); setTimeout(handleInit, 100); } : handleInit}
             disabled={isInitializing}
             style={{ flex: 1, background: "#1d4ed8", color: "#fff", border: "none", borderRadius: 10, padding: 12, fontWeight: 700, cursor: "pointer", fontSize: 12 }}
           >
-            {isInitializing ? "⏳ Conectando..." : "🔑 CONECTAR CARTEIRA REAL"}
+            {isInitializing ? "⏳ Conectando..." : privateKey.length >= 64 ? "🔑 CONECTAR (PRIVATE KEY)" : "🔑 CONECTAR CARTEIRA REAL"}
           </button>
-        ) : !isRunning ? (
-          <>
-            <button
-              onClick={handleStart}
-              style={{ flex: 2, background: isMainnet ? "#ef4444" : "#10b981", color: "#fff", border: "none", borderRadius: 10, padding: 12, fontWeight: 700, cursor: "pointer", fontSize: 12 }}
-            >
-              🤖 INICIAR TRADING REAL
-            </button>
-            <button
-              onClick={handleManual}
-              style={{ flex: 1, background: "#7c3aed", color: "#fff", border: "none", borderRadius: 10, padding: 12, fontWeight: 700, cursor: "pointer", fontSize: 12 }}
-            >
-              🔄 Manual
-            </button>
-          </>
         ) : (
+          <div style={{ fontSize: 10, color: "#22c55e", textAlign: "center", marginBottom: 14 }}>
+            ✅ Conectado — Pregão usa este signer para executar ordens automaticamente
+          </div>
+        )}
+        {initialized && (
           <button
-            onClick={handleStop}
-            style={{ flex: 1, background: "#ef4444", color: "#fff", border: "none", borderRadius: 10, padding: 12, fontWeight: 700, cursor: "pointer", fontSize: 12 }}
+            onClick={handleDisconnect}
+            style={{ background: "#1e293b", border: "none", borderRadius: 8, color: "#64748b", cursor: "pointer", padding: "0 10px", fontSize: 10 }}
+            title="Desconectar"
           >
-            ⏹️ PARAR TRADING
+            🔌
           </button>
         )}
       </div>

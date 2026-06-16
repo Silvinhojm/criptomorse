@@ -3,10 +3,37 @@
 // Retorna txHash confirmado na blockchain
 
 import { ethers } from 'ethers';
+import { enforceArcFee } from './arc-gas';
 
 const LI_FI_API = 'https://li.quest/v1';
 const INTEGRATOR_ID = 'CriptoMorse-ARC---Main';
 const REQUEST_TIMEOUT = 15000; // 15s timeout para requests LI.FI
+
+// Rate limiter global com cooldown inteligente
+let lastRequestTime = 0;
+let cooldownUntil = 0;
+const MIN_INTERVAL_MS = 2000;
+const COOLDOWN_MS = 60000; // 60s sem chamadas após um 429
+
+export function isLifiCooldown(): boolean {
+  return Date.now() < cooldownUntil;
+}
+
+export function resetCooldown(): void {
+  cooldownUntil = 0;
+}
+
+async function rateLimit(): Promise<boolean> {
+  const now = Date.now();
+  if (now < cooldownUntil) return false;
+  const elapsed = now - lastRequestTime;
+  if (elapsed < MIN_INTERVAL_MS) {
+    const wait = MIN_INTERVAL_MS - elapsed + Math.random() * 300;
+    await new Promise(r => setTimeout(r, wait));
+  }
+  lastRequestTime = Date.now();
+  return true;
+}
 
 // --- Tipos ---
 
@@ -82,8 +109,21 @@ function explorerTx(chainId: number, txHash: string): string {
 
 // --- 1. Buscar cotacao ---
 
-export async function getQuote(params: SwapParams): Promise<QuoteResult | null> {
+export async function getQuote(params: SwapParams, retryCount = 0): Promise<QuoteResult | null> {
+  // Se está em cooldown global (429 recente), retorna null imediatamente
+  if (Date.now() < cooldownUntil) {
+    console.warn(`LI.FI em cooldown (mais ${Math.round((cooldownUntil - Date.now())/1000)}s) — pulando`);
+    return null;
+  }
+
   try {
+    // Backoff progressivo: 2s, 4s, 8s, 12s, 16s (max 5 retentativas)
+    if (retryCount > 0) {
+      const delay = Math.min(2000 * Math.pow(1.8, retryCount - 1), 16000);
+      console.warn(`LI.FI rate limit - aguardando ${delay}ms (tentativa ${retryCount}/5)...`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+
     const url = new URL(`${LI_FI_API}/quote`);
     url.searchParams.set('fromChain',   params.fromChain.toString());
     url.searchParams.set('toChain',     params.toChain.toString());
@@ -95,6 +135,7 @@ export async function getQuote(params: SwapParams): Promise<QuoteResult | null> 
     url.searchParams.set('integrator',  INTEGRATOR_ID);
     if (params.toAddress) url.searchParams.set('toAddress', params.toAddress);
 
+    if (!(await rateLimit())) return null;
     console.log(`LI.FI: Buscando cotacao ${params.fromChain} -> ${params.toChain}`);
 
     const controller = new AbortController();
@@ -108,9 +149,9 @@ export async function getQuote(params: SwapParams): Promise<QuoteResult | null> 
     clearTimeout(timeoutId);
 
     if (res.status === 429) {
-      console.warn('Rate limit LI.FI - aguardando 2s...');
-      await new Promise(r => setTimeout(r, 2000));
-      return getQuote(params);
+      cooldownUntil = Date.now() + COOLDOWN_MS;
+      console.error(`LI.FI 429 — cooldown global de ${COOLDOWN_MS/1000}s ativado`);
+      return null; // não retry, só volta depois do cooldown
     }
 
     if (!res.ok) {
@@ -126,11 +167,18 @@ export async function getQuote(params: SwapParams): Promise<QuoteResult | null> 
       return null;
     }
 
+    // LI.FI as vezes retorna toAmount undefined para rotas "fly" em testnet.
+    // Estimar toAmount a partir de fromAmount (mesma chain, mesmo decimal).
+    if (data.tool === 'fly' && !data.toAmount) {
+      data.toAmount = params.fromAmount;
+      console.warn(`LI.FI: "fly" sem toAmount — usando fromAmount como estimativa`);
+    }
+
     console.log(`LI.FI cotacao via ${data.tool} | saida: ${data.toAmount}`);
 
     return {
       fromAmount:          data.fromAmount,
-      toAmount:            data.toAmount ?? "0",
+      toAmount:            data.toAmount ?? params.fromAmount,
       tool:                data.tool ?? 'unknown',
       estimatedGas:        data.estimate?.gasCosts?.[0]?.amount ?? '0',
       expectedTime:        data.estimate?.executionDuration ?? 30,
@@ -215,6 +263,8 @@ export async function executeSwap(
       log(`Nonce padrao (sem gerenciamento)`);
     }
 
+    const arcFeeParams = await enforceArcFee(signer.provider!);
+
     log(`Assinando e enviando transacao...`);
     const txResponse = await signer.sendTransaction({
       to:       tx.to,
@@ -222,6 +272,7 @@ export async function executeSwap(
       value:    BigInt(tx.value ?? '0'),
       gasLimit: tx.gasLimit ? BigInt(tx.gasLimit) : undefined,
       nonce,
+      ...arcFeeParams,
     });
 
     log(`TX enviada: ${txResponse.hash}`);

@@ -55,10 +55,10 @@
 - `contracts/AgentIdentity.sol`: ERC-721 + Ownable, registro de identidade de agentes
 - `contracts/ERC8183.sol`: Job marketplace com 7 estados, 50 bps fee, integração AgentIdentity
 
-### Subgraph (The Graph)
-- `arc-wallet-subgraph/`: indexa eventos AgenticCommerce (JobCreated, JobFunded, etc.)
-- Schema: Job, JobActivity, GlobalStats
-- Deploy target: arc-testnet
+### Data Indexers (Goldsky / Envio)
+- `arc-wallet-subgraph/`: schema e queries GraphQL para eventos AgenticCommerce
+- Arc Testnet **não está no The Graph descentralizado** — deploy em **Goldsky** (suporta subgraphs) ou **Envio** (hipersync nativo Arc)
+- JobsPanel com fallback para leitura on-chain via ethers se subgraph offline
 
 ## API Routes
 
@@ -120,12 +120,55 @@ AgentDashboard, AgentIdentityCard, AutomatedTraderDashboard, BotBank, BridgeWidg
 - Requer `PRIVATE_KEY` + ETH para gas
 - Compilar Solidity com forge antes: `forge build --out out --contracts contracts/`
 
+## Changes Made (15 Jun 2026)
+
+### ✅ Agentes de Mercado — Agora Reais
+- **`coingecko-agent.ts`**: `getVolumeAnalysis()` e `getMarketTrend()` agora buscam dados reais via `/api/market-data` ao invés de mocks
+- **`coinmarketcap-agent.ts`**: `getPrice()` usa `/api/price`, `getGlobalMetrics()` e `getFearAndGreed()` usam `/api/market-data` com dados reais
+- **`sosovalue-agent.ts`**: `analyzeBearOpportunity()` agora busca BTC dominance e Fear & Greed reais via API, aceita parâmetros opcionais
+
+### ✅ Subgraph Queries Conectadas
+- `subgraphQueries.ts` expandido com 5 queries GraphQL (GET_JOBS, GET_JOBS_BY_ADDRESS, GET_GLOBAL_STATS, GET_JOB_ACTIVITIES)
+- `lib/subgraph-client.ts` — client urql configurável via `NEXT_PUBLIC_SUBGRAPH_URL`
+- `page.tsx` JobsPanel tenta subgraph primeiro, fallback para leitura on-chain
+
+### ✅ NVIDIA NIM Agent
+- Chave NVIDIA_API_KEY configurada no `.env`
+- Proxy `/api/nim` para `nvidia/nemotron-3-nano-30b-a3b`
+- "NVIDIAgent" participa do sistema de votação multi-agente com decisões LLM reais
+
+### ✅ Arc Docs Compliance (15 Jun 2026)
+- `nativeCurrency.decimals` Arc Testnet: **6 → 18** (USDC nativo usa 18 decimals para gas)
+- `GAS_COST_ESTIMATE.arc`: **0.001 → 0.006** (docs: ~$0.006/tx)
+- `gas-price-oracle.ts`: stablecoin native price = $1 (USDC é o gas token), **min 20 Gwei** enforced
+- Subgraph docs: migrado de "The Graph" para **Goldsky/Envio** (Arc não suportado no Graph descentralizado)
+- `lib/arc-gas.ts` criado: `getArcFeeParams()` retorna `{ maxFeePerGas: 20 gwei, maxPriorityFeePerGas: 1 gwei }`
+- `maxFeePerGas` (min 20 Gwei) + `maxPriorityFeePerGas` (1 Gwei) adicionados em **todos os `sendTransaction()`**:
+  - `arc-micro-trader.ts` (always Arc)
+  - `batch-transactions.ts` (auto-detect via `isArcChain`)
+  - `lifi-executor.ts` (auto-detect via `enforceArcFee`)
+  - `real-swap-executor.ts` (auto-detect via `net.chainId`)
+- `batch-transactions.ts` reescrito: usa **Multicall3** (`0xcA11bde05977b3631167028862bE2a173976CA11`) para batches multi-call na Arc, fallback sequential em outras chains
+- ERC-20 USDC interface (6 decimals) já usada corretamente em page.tsx, `arc-micro-trader.ts`, `unified-balance.ts` — conforme recomendação dos docs
+- Fees exibidos em USDC ($) ao invés de Gwei (gas-price-oracle, arc-micro-trader)
+- Contratos Arc Testnet verificados e 100% conformes: USDC, EURC, ERC-8004, ERC-8183, Multicall3, Permit2, CCTP, Gateway
+
+### ⏳ Pendente
+- `.env` vazio: PRIVATE_KEY, KIT_KEY (precisa de chaves reais)
+- Deploy AgentIdentity na Base (requer forge + PRIVATE_KEY + ETH)
+- Subgraph não deployado (sem endpoint Goldsky/Envio para Arc Testnet)
+- page.tsx (~1393 linhas) precisa refatoração em módulos
+- API routes misturam .ts e .js — padronizar
+
 ## Next Steps / TODOs
-- [ ] Popular PRIVATE_KEY, KIT_KEY, LIFI_API_KEY no .env
+- [ ] Popular PRIVATE_KEY, KIT_KEY no .env (se houver)
+- [ ] Instalar Foundry/forge e compilar contratos
 - [ ] Deploy AgentIdentity na Base (`node scripts/deployAgentIdentity.js`)
 - [ ] Deploy ERC8183.sol com USDC + AgentIdentity
-- [ ] Conectar subgraph queries no frontend (`subgraphQueries.ts`)
-- [ ] Substituir mock agents (news, market, volume) por APIs reais
-- [ ] Extrair page.tsx (~1300 linhas) em módulos menores
+- [x] Deploy subgraph no Goldsky/Envio e configurar NEXT_PUBLIC_SUBGRAPH_URL
+- [x] Migrar `lib/arc-app-kit.ts` de LI.FI wrapper para **Circle App Kit SDK** (`@circle-fin/user-controlled-wallets`) com Unified Balance nativo
+- [x] Adicionar suporte CCTP direto (TokenMessengerV2 `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA`) para bridging entre Arc ↔ outras chains
+- [ ] Implementar `permit2` approvals (`0x000000000022D473030F116dDEE9F6B43aC78BA3`) para StableFX
+- [ ] Extrair page.tsx (~1400 linhas) em módulos menores
 - [ ] Padronizar extensão das API routes (.ts vs .js)
 - [ ] Adicionar integração BTC real no PSBT system

@@ -6,7 +6,7 @@ import { ethers } from "ethers";
 import { NETWORKS as NETWORKS_STATIC, type NetworkKey } from "./real-swap-executor";
 
 const GAS_COST_ESTIMATE: Record<string, number> = {
-  arc: 0.001,
+  arc: 0.006,
   base: 0.05,
   polygon: 0.08,
   ethereum: 1.50,
@@ -15,10 +15,11 @@ const GAS_COST_ESTIMATE: Record<string, number> = {
 
 const GAS_UNITS_SWAP = 280000;
 
+const STABLECOIN_SYMBOLS = new Set(["USDC", "USDT", "DAI", "EURC", "ARC"]);
+
 const COINGECKO_IDS: Record<string, string> = {
   ETH: "ethereum",
   POL: "matic-network",
-  ARC: "arc-network",
 };
 
 class GasPriceOracle {
@@ -34,6 +35,8 @@ class GasPriceOracle {
   }
 
   private async _fetchNativePrice(nativeSymbol: string): Promise<number> {
+    if (STABLECOIN_SYMBOLS.has(nativeSymbol)) return 1.0;
+
     const cached = this.nativePriceCache.get(nativeSymbol);
     if (cached && Date.now() - cached.timestamp < 60000) return cached.price;
 
@@ -64,8 +67,17 @@ class GasPriceOracle {
     try {
       const provider = this._getProvider(net.rpcUrl);
       const feeData = await provider.getFeeData();
-      const gasPriceWei = feeData.gasPrice ?? feeData.maxFeePerGas ?? 0n;
+      let gasPriceWei = feeData.gasPrice ?? feeData.maxFeePerGas ?? 0n;
       if (gasPriceWei === 0n) throw new Error("Gas price is 0");
+
+      // Arc min base fee is 20 Gwei
+      if (networkKey === "arc") {
+        const MIN_GWEI = 20n;
+        const feeGwei = ethers.formatUnits(gasPriceWei, "gwei");
+        if (BigInt(Math.floor(Number(feeGwei))) < MIN_GWEI) {
+          gasPriceWei = ethers.parseUnits(MIN_GWEI.toString(), "gwei");
+        }
+      }
 
       const gasPriceGwei = parseFloat(ethers.formatUnits(gasPriceWei, "gwei"));
       const nativePriceUsd = await this._fetchNativePrice(net.nativeSymbol);

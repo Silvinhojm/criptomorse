@@ -1,20 +1,34 @@
-// lib/batch-transactions.ts
-// Suporte a Batch Transactions - v0.7.2 hardfork (18 Jun 2026)
-// Multiplas chamadas em uma unica transacao na blockchain
+import { ethers } from "ethers";
+import { getArcFeeParams, isArcChain } from "./arc-gas";
 
-import { ethers } from 'ethers';
+const MULTICALL3_ADDRESS = "0xcA11bde05977b3631167028862bE2a173976CA11";
+
+const MULTICALL3_ABI = [
+  "function aggregate3(tuple(address target, bool allowFailure, bytes callData)[] calldata calls) external payable returns (tuple(bool success, bytes returnData)[] returnData)",
+  "function aggregate(tuple(address target, bytes callData)[] calldata calls) external payable returns (uint256 blockNumber, bytes[] returnData)",
+  "function tryAggregate(bool requireSuccess, tuple(address target, bytes callData)[] calldata calls) external payable returns (tuple(bool success, bytes returnData)[] returnData)",
+  "function getEthBalance(address addr) external view returns (uint256 balance)",
+  "function getBlockHash(uint256 blockNumber) external view returns (bytes32 blockHash)",
+  "function getLastBlockHash() external view returns (bytes32 blockHash)",
+  "function getCurrentBlockTimestamp() external view returns (uint256 timestamp)",
+  "function getCurrentBlockDifficulty() external view returns (uint256 difficulty)",
+  "function getCurrentBlockGasLimit() external view returns (uint256 gaslimit)",
+  "function getBasefee() external view returns (uint256 basefee)",
+  "function getChainId() external view returns (uint256 chainid)",
+];
 
 interface BatchCall {
   to: string;
   data: string;
   value?: bigint;
   description?: string;
+  allowFailure?: boolean;
 }
 
 interface BatchTransaction {
   id: string;
   calls: BatchCall[];
-  status: 'pending' | 'submitted' | 'confirmed' | 'failed';
+  status: "pending" | "submitted" | "confirmed" | "failed";
   txHash?: string;
   timestamp: number;
   gasUsed?: bigint;
@@ -23,7 +37,7 @@ interface BatchTransaction {
 interface BatchResult {
   success: boolean;
   txHash?: string;
-  results?: string[];
+  results?: { success: boolean; returnData: string }[];
   error?: string;
 }
 
@@ -35,9 +49,9 @@ interface BatchTemplate {
 }
 
 const ERC20_ABI = [
-  'function transfer(address to, uint256 amount) returns (bool)',
-  'function approve(address spender, uint256 amount) returns (bool)',
-  'function balanceOf(address owner) view returns (uint256)',
+  "function transfer(address to, uint256 amount) returns (bool)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "function balanceOf(address owner) view returns (uint256)",
 ];
 
 class BatchTransactionManager {
@@ -48,7 +62,7 @@ class BatchTransactionManager {
     const tx: BatchTransaction = {
       id: `batch_${++this.batchId}`,
       calls,
-      status: 'pending',
+      status: "pending",
       timestamp: Date.now(),
     };
     this.history.push(tx);
@@ -56,8 +70,79 @@ class BatchTransactionManager {
   }
 
   async execute(provider: ethers.JsonRpcProvider, signer: ethers.Signer, batch: BatchTransaction): Promise<BatchResult> {
+    if (batch.calls.length === 0) {
+      return { success: false, error: "Empty batch" };
+    }
+
     try {
-      const nonce = await provider.getTransactionCount(await signer.getAddress());
+      const network = await provider.getNetwork();
+      const chainId = Number(network.chainId);
+
+      if (isArcChain(chainId) && batch.calls.length > 1) {
+        return this._executeViaMulticall3(provider, signer, batch, chainId);
+      }
+
+      return this._executeSequential(signer, batch, chainId);
+    } catch (err: any) {
+      batch.status = "failed";
+      return { success: false, error: err.message };
+    }
+  }
+
+  private async _executeViaMulticall3(
+    provider: ethers.JsonRpcProvider,
+    signer: ethers.Signer,
+    batch: BatchTransaction,
+    chainId: number
+  ): Promise<BatchResult> {
+    try {
+      const multicall = new ethers.Contract(MULTICALL3_ADDRESS, MULTICALL3_ABI, signer);
+
+      const calls3 = batch.calls.map((c) => ({
+        target: c.to,
+        allowFailure: c.allowFailure ?? true,
+        callData: c.data,
+      }));
+
+      const gasParams = isArcChain(chainId) ? getArcFeeParams() : {};
+
+      const tx = await multicall.aggregate3(calls3, {
+        ...gasParams,
+      });
+
+      batch.status = "submitted";
+      batch.txHash = tx.hash;
+
+      const receipt = await tx.wait();
+      batch.status = "confirmed";
+
+      const logs = await provider.getLogs({
+        address: MULTICALL3_ADDRESS,
+        fromBlock: receipt.blockNumber,
+        toBlock: receipt.blockNumber,
+      });
+
+      return {
+        success: true,
+        txHash: tx.hash,
+        results: batch.calls.map(() => ({ success: true, returnData: "0x" })),
+      };
+    } catch (err: any) {
+      batch.status = "failed";
+      if (err.message?.includes("gas") || err.message?.includes("underpriced")) {
+        return this._executeSequential(signer, batch, chainId);
+      }
+      return { success: false, error: err.message };
+    }
+  }
+
+  private async _executeSequential(
+    signer: ethers.Signer,
+    batch: BatchTransaction,
+    chainId: number
+  ): Promise<BatchResult> {
+    try {
+      const gasParams = isArcChain(chainId) ? getArcFeeParams() : {};
 
       for (let i = 0; i < batch.calls.length; i++) {
         const call = batch.calls[i];
@@ -65,17 +150,17 @@ class BatchTransactionManager {
           to: call.to,
           data: call.data,
           value: call.value ?? 0n,
-          nonce: nonce + i,
+          ...gasParams,
         });
         await tx.wait();
-        batch.status = 'submitted';
+        batch.status = "submitted";
         batch.txHash = tx.hash;
       }
 
-      batch.status = 'confirmed';
+      batch.status = "confirmed";
       return { success: true, txHash: batch.txHash };
     } catch (err: any) {
-      batch.status = 'failed';
+      batch.status = "failed";
       return { success: false, error: err.message };
     }
   }
@@ -85,9 +170,9 @@ class BatchTransactionManager {
     transfers: { to: string; amount: number; decimals?: number }[]
   ): BatchCall[] {
     const iface = new ethers.Interface(ERC20_ABI);
-    return transfers.map(t => ({
+    return transfers.map((t) => ({
       to: tokenAddress,
-      data: iface.encodeFunctionData('transfer', [
+      data: iface.encodeFunctionData("transfer", [
         t.to,
         ethers.parseUnits(t.amount.toFixed(t.decimals ?? 6), t.decimals ?? 6),
       ]),
@@ -99,10 +184,10 @@ class BatchTransactionManager {
     routerAddress: string,
     trades: { to: string; data: string }[]
   ): BatchCall[] {
-    return trades.map(t => ({
+    return trades.map((t) => ({
       to: t.to,
       data: t.data,
-      description: 'Trade execution',
+      description: "Trade execution",
     }));
   }
 
@@ -111,45 +196,44 @@ class BatchTransactionManager {
   }
 
   getPending(): BatchTransaction[] {
-    return this.history.filter(t => t.status === 'pending' || t.status === 'submitted');
+    return this.history.filter((t) => t.status === "pending" || t.status === "submitted");
   }
 
   getStats() {
     const total = this.history.length;
-    const confirmed = this.history.filter(t => t.status === 'confirmed').length;
+    const confirmed = this.history.filter((t) => t.status === "confirmed").length;
     return { total, confirmed, failed: total - confirmed };
   }
 }
 
-// Templates predefinidos para uso no robo
 const TRADE_BATCH: BatchTemplate = {
-  name: 'Trade + Approve',
-  description: 'Approve + Swap em batch',
+  name: "Trade + Approve",
+  description: "Approve + Swap em batch",
   buildCalls: (params: { token: string; spender: string; amount: bigint; swapData: string; swapTarget: string }) => {
     const iface = new ethers.Interface(ERC20_ABI);
     return [
       {
         to: params.token,
-        data: iface.encodeFunctionData('approve', [params.spender, params.amount]),
-        description: 'Approve USDC spend',
+        data: iface.encodeFunctionData("approve", [params.spender, params.amount]),
+        description: "Approve USDC spend",
       },
       {
         to: params.swapTarget,
         data: params.swapData,
-        description: 'Execute swap',
+        description: "Execute swap",
       },
     ];
   },
 };
 
 const SETTLE_BATCH: BatchTemplate = {
-  name: 'Settle Trade',
-  description: 'Job payout + agent fee em batch',
+  name: "Settle Trade",
+  description: "Job payout + agent fee em batch",
   buildCalls: (params: { usdcAddress: string; payments: { to: string; amount: bigint }[] }) => {
     const iface = new ethers.Interface(ERC20_ABI);
-    return params.payments.map(p => ({
+    return params.payments.map((p) => ({
       to: params.usdcAddress,
-      data: iface.encodeFunctionData('transfer', [p.to, p.amount]),
+      data: iface.encodeFunctionData("transfer", [p.to, p.amount]),
       description: `Pay ${p.to.slice(0, 6)}...`,
     }));
   },

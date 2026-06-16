@@ -54,11 +54,10 @@ let priceCache: { price: number; timestamp: number; token: string }[] = [];
 async function getTokenPrice(token: TokenSymbol): Promise<number> {
   const cached = priceCache.find(p => p.token === token);
   if (cached && Date.now() - cached.timestamp < 60000) return cached.price;
-  if (STABLES.has(token)) return 1.0;
 
   const coinIds: Record<string, string> = {
     WETH: "ethereum", WMATIC: "matic-network", ARB: "arbitrum",
-    WBTC: "bitcoin",
+    WBTC: "bitcoin", USDC: "usd-coin", EURC: "eurc",
   };
   const coinId = coinIds[token];
   if (!coinId) return 1.0;
@@ -448,8 +447,10 @@ class TradingNanopaymentSystem {
           }
 
           const spread = Math.abs(toPrice - fromPrice);
-          const confidence = Math.min(95, spread * 5000 + 30);
-          const action = toPrice > fromPrice ? "buy" : toPrice < fromPrice ? "sell" : "hold";
+          const isStablePair = ['USDC', 'EURC', 'USDT', 'DAI'].includes(pair.from) && ['USDC', 'EURC', 'USDT', 'DAI'].includes(pair.to);
+          // Para stable-stable: sempre tentar buy (arbitragem de spread), confiança baseada no spread
+          const action = isStablePair && spread < 0.001 ? "buy" : toPrice > fromPrice ? "buy" : toPrice < fromPrice ? "sell" : "buy";
+          const confidence = Math.min(85, Math.max(30, spread * 5000 + 30));
           return { agentName: agent.name, action, confidence, reason: `${pair.label} spread ${spread.toFixed(4)}%` } as AgentVote;
         } catch { return null; }
       })

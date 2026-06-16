@@ -10,6 +10,20 @@ const nextConfig: NextConfig = {
   experimental: {
     serverActions: { bodySizeLimit: "2mb" },
   },
+  webpack: (config, { isServer }) => {
+    if (!isServer) {
+      config.resolve = config.resolve ?? {};
+      config.resolve.fallback = {
+        ...(config.resolve.fallback as Record<string, boolean | string>),
+        fs: false,
+        os: false,
+        path: false,
+        crypto: false,
+      };
+    }
+    return config;
+  },
+  devIndicators: false,
 };
 
 export default nextConfig;

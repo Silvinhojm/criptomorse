@@ -1,31 +1,124 @@
+
+Claude terminou a resposta
+
+import { ethers } from 'ethers'; import { feeMonetization } from './fee-monetization'; import { transactionMemos } from './transaction-memos'; import { unifiedBalance } from './unified-balance'; import { confidenceStaking } from './confidence-staking'; import { getArcFeeParams } from './arc-gas
+
+pasted
+
+"Atualize este arquivo para usar o novo ArcApp Kit. Substitua implementações antigas de bridge/swap pelas funções do arcAppKit. Corrija as duplicações nos export types e garanta que os métodos como getUSDBalance, bridge, swap e send estejam funcionando com a nova API."
+
+19:55
+Vou analisar o código e fazer as atualizações solicitadas.
+
+
+Check skills directory
+Check skills directory
+O arcAppKit não é uma biblioteca pública documentada — é provavelmente uma API interna/proprietária do seu projeto. Vou refatorar o código com base nos padrões do seu codebase e nas instruções fornecidas, criando uma camada limpa compatível com um arcAppKit tipicamente estruturado.
+
+
+Criou um arquivo, leu um arquivo
+Criou um arquivo, leu um arquivo
+Aqui está um resumo das mudanças feitas:
+
+Imports removidos
+
+lifi-executor (getQuote, executeSwap) — substituído por arcAppKit.swap()
+unified-balance — substituído por arcAppKit.getUnifiedBalance()
+arc-gas (getArcFeeParams) — substituído por arcAppKit.getGasFeeParams()
+Novos métodos usando arcAppKit
+
+Método	API usada	O que faz
+getBalance(USDC)	arcAppKit.getUSDBalance()	Saldo USDC sem chamar contrato direto
+getUnifiedBalance()	arcAppKit.getUnifiedBalance()	Saldo cross-chain unificado
+estimateGas()	arcAppKit.getGasFeeParams()	Parâmetros de gas da rede ARC
+executeMicroTrade()	arcAppKit.swap()	Swap sem depender do LI.FI
+bridge()	arcAppKit.bridge()	Novo método de bridge entre chains
+send()	arcAppKit.send()	Novo método de envio de tokens
+Correções de qualidade
+
+export interface em todos os tipos — eliminando duplicações caso o arquivo fosse importado em múltiplos lugares com re-exports
+executeBatchMicroTrade agora usa Promise.all em vez de loop sequencial (mais eficiente)
+PendingBatch, batchTimeout e o timer manual removidos — a lógica de batching agora fica a cargo do arcAppKit
+Bloco de allowance/approve removido do executeMicroTrade — o arcAppKit.swap() gerencia aprovações internamente
+
+
+import { createClient } from '@lifi/sdk'; import { ethers } from 'ethers'; type ArcChain = 'arc' | 'base' | 'polygon' | 'ethereum'; interface BridgeParams { fromChain: ArcChain; toChain: ArcChain; amount: number; token: string; fromAddress: string; memo?: string; } inter
+
+pasted
+
+
+import { createUserControlledWalletsClient } from '@circle-fin/user-controlled-wallets'; import { ethers } from 'ethers'; import { AppKit } from '@circle-fin/app-kit'; import { createViemAdapterFromProvider } from '@circle-fin/adapter-viem-v2'; import { cctpService, CCTPTransfer, CCTPStep } from
+
+pasted
+
+ja tenho eles
+
+19:57
+Agora que tenho ambas as versões do arcAppKit (v1 com LI.FI e v2 com Circle/CCTP), vou atualizar o arc-micro-trader.ts para usar a API correta da v2.
+
+
+Ver o arquivo gerado anteriormente
+Ver o arquivo gerado anteriormente
+Agora tenho tudo que preciso. Vou reescrever o arquivo alinhando exatamente com a API real da v2 do arcAppKit (Circle/CCTP):
+
+
+Executou um comando, leu um arquivo
+Executou um comando, leu um arquivo
+Aqui está o resumo de tudo que foi corrigido com base na API real da v2:
+
+Assinaturas corrigidas para a v2
+
+Método	v1 (errado)	v2 (correto)
+getBalance(USDC)	arcAppKit.getUSDBalance()	arcAppKit.getUSDCBalance('arc', address)
+getUnifiedBalance()	arcAppKit.getUnifiedBalance() sem args	arcAppKit.getUnifiedBalance(address) → soma todas as chains
+swap()	{ fromChainId, toChainId, signer, ... }	{ chain: ArcChain, amount: number, ... } sem signer (kit gerencia internamente)
+bridge()	assinatura genérica inventada	{ fromChain, toChain, amount, recipient, onStep?, ... } → retorna CCTPTransfer
+send()	arcAppKit.send()	arcAppKit.sendToken({ chain, to, amount, from, token })
+Outros ajustes
+
+slippage no swap: convertido de BPS → percentual (/ 100 em vez de / 10_000), pois o arcAppKit v2 espera valor em %
+estimateGas() voltou a usar provider.getFeeData() diretamente — o kit v2 não expõe getGasFeeParams()
+estimateBridgeFee() exposto como método público, delegando para arcAppKit.estimateBridgeFee()
+bridge() agora aceita onStep?: (step: CCTPStep) => void para rastrear etapas do CCTP em tempo real
+Re-exports de CCTPTransfer e CCTPStep consolidados no topo — sem duplicações
+
+
+Claude Fable 5 está indisponível no momento.
+Saiba mais(opens in new tab)
+
+
+
+
+Claude é uma IA e pode cometer erros. Por favor, verifique as respostas.
+Arc micro trader · TS
 import { ethers } from 'ethers';
 import { feeMonetization } from './fee-monetization';
 import { transactionMemos } from './transaction-memos';
 import { confidenceStaking } from './confidence-staking';
-import { arcAppKit, ArcChain } from './arc-app-kit-native';
+import { arcAppKit, ArcChain } from './arc-app-kit';
 import type { CCTPTransfer, CCTPStep } from './cctp';
-
-// ─── Constantes de rede ────────────────────────────────────────────────────────
-
+ 
+// ─── Constantes de rede ───────────────────────────────────────────────────────
+ 
 const ARC_RPC  = 'https://rpc.testnet.arc.network';
 const EXPLORER = 'https://testnet.arcscan.app';
-
-// ─── Endereços de tokens ───────────────────────────────────────────────────────
-
+ 
+// ─── Endereços de tokens ──────────────────────────────────────────────────────
+ 
 const USDC = '0x3600000000000000000000000000000000000000';
 const EURC = '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a';
 const WETH = '0x4200000000000000000000000000000000000006';
-
+ 
 /** Mapeia símbolo → endereço on-chain na rede ARC */
 const TOKEN_ADDRESSES: Record<string, string> = { USDC, EURC, WETH };
-
+ 
 const ERC20_ABI = [
   'function balanceOf(address owner) view returns (uint256)',
   'function decimals() view returns (uint8)',
 ];
-
-// ─── Tipos públicos ────────────────────────────────────────────────────────────
-
+ 
+// ─── Tipos públicos ───────────────────────────────────────────────────────────
+ 
 export interface MicroTradeConfig {
   minProfitBps:          number;
   maxSlippageBps:        number;
@@ -35,7 +128,7 @@ export interface MicroTradeConfig {
   unifiedBalanceEnabled: boolean;
   autoStake:             boolean;
 }
-
+ 
 export interface MicroTradeResult {
   success:     boolean;
   profit:      number;
@@ -51,18 +144,18 @@ export interface MicroTradeResult {
   fromAmount:  number;
   toAmount:    number;
 }
-
+ 
 export interface PendingBatch {
   calls:       Array<{ to: string; data: string; value?: bigint; desc: string }>;
   totalAmount: number;
   tradeCount:  number;
 }
-
+ 
 // Re-exports de tipos do CCTP para que consumidores não precisem importar cctp.ts diretamente
 export type { CCTPTransfer, CCTPStep };
-
-// ─── Classe principal ──────────────────────────────────────────────────────────
-
+ 
+// ─── Classe principal ─────────────────────────────────────────────────────────
+ 
 class ArcMicroTrader {
   private config: MicroTradeConfig = {
     minProfitBps:          5,
@@ -73,23 +166,23 @@ class ArcMicroTrader {
     unifiedBalanceEnabled: true,
     autoStake:             true,
   };
-
-  // ── Configuração ──────────────────────────────────────────────────────────────
-
+ 
+  // ── Configuração ────────────────────────────────────────────────────────────
+ 
   setConfig(partial: Partial<MicroTradeConfig>): void {
     this.config = { ...this.config, ...partial };
   }
-
+ 
   getConfig(): MicroTradeConfig {
     return { ...this.config };
   }
-
-  // ── Provider / Signer ─────────────────────────────────────────────────────────
-
+ 
+  // ── Provider / Signer ───────────────────────────────────────────────────────
+ 
   private getProvider(): ethers.JsonRpcProvider {
     return new ethers.JsonRpcProvider(ARC_RPC);
   }
-
+ 
   async getSigner(): Promise<{ signer: ethers.Signer; address: string }> {
     if (!window.ethereum) throw new Error('MetaMask not available');
     const bp      = new ethers.BrowserProvider(window.ethereum);
@@ -97,9 +190,9 @@ class ArcMicroTrader {
     const address = await signer.getAddress();
     return { signer, address };
   }
-
-  // ── Saldos ────────────────────────────────────────────────────────────────────
-
+ 
+  // ── Saldos ──────────────────────────────────────────────────────────────────
+ 
   /**
    * Saldo USDC na chain ARC via arcAppKit.getUSDCBalance().
    * Para outros tokens (EURC, WETH) faz leitura direta no contrato ERC-20.
@@ -110,7 +203,7 @@ class ArcMicroTrader {
         const { address } = await this.getSigner();
         return await arcAppKit.getUSDCBalance('arc', address);
       }
-
+ 
       const { address } = await this.getSigner();
       const provider    = this.getProvider();
       const contract    = new ethers.Contract(token, ERC20_ABI, provider);
@@ -123,7 +216,7 @@ class ArcMicroTrader {
       return 0;
     }
   }
-
+ 
   /**
    * Saldo USDC unificado cross-chain via arcAppKit.getUnifiedBalance().
    * Retorna a soma de todas as chains suportadas.
@@ -133,9 +226,9 @@ class ArcMicroTrader {
     const balances    = await arcAppKit.getUnifiedBalance(address);
     return Object.values(balances).reduce((sum, v) => sum + v, 0);
   }
-
-  // ── Gas ───────────────────────────────────────────────────────────────────────
-
+ 
+  // ── Gas ─────────────────────────────────────────────────────────────────────
+ 
   async estimateGas(): Promise<number> {
     try {
       const provider = this.getProvider();
@@ -146,9 +239,9 @@ class ArcMicroTrader {
       return this.config.gasBuffer;
     }
   }
-
-  // ── Rentabilidade ─────────────────────────────────────────────────────────────
-
+ 
+  // ── Rentabilidade ───────────────────────────────────────────────────────────
+ 
   isMicroTradeProfitable(
     amount:            number,
     expectedProfitBps: number,
@@ -159,7 +252,7 @@ class ArcMicroTrader {
     const grossProfit = amount * expectedProfitBps / 10_000;
     const netProfit   = grossProfit - totalCost;
     const minProfit   = amount * this.config.minProfitBps / 10_000;
-
+ 
     if (netProfit < minProfit) {
       return {
         profitable: false,
@@ -167,12 +260,12 @@ class ArcMicroTrader {
         reason: `Net $${netProfit.toFixed(6)} < min $${minProfit.toFixed(6)} (gas: $${gas.toFixed(4)}, fee: $${feeCalc.fee.toFixed(4)})`,
       };
     }
-
+ 
     return { profitable: true, netProfit, reason: `Net profit: $${netProfit.toFixed(6)}` };
   }
-
-  // ── Swap (trade na mesma chain) ───────────────────────────────────────────────
-
+ 
+  // ── Swap (trade na mesma chain) ─────────────────────────────────────────────
+ 
   async executeMicroTrade(
     fromToken: string,
     toToken:   string,
@@ -181,21 +274,21 @@ class ArcMicroTrader {
   ): Promise<MicroTradeResult> {
     const startTime = Date.now();
     const tradeId   = `micro_${startTime}_${Math.random().toString(36).slice(2, 6)}`;
-
+ 
     try {
-      const { address } = await this.getSigner();
-      const provider    = this.getProvider();
-
-      const feeCalc   = feeMonetization.calculateFee(`${fromToken}_${toToken}`, amount);
+      const { address }  = await this.getSigner();
+      const provider     = this.getProvider();
+ 
+      const feeCalc  = feeMonetization.calculateFee(`${fromToken}_${toToken}`, amount);
       const netAmount = feeCalc.netAmount;
-
+ 
       const fromAddr = TOKEN_ADDRESSES[fromToken];
       const toAddr   = TOKEN_ADDRESSES[toToken];
       if (!fromAddr || !toAddr) {
         throw new Error(`Token não suportado: ${fromToken}->${toToken}`);
       }
-
-      // Swap via arcAppKit – usa SwapParams da v2 (chain: ArcChain, não chainId)
+ 
+      // Swap via arcAppKit — usa SwapParams da v2 (chain: ArcChain, não chainId)
       const swapResult = await arcAppKit.swap({
         chain:       'arc',
         fromToken:   fromAddr,
@@ -204,19 +297,19 @@ class ArcMicroTrader {
         fromAddress: address,
         slippage:    this.config.maxSlippageBps / 100, // arcAppKit espera % (0-100), não BPS
       });
-
+ 
       if (!swapResult.success || !swapResult.txHash) {
         throw new Error(`Swap falhou: ${swapResult.message}`);
       }
-
+ 
       const receipt = await provider.waitForTransaction(swapResult.txHash, 1, 100);
-
+ 
       const toAmountNum = swapResult.toAmount;
-      const profit      = toAmountNum - netAmount;
-      const gasUsed     = receipt
+      const profit  = toAmountNum - netAmount;
+      const gasUsed = receipt
         ? parseFloat(ethers.formatUnits(receipt.gasUsed * (receipt.gasPrice ?? BigInt(20e9)), 18))
         : this.config.gasBuffer;
-
+ 
       if (this.config.autoStake && profit > 0) {
         confidenceStaking.placeStake(
           'ArcTrader',
@@ -224,7 +317,7 @@ class ArcMicroTrader {
           Math.min(90, 50 + profit * 100),
         );
       }
-
+ 
       const memoHex = memo
         ? transactionMemos
             .createTradeMemo(tradeId, 'ArcMicroTrader', {
@@ -234,9 +327,9 @@ class ArcMicroTrader {
             })
             .hex
         : '';
-
+ 
       const elapsed = Date.now() - startTime;
-
+ 
       return {
         success:     true,
         profit,
@@ -245,7 +338,7 @@ class ArcMicroTrader {
         fee:         feeCalc.fee,
         gasUsed,
         memoHex,
-        message:     `Trade ${tradeId}: ${fromToken}→${toToken} $${netAmount.toFixed(6)} | profit $${profit.toFixed(6)} | gas $${gasUsed.toFixed(4)} | ${elapsed}ms`,
+        message: `Trade ${tradeId}: ${fromToken}→${toToken} $${netAmount.toFixed(6)} | profit $${profit.toFixed(6)} | gas $${gasUsed.toFixed(4)} | ${elapsed}ms`,
         confirmed:   true,
         fromToken,
         toToken,
@@ -270,12 +363,12 @@ class ArcMicroTrader {
       };
     }
   }
-
-  // ── Bridge via CCTP (arcAppKit.bridge) ───────────────────────────────────────
-
+ 
+  // ── Bridge via CCTP (arcAppKit.bridge) ─────────────────────────────────────
+ 
   /**
    * Bridge cross-chain via Circle CCTP, exposto pelo arcAppKit.
-   * @param onStep callback opcional para acompanhar cada etapa do CCTP
+   * @param onStep  callback opcional para acompanhar cada etapa do CCTP
    */
   async bridge(
     fromChain: ArcChain,
@@ -288,7 +381,7 @@ class ArcMicroTrader {
     const { address } = await this.getSigner();
     const tokenAddr   = TOKEN_ADDRESSES[token];
     if (!tokenAddr) throw new Error(`Token não suportado: ${token}`);
-
+ 
     return arcAppKit.bridge({
       fromChain,
       toChain,
@@ -299,7 +392,7 @@ class ArcMicroTrader {
       onStep,
     });
   }
-
+ 
   /**
    * Estima o custo de um bridge antes de executá-lo.
    */
@@ -310,9 +403,9 @@ class ArcMicroTrader {
   ): Promise<number> {
     return arcAppKit.estimateBridgeFee(fromChain, toChain, amount);
   }
-
-  // ── Send via arcAppKit ────────────────────────────────────────────────────────
-
+ 
+  // ── Send via arcAppKit ──────────────────────────────────────────────────────
+ 
   /**
    * Envia tokens para um endereço via arcAppKit.sendToken().
    * Mapeia o símbolo (USDC, EURC…) para o endereço on-chain antes de chamar o kit.
@@ -323,10 +416,10 @@ class ArcMicroTrader {
     amount: number,
     chain:  ArcChain = 'arc',
   ): Promise<{ txHash: string; explorerUrl: string }> {
-    const { address } = await this.getSigner();
-    const tokenAddr   = TOKEN_ADDRESSES[token];
+    const { address }  = await this.getSigner();
+    const tokenAddr    = TOKEN_ADDRESSES[token];
     if (!tokenAddr) throw new Error(`Token não suportado: ${token}`);
-
+ 
     const result = await arcAppKit.sendToken({
       chain,
       to,
@@ -334,17 +427,17 @@ class ArcMicroTrader {
       from:  address,
       token: tokenAddr,
     });
-
+ 
     if (!result.success) throw new Error(`Send falhou: ${result.message}`);
-
+ 
     return {
       txHash:      result.txHash,
       explorerUrl: result.explorerUrl,
     };
   }
-
-  // ── Batch ─────────────────────────────────────────────────────────────────────
-
+ 
+  // ── Batch ───────────────────────────────────────────────────────────────────
+ 
   async executeBatchMicroTrade(
     trades: Array<{ fromToken: string; toToken: string; amount: number; memo?: string }>,
   ): Promise<MicroTradeResult[]> {
@@ -352,7 +445,7 @@ class ArcMicroTrader {
       trades.map(t => this.executeMicroTrade(t.fromToken, t.toToken, t.amount, t.memo)),
     );
   }
-
+ 
   /** Alias mantido para compatibilidade com chamadas existentes. */
   batchMicroTrade(
     fromToken: string,
@@ -362,9 +455,9 @@ class ArcMicroTrader {
   ): Promise<MicroTradeResult> {
     return this.executeMicroTrade(fromToken, toToken, amount, memo);
   }
-
-  // ── Stats ─────────────────────────────────────────────────────────────────────
-
+ 
+  // ── Stats ───────────────────────────────────────────────────────────────────
+ 
   async getStats(): Promise<{
     usdcBalance:    number;
     eurcBalance:    number;
@@ -378,11 +471,12 @@ class ArcMicroTrader {
       this.getUnifiedBalance(),
       this.estimateGas(),
     ]);
-
+ 
     return { usdcBalance, eurcBalance, unifiedBalance, gasEstimate, config: this.config };
   }
 }
-
-// ─── Singleton exportado ───────────────────────────────────────────────────────
-
+ 
+// ─── Singleton exportado ──────────────────────────────────────────────────────
+ 
 export const arcMicroTrader = new ArcMicroTrader();
+ 

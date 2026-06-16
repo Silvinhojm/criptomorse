@@ -134,7 +134,7 @@ export function AutomatedTraderDashboard({ account }: AutomatedTraderDashboardPr
           </div>
           <div>
             <div style={{ fontSize: 10, color: '#94a3b8' }}>Lucro Total</div>
-            <div style={{ fontSize: 20, fontWeight: 'bold', color: parseFloat(stats.totalProfit) > 0 ? '#4ade80' : '#f97316' }}>
+            <div style={{ fontSize: 20, fontWeight: 'bold', color: stats.totalProfit > 0 ? '#4ade80' : '#f97316' }}>
               ${stats.totalProfit}
             </div>
           </div>
@@ -224,12 +224,12 @@ export function AutomatedTraderDashboard({ account }: AutomatedTraderDashboardPr
         <div style={{ background: '#1e293b', padding: 8, borderRadius: 8, textAlign: 'center' }}>
           <div style={{ fontSize: 10, color: '#94a3b8' }}>Wins / Losses</div>
           <div style={{ fontSize: 14, fontWeight: 'bold' }}>
-            <span style={{ color: '#4ade80' }}>{stats.winningTrades}</span> / <span style={{ color: '#f97316' }}>{stats.losingTrades}</span>
+            <span style={{ color: '#4ade80' }}>{stats.wins}</span> / <span style={{ color: '#f97316' }}>{stats.losses}</span>
           </div>
         </div>
         <div style={{ background: '#1e293b', padding: 8, borderRadius: 8, textAlign: 'center' }}>
           <div style={{ fontSize: 10, color: '#94a3b8' }}>Méd. por Trade</div>
-          <div style={{ fontSize: 14, fontWeight: 'bold', color: '#a78bfa' }}>${stats.avgProfit}</div>
+          <div style={{ fontSize: 14, fontWeight: 'bold', color: '#a78bfa' }}>${stats.totalTrades > 0 ? (stats.totalProfit / stats.totalTrades).toFixed(2) : '0.00'}</div>
         </div>
       </div>
 

@@ -42,6 +42,15 @@ class QuantumAgent {
     return { agentName: this.agentName, action, confidence: Math.round(confidence), reason: `Quantum trend: ${trend.toFixed(5)}` };
   }
 
+  async evaluatePair(pair: { amplitude?: number; probability?: number; volatility?: number; momentum?: number; label?: string }): Promise<{ confidence: number } | null> {
+    const amp = pair.amplitude ?? 0.5;
+    const prob = pair.probability ?? 0.5;
+    const vol = pair.volatility ?? 0.3;
+    const mom = pair.momentum ?? 0;
+    const confidence = Math.min(90, Math.round((amp * 30 + prob * 30 + Math.abs(mom) * 200 + vol * 20)));
+    return { confidence };
+  }
+
   getScore(): AgentScore {
     return { agentName: this.agentName, wins: this.wins, losses: this.losses, totalTrades: this.trades, winRate: this.trades > 0 ? (this.wins / this.trades) * 100 : 0, avgConfidence: 45, color: "#a78bfa", icon: "🌌" };
   }

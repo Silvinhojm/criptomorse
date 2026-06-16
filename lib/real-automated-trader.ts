@@ -134,10 +134,11 @@ class RealAutomatedTrader {
     const adjustedTrade = feeMonetization.calculateFee(`${best?.pair.from || 'USDC'}_${best?.pair.to || 'EURC'}`, best?.toAmount ?? tradeAmount);
     this.log(`Fee: $${adjustedTrade.fee.toFixed(4)} | Net: $${adjustedTrade.netAmount.toFixed(4)}`);
 
+    const isTestnet = realSwap.isTestnet();
     if (best && (isStable(best.pair.to) && isStable(best.pair.from))) {
       this.log(`Melhor par: ${best.pair.label} | lucro esperado: $${best.expectedProfit.toFixed(4)} via ${best.route}`);
       const result = await this._executeSwap(best.pair.from, best.pair.to, adjustedTrade.netAmount);
-      const profit = (result.profit ?? 0) - adjustedTrade.fee;
+      const profit = (result.profit ?? 0) - (isTestnet ? 0 : adjustedTrade.fee);
       if (result.success) {
         this.log(`Trade concluido! Lucro: $${profit.toFixed(4)} (fee: $${adjustedTrade.fee.toFixed(4)})`);
         const memo = transactionMemos.createTradeMemo(id, 'RealTrader', { pair: best.pair.label, fee: adjustedTrade.fee.toFixed(4) });
@@ -189,28 +190,38 @@ class RealAutomatedTrader {
 
     // Nenhum par viavel — fallback
     this.log(`Nenhum par com lucro viavel encontrado`);
+    const volatileTargets = ["WETH", "WBTC", "WMATIC", "ARB"] as TokenSymbol[];
+    const availableVolatile = volatileTargets.filter(t => realSwap.hasToken(t));
+    if (availableVolatile.length === 0) {
+      this.log(`Nenhum token volatil disponivel na rede ${this.networkKey} para fallback`);
+      this.lastAction = "HOLD (sem volatil)";
+      return this._holdRecord(id, "Nenhum token volatil configurado na rede", timestamp);
+    }
     const stables = ["USDC", "USDT", "DAI", "EURC"] as TokenSymbol[];
     let bought = false;
-    for (const stable of stables) {
-      const bal = realSwap.getBalance(stable);
-      const amount = Math.min(tradeAmount, bal * 0.95);
-      if (amount < 1) continue;
-      this.log(`Fallback: ${stable}→WETH ($${amount.toFixed(2)}, trailing stop)`);
-      const result = await this._executeSwap(stable, "WETH", amount);
-      if (!result.success) continue;
-      const wethPrice = await positionManager.fetchTokenPrice("WETH");
-      positionManager.openPosition(this.networkKey, "WETH", stable, result.toAmount, amount, wethPrice);
-      this.log(`Posicao WETH aberta: ${result.toAmount.toFixed(6)} @ $${wethPrice.toFixed(2)}`);
-      const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: amount, toAmount: result.toAmount, profit: 0, txHash: result.txHash, explorerUrl: result.explorerUrl, message: `WETH position @ $${wethPrice.toFixed(2)}`, timestamp, confirmed: result.confirmed ?? false };
-      this.tradeHistory.push(record); this._persist(); this.onTradeCallback?.(record);
-      bought = true;
-      break;
+    for (const target of availableVolatile) {
+      for (const stable of stables) {
+        const bal = realSwap.getBalance(stable);
+        const amount = Math.min(tradeAmount, bal * 0.95);
+        if (amount < 1) continue;
+        this.log(`Fallback: ${stable}→${target} ($${amount.toFixed(2)}, trailing stop)`);
+        const result = await this._executeSwap(stable, target, amount);
+        if (!result.success) continue;
+        const targetPrice = await positionManager.fetchTokenPrice(target);
+        positionManager.openPosition(this.networkKey, target, stable, result.toAmount, amount, targetPrice);
+        this.log(`Posicao ${target} aberta: ${result.toAmount.toFixed(6)} @ $${targetPrice.toFixed(2)}`);
+        const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: amount, toAmount: result.toAmount, profit: 0, txHash: result.txHash, explorerUrl: result.explorerUrl, message: `${target} position @ $${targetPrice.toFixed(2)}`, timestamp, confirmed: result.confirmed ?? false };
+        this.tradeHistory.push(record); this._persist(); this.onTradeCallback?.(record);
+        bought = true;
+        break;
+      }
+      if (bought) break;
     }
     if (!bought) {
       this.lastAction = "HOLD (sem pares)";
       return this._holdRecord(id, "Nenhum par viavel", timestamp);
     }
-    this.lastAction = "BUY WETH (trailing stop)";
+    this.lastAction = `BUY ${availableVolatile[0]} (trailing stop)`;
     return this.tradeHistory[this.tradeHistory.length - 1];
   }
 
