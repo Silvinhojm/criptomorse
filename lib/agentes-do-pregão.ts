@@ -540,10 +540,10 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
   if (maxScore > 0) {
     for (const v of votes) {
       const score = accountant.getAgentScore(v.agentName)
-      if (!score || score.totalTrades < 3) continue
+      if (!score || score.totalTrades < 3 || score.score <= 0) continue
       const scoreRatio = score.score / maxScore // 0 a 1
       const original = v.confidence
-      v.confidence = Math.min(95, Math.round(v.confidence * (0.5 + scoreRatio * 0.5)))
+      v.confidence = Math.min(95, Math.round(v.confidence * (1.0 + scoreRatio * 0.15)))
       if (v.confidence !== original) {
         pregão.adicionarLog(`🧠 ${v.agentName}: score ${score.score.toFixed(1)} ajustou confiança ${original}% → ${v.confidence}%`)
       }
