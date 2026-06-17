@@ -243,6 +243,12 @@ export async function executarCicloPregueiros(rede?: string) {
             fromToken: decisao.fromToken,
             toToken: decisao.toToken
           }
+          // Só compra volátil se não houver posição aberta
+          const comprandoVolatil = isStable(decisao.fromToken) && !isStable(decisao.toToken)
+          if (comprandoVolatil && positionManager.getOpenPositions().length > 0) {
+            console.log(`⏳ ${pregueiro.config.nome} — posição aberta, aguardando fechamento com lucro antes de comprar ${decisao.toToken}`)
+            continue
+          }
           pregão.receberOK(signal)
         }
       }

@@ -515,17 +515,23 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
   const uniqueAgents = new Set(winningVotes.map(v => v.agentName))
   if (uniqueAgents.size >= 3) {
     const agentesStr = [...uniqueAgents].join(", ")
-    pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair} (${agreedPair.fromToken}→${agreedPair.toToken})`)
-    for (const v of winningVotes) {
-      pregão.receberOK({
-        pregueiro: `Agente:${v.agentName}`,
-        rede: v.network,
-        par: v.pair,
-        confianca: v.confidence,
-        timestamp: Date.now(),
-        fromToken: v.fromToken,
-        toToken: v.toToken,
-      })
+    // Só compra volátil se não houver posição aberta
+    const comprandoVolatil = STABLES.has(agreedPair.fromToken) && !STABLES.has(agreedPair.toToken)
+    if (comprandoVolatil && positionManager.getOpenPositions().length > 0) {
+      pregão.adicionarLog(`⏳ Agentes querem ${agreedPair.pair} mas há posição aberta — aguardando fechamento com lucro`)
+    } else {
+      pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair} (${agreedPair.fromToken}→${agreedPair.toToken})`)
+      for (const v of winningVotes) {
+        pregão.receberOK({
+          pregueiro: `Agente:${v.agentName}`,
+          rede: v.network,
+          par: v.pair,
+          confianca: v.confidence,
+          timestamp: Date.now(),
+          fromToken: v.fromToken,
+          toToken: v.toToken,
+        })
+      }
     }
   }
 

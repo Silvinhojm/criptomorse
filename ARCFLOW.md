@@ -109,6 +109,9 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
 ┌─────────────────────────────────────────────────────────────────┐
 │ 3. PREGÃO (pregão.ts)                                          │
 │    ├── Quando 3+ OKs para o mesmo par → gera ORDEM             │
+│    ├── ⚠️ Só gera ordem de COMPRA se NÃO houver posição aberta │
+│    │   (check em pregueiro.ts + agentes-do-pregão.ts)           │
+│    ├── Vendas (volátil→stable) nunca são bloqueadas             │
 │    ├── Cria OrdemExecucao com participantes e confiança média  │
 │    └── Dispara callback → corretor                             │
 └──────────────────────────┬──────────────────────────────────────┘
@@ -150,10 +153,11 @@ PROFIT_LEVELS = [0, 3, 5, 8, 10, 15, 20, 30, 50, 70, 100]
 // Cada token pode ter níveis diferentes sugeridos pelo tracker.
 
 MAX_POSITION_AGE_MS = 12 * 60 * 60 * 1000
-// 12h — força fechamento de QUALQUER posição, independente de lucro/prejuízo
+// 12h — força fechamento SÓ se a posição já viu lucro (peakProfitPercent > 0)
+// Se nunca lucrou, segura até o stop loss ou o mercado virar
 
 STALE_NO_PROFIT_MS = 4 * 60 * 60 * 1000
-// 4h — força fechamento se a posição NUNCA teve lucro > 0%
+// 4h sem lucro — NÃO fecha mais (só loga aviso). Espera mercado virar.
 
 MAX_LOSS_PERCENT = -15
 // Stop loss máximo: se perda passar de 15%, fecha imediatamente
@@ -330,10 +334,11 @@ Se preço cai para $3100 → lucro 3.3% → nível atual = 1
 ### Regras:
 - Staircase só ativa após lucro > 0% (nível 0 = 0%)
 - Close só acontece se pico > nível 0 (evita fechar no prejuízo)
-- Staircase também força fechamento se posição estagnada > 12h com lucro < 2%
+- **Stale (4h sem lucro)**: NÃO fecha mais — segura e espera o mercado virar
+- **Expired (12h)**: só força fechamento se a posição já viu lucro (peakProfitPercent > 0)
+- **Stop loss (-15%)**: única exceção que fecha no prejuízo (proteção catastrófica)
 - Ao fechar, injeta 3 OKs no Pregão com `toToken: "USDC"` sempre
-- **Staircase agora chama `closePosition()` imediatamente** ao decidir fechar
-  (antes deixava a posição aberta até o corretor executar o swap)
+- **Staircase chama `closePosition()` imediatamente** ao decidir fechar
 - **`cleanupInactiveNetworks()`** remove posições de redes inativas a cada ciclo
 
 ---
@@ -497,6 +502,16 @@ Se for adicionar um novo token, atualizar em **todos** os lugares:
 ### Problema: "Circuit breaker nunca desarma"
 - `resumeFromPanic()` existia mas nunca era chamado
 - Agora chamado a cada ciclo (manual e automático) no `PregãoDashboard.tsx`
+
+### Regra: "Só compra volátil se caixa livre"
+- Pregão/Pregueiros/Agentes não enviam OKs de compra (stable→volátil) enquanto houver posição aberta
+- Vendas (volátil→stable) continuam livres para fechar posição com lucro
+- Garante ciclo completo: compra → lucro → venda → caixa de volta → nova compra
+
+### Problema: "LI.FI rota fly com estimate 0 bloqueava trades legítimos"
+- `toEstimate <= 0` não bloqueia mais a transação — só loga aviso
+- Rota "fly" às vezes retorna `toAmount: "0"` no JSON mas o `transactionRequest.data` é válido
+- Confirmação on-chain via `txResponse.wait()` detecta revert (status 0) se falhar
 
 ### Problema: "Agentes não aprendem com os resultados"
 - `corretor.ts` agora pontua cada agente que votou na ordem após trade concluído

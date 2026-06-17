@@ -1,6 +1,3 @@
-import { positionManager } from "./position-manager"
-import { isStable } from "./real-swap-executor"
-
 export interface OkSignal {
   pregueiro: string
   rede: string
@@ -133,16 +130,6 @@ class Pregão {
       if (this.getOrdensAtivas().length > 0) {
         this.log(`⏳ Ordem anterior ainda não confirmada — aguardando`)
         return
-      }
-
-      // Só compra volátil se não houver posição aberta (espera lucro + caixa de volta)
-      const comprandoVolatil = isStable(signal.fromToken) && !isStable(signal.toToken)
-      if (comprandoVolatil) {
-        const posAbertas = positionManager.getOpenPositions().length
-        if (posAbertas > 0) {
-          this.log(`⏳ ${posAbertas} posição(ões) aberta(s) — aguardando fechamento com lucro antes de nova compra`)
-          return
-        }
       }
 
       const ordem: OrdemExecucao = {
