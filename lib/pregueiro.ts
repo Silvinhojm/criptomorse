@@ -193,6 +193,9 @@ export async function executarCicloPregueiros(rede?: string) {
 
   const redesParaEscalar: NetworkKey[] = rede ? [rede as NetworkKey] : ["arc"]
 
+  // Limpa posições fantasmas de redes inativas a cada ciclo
+  positionManager.cleanupInactiveNetworks(redesParaEscalar)
+
   // Alimenta o volatility tracker com preços dos tokens desta rede
   const tokensParaColetar = new Set<TokenSymbol>()
   for (const redeAtual of redesParaEscalar) {
@@ -277,6 +280,10 @@ async function verificarStaircaseFechamento(redes: NetworkKey[]) {
     }
 
     if (acao === "close") {
+      // Marca como fechada imediatamente para evitar acumulação
+      // Se o swap falhar, o reconcile recria a posição com o saldo residual
+      positionManager.closePosition(pos.id, currentPrice)
+
       // Vende sempre pra USDC (mais líquido, saldo unificado)
       const stableDestino = "USDC"
       const par = gerarParLabel(pos.boughtToken, stableDestino)

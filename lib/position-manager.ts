@@ -39,6 +39,12 @@ const POSITIONS_STORAGE_KEY = "arcflow_open_positions";
 // Se cair 2 degraus abaixo do pico, a posição fecha automaticamente.
 const PROFIT_LEVELS = [0, 3, 5, 8, 10, 15, 20, 30, 50, 70, 100];
 
+// Stop loss máximo — se o lucro cair abaixo disto, fecha imediatamente
+const MAX_LOSS_PERCENT = -15;
+
+// Tempo máximo sem nenhum lucro — se a posição nunca passou de 0% após N horas, fecha
+const STALE_NO_PROFIT_MS = 4 * 60 * 60 * 1000;
+
 function getLevelIndex(profitPercent: number, levels?: number[]): number {
   const list = levels ?? PROFIT_LEVELS;
   for (let i = list.length - 1; i >= 0; i--) {
@@ -141,12 +147,7 @@ class PositionManager {
     const pos = this.positions.get(id);
     if (!pos || pos.status !== "open") return "hold";
 
-    // Forcar fechamento se posicao estiver estagnada apos N horas
     const age = Date.now() - pos.entryTimestamp;
-    if (age > MAX_POSITION_AGE_MS && pos.peakProfitPercent < 2) {
-      console.log(`Posicao estagnada ha ${(age / 3600000).toFixed(1)}h, forcando fechamento (${pos.boughtToken})`);
-      return "close";
-    }
 
     pos.currentPrice = currentPrice;
     const profitPercent = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
@@ -155,6 +156,24 @@ class PositionManager {
     if (currentPrice > pos.highestPrice) {
       pos.highestPrice = currentPrice;
       pos.peakProfitPercent = profitPercent;
+    }
+
+    // Stop loss: se perda > MAX_LOSS_PERCENT, fecha
+    if (profitPercent < MAX_LOSS_PERCENT) {
+      console.log(`🛑 Stop loss acionado: ${pos.boughtToken} perda de ${profitPercent.toFixed(2)}% (limite: ${MAX_LOSS_PERCENT}%)`);
+      return "close";
+    }
+
+    // Stale close: se nunca teve lucro após N horas, fecha
+    if (age > STALE_NO_PROFIT_MS && pos.peakProfitPercent <= 0) {
+      console.log(`⏰ Posicao estagnada sem lucro ha ${(age / 3600000).toFixed(1)}h, forcando fechamento (${pos.boughtToken})`);
+      return "close";
+    }
+
+    // Forcar fechamento se posicao estiver estagnada apos N horas
+    if (age > MAX_POSITION_AGE_MS) {
+      console.log(`⌛ Posicao expirada ha ${(age / 3600000).toFixed(1)}h, forcando fechamento (${pos.boughtToken})`);
+      return "close";
     }
 
     const trailDrop = getTrailDrop(pos.peakProfitPercent);
@@ -182,12 +201,7 @@ class PositionManager {
     if (!pos || pos.status !== "open") return "hold";
 
     const profitLevels = levels ?? PROFIT_LEVELS;
-
     const age = Date.now() - pos.entryTimestamp;
-    if (age > MAX_POSITION_AGE_MS && pos.peakProfitPercent < 2) {
-      console.log(`Posicao estagnada ha ${(age / 3600000).toFixed(1)}h, forcando fechamento (${pos.boughtToken})`);
-      return "close";
-    }
 
     pos.currentPrice = currentPrice;
     const profitPercent = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
@@ -196,6 +210,24 @@ class PositionManager {
     if (currentPrice > pos.highestPrice) {
       pos.highestPrice = currentPrice;
       pos.peakProfitPercent = profitPercent;
+    }
+
+    // Stop loss: se perda > MAX_LOSS_PERCENT, fecha
+    if (profitPercent < MAX_LOSS_PERCENT) {
+      console.log(`🛑 Staircase stop loss: ${pos.boughtToken} perda de ${profitPercent.toFixed(2)}% (limite: ${MAX_LOSS_PERCENT}%)`);
+      return "close";
+    }
+
+    // Stale close: se nunca teve lucro após N horas, fecha
+    if (age > STALE_NO_PROFIT_MS && pos.peakProfitPercent <= 0) {
+      console.log(`⏰ Staircase stale: ${pos.boughtToken} sem lucro ha ${(age / 3600000).toFixed(1)}h, forcando fechamento`);
+      return "close";
+    }
+
+    // Forcar fechamento se posicao estiver muito antiga (qualquer lucro/prejuizo)
+    if (age > MAX_POSITION_AGE_MS) {
+      console.log(`⌛ Staircase expirada: ${pos.boughtToken} aberta ha ${(age / 3600000).toFixed(1)}h, forcando fechamento`);
+      return "close";
     }
 
     const currentLevel = getLevelIndex(profitPercent, profitLevels);
@@ -275,6 +307,14 @@ class PositionManager {
 
       if (balance <= 0) continue
 
+      // Ignorar poeira (dust) — menos de $0.50 não vale o swap
+      const tokenPrice = await this.fetchTokenPrice(token)
+      const balanceUsd = balance * tokenPrice
+      if (balanceUsd < 0.5) {
+        pregão.adicionarLog(`🔍 reconcile: ${token} saldo $${balanceUsd.toFixed(2)} é poeira, ignorando`)
+        continue
+      }
+
       const alreadyOpen = this.getOpenPositions().some(
         p => p.boughtToken === token && p.networkKey === networkKey
       )
@@ -283,16 +323,15 @@ class PositionManager {
         continue
       }
 
-      const currentPrice = await this.fetchTokenPrice(token)
       const pos = this.openPosition(
         networkKey,
         token,
         "USDC",
         balance,
-        balance * currentPrice,
-        currentPrice
+        balanceUsd,
+        tokenPrice
       )
-      pregão.adicionarLog(`🧩 Posição órfã criada: ${balance.toFixed(4)} ${token} @ $${currentPrice.toFixed(4)} na ${networkKey}`)
+      pregão.adicionarLog(`🧩 Posição órfã criada: ${balance.toFixed(4)} ${token} @ $${tokenPrice.toFixed(4)} na ${networkKey}`)
     }
   }
 
@@ -319,6 +358,24 @@ class PositionManager {
         console.log(`🧠 Posições restauradas do localStorage: ${saved.filter(p => p.status === "open").length} abertas`);
       }
     } catch { /* primeiro uso ou dados corrompidos */ }
+  }
+
+  // Remove posições fantasmas de redes onde o sistema não opera mais
+  // Ex: Arc testnet, redes não configuradas no trading-pairs atual
+  cleanupInactiveNetworks(activeNetworks: NetworkKey[]): number {
+    const active = new Set(activeNetworks)
+    let cleaned = 0
+    for (const [id, pos] of this.positions) {
+      if (pos.status === "open" && !active.has(pos.networkKey)) {
+        this.positions.delete(id)
+        cleaned++
+      }
+    }
+    if (cleaned > 0) {
+      this.savePositions()
+      console.log(`🧹 Limpeza: ${cleaned} posições de redes inativas removidas`)
+    }
+    return cleaned
   }
 }
 

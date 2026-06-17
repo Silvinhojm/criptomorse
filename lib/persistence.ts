@@ -22,24 +22,28 @@ function setLocal(key: string, value: any): void {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore */ }
 }
 
+function isRealTrade(record: any): boolean {
+  return record.txHash && typeof record.txHash === "string" && record.txHash.startsWith("0x")
+}
+
 export async function saveTradeHistory(history: any[]): Promise<void> {
   const merged = [...getLocal<any[]>(TRADE_HISTORY_KEY, []), ...history];
   const unique = merged.filter(
     (item, idx, self) => idx === self.findIndex(t => t.id === item.id)
   ).slice(-500);
-  setLocal(TRADE_HISTORY_KEY, unique);
-  if (history.length > 0) {
-    for (const record of history) {
-      if (record.txHash) await apiCall("/api/trades", "POST", record);
-    }
+  // Só persiste trades com txHash real (0x...) — descarta simulações testnet
+  const realOnly = unique.filter(isRealTrade)
+  setLocal(TRADE_HISTORY_KEY, realOnly);
+  for (const record of history) {
+    if (isRealTrade(record)) await apiCall("/api/trades", "POST", record);
   }
 }
 
 export async function loadTradeHistory(): Promise<any[]> {
-  const local = getLocal<any[]>(TRADE_HISTORY_KEY, []);
+  const local = getLocal<any[]>(TRADE_HISTORY_KEY, []).filter(isRealTrade);
   const server = await apiCall("/api/trades", "GET");
   if (!server || !Array.isArray(server) || server.length === 0) return local;
-  const merged = [...server, ...local];
+  const merged = [...server.filter(isRealTrade), ...local];
   const unique = merged.filter(
     (item, idx, self) => idx === self.findIndex(t => t.id === item.id || t.txHash === item.txHash)
   );

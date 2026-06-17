@@ -530,14 +530,14 @@ class RealSwapExecutor {
         log(`✅ Swap simulado: ${fromToken}→${toToken} | approve OK`);
         return {
           success: true,
-          txHash: result.txHash || '',
-          explorerUrl: result.explorerUrl || '',
+          txHash: '',
+          explorerUrl: '',
           fromToken,
           toToken,
           fromAmount: amountUsd,
           toAmount: amountUsd,
           action: "BUY",
-          message: `✅ ${fromToken}→${toToken} (simulado testnet) | ${result.txHash?.slice(0, 10)}`,
+          message: `✅ ${fromToken}→${toToken} (simulado testnet) | approve OK`,
           timestamp,
           confirmed: false,
           profit: 0,

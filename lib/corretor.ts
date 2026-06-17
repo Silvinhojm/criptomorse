@@ -4,6 +4,13 @@ import { blockIfPanicked, recordTradeResult } from "./circuit-breaker"
 import { positionManager } from "./position-manager"
 import { feeMonetization } from "./fee-monetization"
 import { transactionMemos } from "./transaction-memos"
+import { accountant } from "./accountant"
+
+const AGENTES_CONHECIDOS = new Set([
+  "Quantum", "Technical", "TrendFollower", "MeanReversion",
+  "QuantumTrader", "ArbitrageHunter", "MarketMaker", "BTCTrader",
+  "Liquidator", "MomentumTrader", "NVIDIAgent", "Synthesis",
+])
 
 class Corretor {
   private onLogCallback: ((msg: string) => void) | null = null
@@ -73,14 +80,42 @@ class Corretor {
         }
 
         if (!isStableFrom && isStableTo) {
+          // Busca posição pelo token exato ou variante (ex: "WETH" e "ETH")
           const pos = positionManager.getOpenPositions()
-            .find(p => p.boughtToken === ordem.fromToken && p.status === "open")
+            .find(p => (p.boughtToken === ordem.fromToken || p.boughtToken === `W${ordem.fromToken}` || `W${p.boughtToken}` === ordem.fromToken) && p.status === "open")
           if (pos) {
-            const currentPrice = await this.buscarPreco(fromKey)
+            const currentPrice = await this.buscarPreco(pos.boughtToken as TokenSymbol)
             positionManager.closePosition(pos.id, currentPrice)
-            this.log(`🔒 Posição ${ordem.fromToken} fechada!`)
+            this.log(`🔒 Posição ${pos.boughtToken} fechada! (via ordem ${ordem.fromToken}→${ordem.toToken})`)
+          } else {
+            this.log(`⚠️ Nenhuma posição aberta encontrada para ${ordem.fromToken} ao vender`)
           }
         }
+
+        // Aprendizado: pontua cada agente que votou nesta ordem
+        const profitPorAgente = profit / Math.max(1, ordem.pregueiros.filter(n => AGENTES_CONHECIDOS.has(n.replace("Agente:", ""))).length)
+        for (const nome of ordem.pregueiros) {
+          const agente = nome.replace("Agente:", "")
+          if (!AGENTES_CONHECIDOS.has(agente)) continue
+          accountant.addReport({
+            id: `${ordem.id}_${agente}`,
+            agentName: agente,
+            action: isStableFrom && !isStableTo ? "buy" : !isStableFrom && isStableTo ? "sell" : "hold",
+            fromToken: ordem.fromToken,
+            toToken: ordem.toToken,
+            amount: valorTrade,
+            toAmount: resultado.toAmount,
+            profit: profitPorAgente,
+            profitPercent: resultado.fromAmount > 0 ? (profitPorAgente / resultado.fromAmount) * 100 : 0,
+            entryPrice: resultado.fromAmount / Math.max(1, resultado.toAmount),
+            exitPrice: resultado.toAmount > 0 ? resultado.toAmount / Math.max(1, resultado.fromAmount) : 1,
+            status: "completed",
+            duration: Date.now() - ordem.timestamp,
+            timestamp: Date.now(),
+            networkKey: ordem.rede,
+          })
+        }
+        this.log(`🧠 Agentes pontuados: ${ordem.pregueiros.filter(n => AGENTES_CONHECIDOS.has(n.replace("Agente:", ""))).join(", ")} (profit: $${profitPorAgente.toFixed(4)} cada)`)
 
         const { isPanicActive } = recordTradeResult(profit)
         if (isPanicActive) {

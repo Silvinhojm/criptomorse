@@ -166,7 +166,8 @@ class Pregão {
   getOrdensAtivas(): OrdemExecucao[] {
     const agora = Date.now()
     for (const o of this.ordens) {
-      if ((o.status === "preparando" || o.status === "pronto") && agora - o.timestamp > this.ORDEM_TIMEOUT_MS) {
+      const stuck = agora - o.timestamp > this.ORDEM_TIMEOUT_MS
+      if (stuck && (o.status === "preparando" || o.status === "pronto" || o.status === "executando")) {
         this.log(`⏰ Ordem ${o.id} expirou (${Math.round((agora - o.timestamp) / 1000)}s em "${o.status}") — marcando como falha`)
         o.status = "falhou"
         this.onOrdemCallback?.(o)
@@ -215,6 +216,9 @@ class Pregão {
     const agora = Date.now()
     for (const o of this.ordens) {
       if ((o.status === "preparando" || o.status === "pronto") && agora - o.timestamp > 5000) {
+        o.status = "falhou"
+      }
+      if (o.status === "executando" && agora - o.timestamp > 30000) {
         o.status = "falhou"
       }
     }

@@ -191,6 +191,8 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     atualizarTudo()
 
     cicloRef.current = setInterval(async () => {
+      resumeFromPanic()
+      pregão.limparOrdensTravadas()
       try {
         const { executarCicloPregueiros } = await import("@/lib/pregueiro")
         const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")
@@ -206,6 +208,8 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
   }
 
   const rodarUmCiclo = async () => {
+    resumeFromPanic()
+    pregão.limparOrdensTravadas()
     addLog(`▶️ Ciclo manual na rede ${redeRef.current}`)
     try {
       const { executarCicloPregueiros } = await import("@/lib/pregueiro")

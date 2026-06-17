@@ -4,6 +4,7 @@ import { pregão } from "./pregão"
 import { NETWORKS, TRADING_PAIRS, realSwap, type NetworkKey, type TokenSymbol } from "./real-swap-executor"
 import { positionManager } from "./position-manager"
 import { volatilityTracker } from "./volatility-tracker"
+import { accountant } from "./accountant"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 
@@ -429,6 +430,22 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
       v.confidence = Math.min(90, Math.round(v.confidence * mult))
       if (v.confidence !== original) {
         pregão.adicionarLog(`🧠 ${v.agentName}: vol ajustou confiança ${original}% → ${v.confidence}% (mult ${mult.toFixed(2)}x em ${volToken})`)
+      }
+    }
+  }
+
+  // Aprendizado: pondera confiança pelo score histórico do agente
+  const ranking = accountant.getRanking()
+  const maxScore = ranking.length > 0 ? Math.max(...ranking.map(r => r.score)) : 0
+  if (maxScore > 0) {
+    for (const v of votes) {
+      const score = accountant.getAgentScore(v.agentName)
+      if (!score || score.totalTrades < 3) continue
+      const scoreRatio = score.score / maxScore // 0 a 1
+      const original = v.confidence
+      v.confidence = Math.min(95, Math.round(v.confidence * (0.5 + scoreRatio * 0.5)))
+      if (v.confidence !== original) {
+        pregão.adicionarLog(`🧠 ${v.agentName}: score ${score.score.toFixed(1)} ajustou confiança ${original}% → ${v.confidence}%`)
       }
     }
   }

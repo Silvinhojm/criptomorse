@@ -1,4 +1,4 @@
-import { realSwap, NETWORKS } from "./real-swap-executor"
+import { realSwap, NETWORKS, type TokenSymbol, isStable } from "./real-swap-executor"
 import { pregão, type OrdemExecucao } from "./pregão"
 import { corretor } from "./corretor"
 
@@ -16,6 +16,21 @@ class Escriturário {
     this.onLogCallback?.(msg)
   }
 
+  private async fetchTokenPrice(token: string): Promise<number> {
+    const coinIds: Record<string, string> = {
+      WETH: "ethereum", WMATIC: "matic-network", ARB: "arbitrum",
+      WBTC: "bitcoin", SOL: "solana",
+    }
+    const coinId = coinIds[token] ?? token.toLowerCase()
+    try {
+      const res = await fetch(`/api/price?ids=${coinId}`)
+      const data = await res.json()
+      return data[coinId] ?? 1
+    } catch {
+      return 1
+    }
+  }
+
   async prepararOrdem(ordem: OrdemExecucao) {
     this.log(`📋 Preparando ordem: ${ordem.par} na ${ordem.rede}`)
     this.log(`   Pregueiros: ${ordem.pregueiros.join(", ")}`)
@@ -24,25 +39,46 @@ class Escriturário {
     pregão.atualizarOrdem(ordem.id, { status: "pronto" })
 
     const fromToken = ordem.fromToken
-    let valorTrade = VALOR_PADRAO_TRADE
+    const isFromStable = isStable(fromToken as TokenSymbol)
 
     const netConf = NETWORKS[ordem.rede as keyof typeof NETWORKS]
     const isTestnet = netConf?.isTestnet ?? true
 
-    // Usar saldo local da wallet (Caixa removido — só confunde)
-    let saldoAtual = realSwap.getBalance(fromToken)
-    if (saldoAtual < 1) {
-      if (isTestnet) this.log(`🔄 Saldo ${fromToken}=${saldoAtual.toFixed(2)} — refresh on-chain...`)
+    // Refresh saldo on-chain se parecer desatualizado
+    let saldoTokens = realSwap.getBalance(fromToken as TokenSymbol)
+    if (saldoTokens < 1) {
+      if (isTestnet) this.log(`🔄 Saldo ${fromToken}=${saldoTokens.toFixed(4)} — refresh on-chain...`)
       await realSwap.refreshAllBalances()
-      saldoAtual = realSwap.getBalance(fromToken)
-      if (isTestnet) this.log(`📊 Após refresh: ${saldoAtual.toFixed(2)} ${fromToken}`)
+      saldoTokens = realSwap.getBalance(fromToken as TokenSymbol)
+      if (isTestnet) this.log(`📊 Após refresh: ${saldoTokens.toFixed(4)} ${fromToken}`)
     }
-    valorTrade = isTestnet
-      ? Math.min(VALOR_PADRAO_TRADE, saldoAtual * 0.9)
-      : saldoAtual * 0.9
 
-    if (valorTrade < 1) {
+    if (saldoTokens < 0.0001) {
       this.log(`❌ Saldo insuficiente de ${fromToken} na ${ordem.rede}`)
+      pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+      return
+    }
+
+    // Converter saldo para USD (voláteis precisam de preço, stables são 1:1)
+    let saldoUsd: number
+    if (isFromStable) {
+      saldoUsd = saldoTokens
+    } else {
+      const price = await this.fetchTokenPrice(fromToken)
+      saldoUsd = saldoTokens * price
+      this.log(`💰 ${fromToken}: ${saldoTokens.toFixed(4)} tokens × $${price.toFixed(2)} = $${saldoUsd.toFixed(2)}`)
+    }
+
+    // Usar no máximo 90% do saldo disponível
+    let valorTrade: number
+    if (isTestnet) {
+      valorTrade = Math.min(VALOR_PADRAO_TRADE, saldoUsd * 0.9)
+    } else {
+      valorTrade = saldoUsd * 0.9
+    }
+
+    if (valorTrade < 0.5) {
+      this.log(`❌ Saldo insuficiente de ${fromToken} na ${ordem.rede} (USD: $${saldoUsd.toFixed(2)})`)
       pregão.atualizarOrdem(ordem.id, { status: "falhou" })
       return
     }

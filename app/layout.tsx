@@ -15,6 +15,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Criptomorse",
   description: "Banking-grade stablecoin wallet on Arc Testnet with ERC-8183 agentic jobs",
+  icons: { icon: "/favicon.ico" },
 };
 
 export default function RootLayout({

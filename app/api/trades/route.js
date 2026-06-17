@@ -29,7 +29,7 @@ export async function GET() {
 export async function POST(req) {
   const body = await req.json();
   const { action, fromAmount, toAmount, profit, txHash, explorerUrl, fromToken, toToken, message, timestamp, confirmed } = body;
-  if (!txHash) return Response.json({ error: "txHash obrigatório" }, { status: 400 });
+  if (!txHash || !txHash.startsWith("0x")) return Response.json({ error: "txHash inválido (só aceita transações reais 0x)" }, { status: 400 });
   const trades = readTrades();
   const existing = trades.findIndex(t => t.txHash === txHash);
   const record = {

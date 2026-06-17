@@ -96,6 +96,17 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
                            │ OKs
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
+│ 2.5 APRENDIZADO (agentes-do-pregão.ts)                         │
+│    ├── Confiança ajustada por volatilidade (VolTracker)        │
+│    ├── Confiança ponderada pelo score histórico do agente      │
+│    │   (accountant.getAgentScore → score/maxScore pondera      │
+│    │    a confiança: agentes mais acertativos pesam mais)       │
+│    └── Síntese: maior score composto vence (totalConfidence    │
+│        × número de votos)                                       │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ OKs
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
 │ 3. PREGÃO (pregão.ts)                                          │
 │    ├── Quando 3+ OKs para o mesmo par → gera ORDEM             │
 │    ├── Cria OrdemExecucao com participantes e confiança média  │
@@ -111,6 +122,8 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
 │    │   (positionManager.openPosition())                        │
 │    ├── Se vendeu token volátil → fecha posição                │
 │    │   (positionManager.closePosition())                       │
+│    ├── APRENDIZADO: pontua cada agente que votou na ordem      │
+│    │   (accountant.addReport → atualiza winRate, lucro, score) │
 │    └── Marca ordem como concluída/falha                        │
 └──────────────────────────┬──────────────────────────────────────┘
                            │ Posição aberta
@@ -137,7 +150,13 @@ PROFIT_LEVELS = [0, 3, 5, 8, 10, 15, 20, 30, 50, 70, 100]
 // Cada token pode ter níveis diferentes sugeridos pelo tracker.
 
 MAX_POSITION_AGE_MS = 12 * 60 * 60 * 1000
-// 12h — força fechamento se posição estagnada
+// 12h — força fechamento de QUALQUER posição, independente de lucro/prejuízo
+
+STALE_NO_PROFIT_MS = 4 * 60 * 60 * 1000
+// 4h — força fechamento se a posição NUNCA teve lucro > 0%
+
+MAX_LOSS_PERCENT = -15
+// Stop loss máximo: se perda passar de 15%, fecha imediatamente
 
 dropSteps = 2
 // Quantos degraus abaixo do pico antes de fechar
@@ -196,7 +215,29 @@ GAS_COST_ESTIMATE: {
 ```typescript
 LIMIAR_OK = 3      // Quantos OKs para gerar uma ordem
 JANELA_MS = 30000  // 30s — OKs expiram após este tempo
-ORDEM_TIMEOUT_MS = 120000  // 2min — ordem "preparando" expira
+ORDEM_TIMEOUT_MS = 120000  // 2min — ordem "preparando"/"pronto"/"executando" expira
+```
+
+### 4.6 Agent Learning (corretor.ts + accountant.ts)
+
+```typescript
+// Score composto por agente:
+// score = winRate * 0.6 + max(0, avgProfit) * 30 + streak * 5
+// Mínimo 3 trades para entrar no ranking
+
+// Peso do score na confiança do voto (agentes-do-pregão.ts):
+// confiança *= 0.5 + (score / maxScore) * 0.5
+// Agentes com score máximo mantêm 100% da confiança
+// Agentes com score 0 perdem 50% da confiança
+
+// Quando um trade conclui, cada agente que votou recebe:
+// profit / número_de_agentes_votantes
+```
+
+### 4.7 Dust Threshold (position-manager.ts)
+
+```typescript
+MIN_BALANCE_THRESHOLD = 0.50  // $0.50 — saldos abaixo disso são ignorados no reconcile
 ```
 
 ---
@@ -209,8 +250,9 @@ ORDEM_TIMEOUT_MS = 120000  // 2min — ordem "preparando" expira
 |-------|----------|--------|
 | `arcflow_volatility_data` | Preços históricos por token | volatility-tracker.ts |
 | `arcflow_open_positions` | Posições abertas (com staircaseLevel) | position-manager.ts |
-| `arcflow_trade_history` | Histórico de trades | persistence.ts |
+| `arcflow_trade_history` | Histórico de trades (só trades reais 0x) | persistence.ts |
 | `arcflow_trader_state` | Estado do trader | persistence.ts |
+| `arcflow_accountant_reports` | Relatórios de trade + scores dos agentes | accountant.ts |
 
 ### O que é perdido no F5 (volátil):
 
@@ -223,9 +265,11 @@ ORDEM_TIMEOUT_MS = 120000  // 2min — ordem "preparando" expira
 
 ### Recuperação pós-F5:
 1. `positionManager` carrega posições abertas do localStorage
-2. VolatilityTracker carrega dados de preço do localStorage
-3. No primeiro ciclo, pregueiros reenviam OKs
-4. Staircase retoma monitoramento das posições restauradas
+2. `cleanupInactiveNetworks()` remove posições de redes inativas
+3. VolatilityTracker carrega dados de preço do localStorage
+4. `accountant` carrega scores dos agentes do localStorage
+5. No primeiro ciclo, pregueiros reenviam OKs
+6. Staircase retoma monitoramento das posições restauradas
 
 ---
 
@@ -288,6 +332,9 @@ Se preço cai para $3100 → lucro 3.3% → nível atual = 1
 - Close só acontece se pico > nível 0 (evita fechar no prejuízo)
 - Staircase também força fechamento se posição estagnada > 12h com lucro < 2%
 - Ao fechar, injeta 3 OKs no Pregão com `toToken: "USDC"` sempre
+- **Staircase agora chama `closePosition()` imediatamente** ao decidir fechar
+  (antes deixava a posição aberta até o corretor executar o swap)
+- **`cleanupInactiveNetworks()`** remove posições de redes inativas a cada ciclo
 
 ---
 
@@ -433,7 +480,29 @@ Se for adicionar um novo token, atualizar em **todos** os lugares:
 ### Problema: "Ordem anterior ainda não confirmada — aguardando"
 - Pregão só processa uma ordem por vez (sequencial)
 - Aguardar ordem atual concluir ou expirar (2min timeout)
-- Se ordem travou, o próximo ciclo deve limpar
+- Timeout agora cobre "preparando", "pronto" E "executando" (120s)
+- Se ordem travou, o próximo ciclo deve limpar via `limparOrdensTravadas()`
+- Ciclo manual ("▶️ 1 Ciclo") agora chama `resumeFromPanic()` + `limparOrdensTravadas()`
+
+### Problema: "Posições fantasmas acumulando (31 abertas)"
+- Staircase não chamava `closePosition()` ao decidir fechar — posição ficava "open" pra sempre
+- `cleanupInactiveNetworks()` remove posições de redes inativas a cada ciclo
+- Staircase agora fecha posição imediatamente antes de criar ordem de venda
+
+### Problema: "Simulated testnet trades enchendo o histórico"
+- `persistence.ts` só persiste trades com txHash real (`0x...`)
+- `real-swap-executor.ts` não retorna txHash fake para swaps simulados
+- API `/api/trades` rejeita POST sem txHash começando com `0x`
+
+### Problema: "Circuit breaker nunca desarma"
+- `resumeFromPanic()` existia mas nunca era chamado
+- Agora chamado a cada ciclo (manual e automático) no `PregãoDashboard.tsx`
+
+### Problema: "Agentes não aprendem com os resultados"
+- `corretor.ts` agora pontua cada agente que votou na ordem após trade concluído
+- `accountant.ts` mantém score composto (winRate, lucro médio, streak)
+- `agentes-do-pregão.ts` pondera confiança dos votos pelo score histórico
+- Dados persistem em localStorage (`arcflow_accountant_reports`)
 
 ### Problema: "Lucro sempre $0.0000"
 - Testnet: swaps simulados não têm slippage real
