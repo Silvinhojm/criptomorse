@@ -50,7 +50,13 @@ class Accountant {
   private _load() {
     try {
       const data = localStorage.getItem(STORAGE_KEY);
-      if (data) this.reports = JSON.parse(data);
+      if (data) {
+        this.reports = JSON.parse(data);
+        // Reconstrói scores dos agentes a partir dos reports carregados
+        for (const r of this.reports) {
+          this._updateAgentScore(r);
+        }
+      }
     } catch {}
   }
 
