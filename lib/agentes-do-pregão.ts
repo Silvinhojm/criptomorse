@@ -512,6 +512,37 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
     }
   }
 
+  // ── Gera OKs de venda para posições abertas (realizar lucro) ──
+  const todasPosicoes = positionManager.getOpenPositions()
+  pregão.adicionarLog(`🔍 Total de posições abertas: ${todasPosicoes.length}`)
+  const posicoesAbertas = todasPosicoes
+    .filter(p => p.networkKey === redeAtual && p.status === "open")
+  pregão.adicionarLog(`🔍 Posições em ${redeAtual}: ${posicoesAbertas.length}`)
+  for (const pos of posicoesAbertas) {
+    const currentPrice = await positionManager.fetchTokenPrice(pos.boughtToken)
+    const profitPercent = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100
+    const confMult = volatilityTracker.getConfidenceMultiplier(pos.boughtToken)
+    const sellConfidence = Math.min(90, Math.round((30 + Math.max(0, profitPercent) * 4) * confMult))
+    if (sellConfidence < 35) continue
+
+    const sellPar = `${pos.boughtToken}→USDC`
+    const vendedores = uniqueAgents.size >= 2
+      ? [...uniqueAgents].slice(0, 2)
+      : ["Realizador", "ProfitTaker"]
+    pregão.adicionarLog(`💰 Realizando lucro: ${pos.boughtToken} (${profitPercent.toFixed(1)}% → conf ${sellConfidence}%)`)
+    for (const nome of vendedores) {
+      pregão.receberOK({
+        pregueiro: `Agente:${nome}`,
+        rede: redeAtual,
+        par: sellPar,
+        confianca: sellConfidence,
+        timestamp: Date.now(),
+        fromToken: pos.boughtToken,
+        toToken: "USDC",
+      })
+    }
+  }
+
   return {
     totalPairs: pairs.length,
     votes,

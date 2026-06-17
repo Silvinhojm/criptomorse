@@ -6,6 +6,7 @@
 // Ex: lucro sobe 3%→5%→8%, se cair de 8% para 5% (2 degraus) → fecha garantindo ~5%.
 
 import { realSwap, isStable, type SwapResult, type NetworkKey, type TokenSymbol } from "./real-swap-executor";
+import { pregão } from "./pregão";
 import { saveTradeHistory, loadTradeHistory } from "./persistence";
 
 export interface OpenPosition {
@@ -261,16 +262,26 @@ class PositionManager {
   // Escaneia saldos on-chain e cria posições órfãs para tokens não rastreados
   // Permite que o staircase venda tokens comprados antes da persistência existir
   async reconcileBalances(networkKey: NetworkKey, volatileTokens: TokenSymbol[]): Promise<void> {
+    // Força refresh de saldos on-chain via RPC
+    if (typeof realSwap.refreshAllBalances === "function") {
+      await realSwap.refreshAllBalances()
+    }
+
     for (const token of volatileTokens) {
       if (isStable(token)) continue
+
+      const balance = realSwap.getBalance(token)
+      pregão.adicionarLog(`🔍 reconcile: ${token} balance=${balance}`)
+
+      if (balance <= 0) continue
 
       const alreadyOpen = this.getOpenPositions().some(
         p => p.boughtToken === token && p.networkKey === networkKey
       )
-      if (alreadyOpen) continue
-
-      const balance = realSwap.getBalance(token)
-      if (balance <= 0) continue
+      if (alreadyOpen) {
+        pregão.adicionarLog(`🔍 reconcile: ${token} já tem posição aberta, pulando`)
+        continue
+      }
 
       const currentPrice = await this.fetchTokenPrice(token)
       const pos = this.openPosition(
@@ -281,7 +292,7 @@ class PositionManager {
         balance * currentPrice,
         currentPrice
       )
-      console.log(`🧩 Posição órfã criada: ${balance.toFixed(4)} ${token} @ $${currentPrice.toFixed(4)} na ${networkKey}`)
+      pregão.adicionarLog(`🧩 Posição órfã criada: ${balance.toFixed(4)} ${token} @ $${currentPrice.toFixed(4)} na ${networkKey}`)
     }
   }
 
