@@ -1,4 +1,4 @@
-import { quantumAgent, technicalAgent, synthesisAgent } from "./multi-agent-system"
+﻿import { quantumAgent, technicalAgent, synthesisAgent } from "./multi-agent-system"
 import { quantumWaveTrader } from "./quantum-wave"
 import { pregão } from "./pregão"
 import { NETWORKS, TRADING_PAIRS, realSwap, type NetworkKey, type TokenSymbol } from "./real-swap-executor"
@@ -77,7 +77,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
     const balDAI  = realSwap.getBalance("DAI");
     const maiorStable = Math.max(balUSDC, balUSDT, balDAI);
     // Verificar se temos posição aberta (token volátil)
-    const openPos = positionManager.getOpenPositions().find(p => p.status === "open" && p.network === redeAtual);
+    const openPos = positionManager.getOpenPositions().find(p => p.status === "open" && p.networkKey === redeAtual);
     if (openPos) {
       const balVol = realSwap.getBalance(openPos.boughtToken as TokenSymbol);
       amountUsd = balVol > 0.1 ? balVol * 9999 : Math.max(maiorStable, 5); // preço alto força findBestPair a usar o saldo real
@@ -87,7 +87,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
   }
 
   // 1. Broadcast quantum wave com todos os pares
-  const wave = quantumWaveTrader.broadcastIntent(amountUsd)
+  const wave = await quantumWaveTrader.broadcastIntent(amountUsd)
   const wavePairs = wave.pairs.filter(p => p.network === redeAtual)
 
   const votes: AgentPairVote[] = []
@@ -155,16 +155,18 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
       fromToken: best.fromToken,
       toToken: best.toToken,
       network: best.network,
-      confidence: Math.round(40 + Math.abs(best.momentum) * 500),
+      confidence: Math.min(90, Math.round(40 + Math.abs(best.momentum) * 500)),
       action: best.momentum > 0 ? "buy" : "sell",
       reason: `Trend ${best.momentum > 0 ? "🠕" : "🠗"} momentum ${(best.momentum * 100).toFixed(1)}%`,
     })
   }
 
-  // ── MeanReversion: amplitude elevada = reversão ──
+  // ── MeanReversion: amplitude elevada = reversão. amplitude é sempre >= 0 (força
+  // do sinal), então a direção da aposta vem do sinal do momentum: subiu muito →
+  // aposta que vai recuar (sell); caiu muito → aposta que vai recuperar (buy).
   const meanRevPairs = wavePairs
-    .filter(wp => wp.fromToken !== wp.toToken && Math.abs(wp.amplitude) > 0.03)
-    .sort((a, b) => Math.abs(b.amplitude) - Math.abs(a.amplitude))
+    .filter(wp => wp.fromToken !== wp.toToken && wp.amplitude > 0.03)
+    .sort((a, b) => b.amplitude - a.amplitude)
   if (meanRevPairs.length > 0) {
     const best = meanRevPairs[0]
     votes.push({
@@ -173,9 +175,9 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
       fromToken: best.fromToken,
       toToken: best.toToken,
       network: best.network,
-      confidence: Math.round(35 + Math.abs(best.amplitude) * 400),
-      action: best.amplitude < 0 ? "buy" : "sell",
-      reason: `Reversão: amplitude ${(best.amplitude * 100).toFixed(1)}% — ${best.amplitude < 0 ? "barato" : "caro"}`,
+      confidence: Math.min(90, Math.round(35 + best.amplitude * 400)),
+      action: best.momentum > 0 ? "sell" : "buy",
+      reason: `Reversão: amplitude ${(best.amplitude * 100).toFixed(1)}% — ${best.momentum > 0 ? "subiu, pode recuar" : "caiu, pode recuperar"}`,
     })
   }
 
@@ -376,7 +378,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
       fromToken: best.wp.fromToken,
       toToken: best.wp.toToken,
       network: redeAtual,
-      confidence: Math.round(40 + best.score * 2000),
+      confidence: Math.min(90, Math.round(40 + best.score * 2000)),
       action: best.wp.momentum > 0 ? "buy" : "sell",
       reason: `Momento × vol = ${(best.score * 10000).toFixed(0)} — ${best.wp.momentum > 0 ? "🠕🠕" : "🠗🠗"}`,
     })

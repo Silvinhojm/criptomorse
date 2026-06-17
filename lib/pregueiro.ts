@@ -1,5 +1,6 @@
 import { pregão, type OkSignal } from "./pregão"
 import { TRADING_PAIRS, type NetworkKey, isStable } from "./real-swap-executor"
+import { pairPriceFeed } from "./pair-price-feed"
 
 export interface PregueiroConfig {
   nome: string
@@ -202,8 +203,8 @@ export async function executarCicloPregueiros(rede?: string) {
         let decisao: PregueiroDecisao
 
         if (pregueiro instanceof TendênciaPregueiro) {
-          const precoMock = 1.0 + (Math.random() * 0.02 - 0.01)
-          decisao = pregueiro.analisar(par, pair.from, pair.to, precoMock)
+          const stats = await pairPriceFeed.getPairStats(pair.from, pair.to, isStable)
+          decisao = pregueiro.analisar(par, pair.from, pair.to, stats.relativePrice)
         } else if (pregueiro instanceof TáticoPregueiro) {
           decisao = pregueiro.analisar(par, pair.from, pair.to)
         } else if (pregueiro instanceof VolumePregueiro) {

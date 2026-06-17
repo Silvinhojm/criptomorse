@@ -46,7 +46,7 @@ class AutomatedTrader {
   async collectAgentSignals(): Promise<TradeSignal> {
     console.log("Coletando sinais dos agentes...");
 
-    const wave = quantumWaveTrader.broadcastIntent(this.tradeAmount);
+    const wave = await quantumWaveTrader.broadcastIntent(this.tradeAmount);
 
     let marketData: any;
     try {

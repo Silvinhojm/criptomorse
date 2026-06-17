@@ -1,4 +1,5 @@
-import { NETWORKS, TRADING_PAIRS, NetworkKey, TokenSymbol } from './real-swap-executor';
+import { TRADING_PAIRS, NetworkKey, TokenSymbol, isStable } from './real-swap-executor';
+import { pairPriceFeed } from './pair-price-feed';
 
 export interface QuantumPair {
   network: NetworkKey;
@@ -25,30 +26,41 @@ class QuantumWaveTrader {
   private wave: QuantumWave | null = null;
   private waveMemory: QuantumWave[] = [];
 
-  broadcastIntent(amount: number): QuantumWave {
+  async broadcastIntent(amount: number): Promise<QuantumWave> {
     const pairs: QuantumPair[] = [];
 
+    // Monta a lista de todos os pares (network + from/to) primeiro, depois busca
+    // preço real para cada um em paralelo — bem mais rápido que sequencial.
+    const allPairs: { net: NetworkKey; pair: { from: TokenSymbol; to: TokenSymbol; label: string } }[] = [];
     for (const [networkKey, pairsList] of Object.entries(TRADING_PAIRS)) {
       const net = networkKey as NetworkKey;
       for (const pair of pairsList) {
-        const amplitude = Math.random();
-        const phase = Math.random() * 2 * Math.PI;
-        const volatility = 0.2 + Math.random() * 0.6;
-        const momentum = (Math.random() - 0.5) * 0.1;
-
-        pairs.push({
-          network: net,
-          fromToken: pair.from,
-          toToken: pair.to,
-          label: pair.label,
-          amplitude,
-          phase,
-          probability: 0,
-          volatility,
-          liquidity: 0.3 + Math.random() * 0.5,
-          momentum,
-        });
+        allPairs.push({ net, pair });
       }
+    }
+
+    const statsResults = await Promise.all(
+      allPairs.map(({ pair }) => pairPriceFeed.getPairStats(pair.from, pair.to, isStable))
+    );
+
+    for (let i = 0; i < allPairs.length; i++) {
+      const { net, pair } = allPairs[i];
+      const stats = statsResults[i];
+
+      pairs.push({
+        network: net,
+        fromToken: pair.from,
+        toToken: pair.to,
+        label: pair.label,
+        amplitude: stats.amplitude,
+        // phase não tem equivalente real de mercado — mantido só como metadado
+        // decorativo da metáfora "onda", não influencia nenhuma decisão de trade.
+        phase: 0,
+        probability: 0,
+        volatility: stats.volatility,
+        liquidity: stats.liquidity,
+        momentum: stats.momentum,
+      });
     }
 
     const totalAmplitude = pairs.reduce((s, p) => s + p.amplitude, 0);
@@ -64,7 +76,7 @@ class QuantumWaveTrader {
       collapsedPair: null,
     };
 
-    console.log(`🌊 Quantum wave criada: ${pairs.length} possibilidades superpostas para $${amount}`);
+    console.log(`🌊 Quantum wave criada: ${pairs.length} possibilidades (preço real) para $${amount}`);
     return this.wave;
   }
 
