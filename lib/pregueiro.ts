@@ -246,6 +246,15 @@ export async function executarCicloPregueiros(rede?: string) {
     }
   }
 
+  // 🔄 Reconcilia saldos on-chain: cria posições órfãs para tokens não rastreados
+  for (const redeAtual of redesParaEscalar) {
+    const pairs = TRADING_PAIRS[redeAtual]
+    if (!pairs) continue
+    const volatileTokens = [...new Set(pairs.map(p => [p.from, p.to]).flat())]
+      .filter(t => !isStable(t)) as TokenSymbol[]
+    await positionManager.reconcileBalances(redeAtual, volatileTokens)
+  }
+
   // ─── Staircase: verifica posições abertas e fecha se cair 2 degraus ───
   await verificarStaircaseFechamento(redesParaEscalar)
 }

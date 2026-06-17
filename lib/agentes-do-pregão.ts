@@ -107,6 +107,10 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
   }
   volatilityTracker.collectPrices([...tokensParaColetar]).catch(() => {})
 
+  // 🔄 Reconcilia saldos on-chain para criar posições órfãs nesta rede
+  const volatileParaRede = [...tokensParaColetar].filter(t => !STABLES.has(t))
+  await positionManager.reconcileBalances(redeAtual, volatileParaRede)
+
   // 3. Cada agente avalia os pares
 
   // ── QuantumAgent: avalia cada par, escolhe o melhor ──
@@ -225,9 +229,9 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
         fromToken: waveBest.fromToken,
         toToken: waveBest.toToken,
         network: redeAtual,
-        confidence: Math.round(waveBest.probability * 70),
+        confidence: Math.min(90, Math.round(waveBest.probability)),
         action: waveBest.momentum > 0 ? "buy" : "sell",
-        reason: `Wave: ${waveBest.label} (prob: ${(waveBest.probability * 100).toFixed(0)}%)`,
+        reason: `Wave: ${waveBest.label} (prob: ${waveBest.probability.toFixed(0)}%)`,
       })
     }
   }
@@ -252,7 +256,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
       fromToken: best.pair.from,
       toToken: best.pair.to,
       network: redeAtual,
-      confidence: Math.min(75, 30 + best.absSpread * 10),
+      confidence: Math.min(75, Math.round(30 + best.absSpread * 10)),
       action: best.signedSpread > 0 ? "sell" : "buy",
       reason: `Arbitragem ${best.pair.label} (${best.signedSpread > 0 ? "toToken caro" : "fromToken caro"}, spread ${best.absSpread.toFixed(3)}%)`,
     })
@@ -410,7 +414,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
       fromToken: bestWavePair.fromToken,
       toToken: bestWavePair.toToken,
       network: redeAtual,
-      confidence: Math.round(bestWavePair.probability * 100),
+      confidence: Math.min(90, Math.round(bestWavePair.probability)),
       action: bestWavePair.momentum > 0 ? "buy" : "sell",
       reason: `NIM: ondas de probabilidade — ${bestWavePair.label}`,
     })

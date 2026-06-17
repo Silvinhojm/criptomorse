@@ -5,7 +5,7 @@
 // Staircase (escada de lucro): sobe degrau por degrau, fecha se cair 2 degraus do pico.
 // Ex: lucro sobe 3%→5%→8%, se cair de 8% para 5% (2 degraus) → fecha garantindo ~5%.
 
-import { realSwap, type SwapResult, type NetworkKey, type TokenSymbol } from "./real-swap-executor";
+import { realSwap, isStable, type SwapResult, type NetworkKey, type TokenSymbol } from "./real-swap-executor";
 import { saveTradeHistory, loadTradeHistory } from "./persistence";
 
 export interface OpenPosition {
@@ -255,6 +255,33 @@ class PositionManager {
       return price;
     } catch {
       return this.priceCache.get(token)?.price ?? 1.0;
+    }
+  }
+
+  // Escaneia saldos on-chain e cria posições órfãs para tokens não rastreados
+  // Permite que o staircase venda tokens comprados antes da persistência existir
+  async reconcileBalances(networkKey: NetworkKey, volatileTokens: TokenSymbol[]): Promise<void> {
+    for (const token of volatileTokens) {
+      if (isStable(token)) continue
+
+      const alreadyOpen = this.getOpenPositions().some(
+        p => p.boughtToken === token && p.networkKey === networkKey
+      )
+      if (alreadyOpen) continue
+
+      const balance = realSwap.getBalance(token)
+      if (balance <= 0) continue
+
+      const currentPrice = await this.fetchTokenPrice(token)
+      const pos = this.openPosition(
+        networkKey,
+        token,
+        "USDC",
+        balance,
+        balance * currentPrice,
+        currentPrice
+      )
+      console.log(`🧩 Posição órfã criada: ${balance.toFixed(4)} ${token} @ $${currentPrice.toFixed(4)} na ${networkKey}`)
     }
   }
 
