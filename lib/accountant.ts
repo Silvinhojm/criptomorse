@@ -137,6 +137,59 @@ class Accountant {
     return this.agentScores.get(agentName);
   }
 
+  // ── Sistema de graduação dos agentes ──
+  static readonly GRADES = [
+    { nome: "Aprendiz",      icone: "🌱", scoreMin: 0,   scoreMax: 10  },
+    { nome: "Primeiro Grau", icone: "📗", scoreMin: 10,  scoreMax: 30  },
+    { nome: "Segundo Grau",  icone: "📘", scoreMin: 30,  scoreMax: 50  },
+    { nome: "Terceiro Grau", icone: "📙", scoreMin: 50,  scoreMax: 70  },
+    { nome: "Mestrado",      icone: "🎓", scoreMin: 70,  scoreMax: 85  },
+    { nome: "Doutorado",     icone: "🏆", scoreMin: 85,  scoreMax: 999 },
+  ]
+
+  getGrade(score: number): { nome: string; icone: string } {
+    for (const g of Accountant.GRADES) {
+      if (score >= g.scoreMin && score < g.scoreMax) return { nome: g.nome, icone: g.icone }
+    }
+    return Accountant.GRADES[Accountant.GRADES.length - 1]
+  }
+
+  getNextGrade(score: number): { nome: string; pontosFaltando: number } | null {
+    for (const g of Accountant.GRADES) {
+      if (score < g.scoreMax) return { nome: g.nome, pontosFaltando: Math.ceil(g.scoreMax - score) }
+    }
+    return null
+  }
+
+  // Feedback do "professor" baseado no desempenho recente
+  getTeacherFeedback(agentName: string): string {
+    const score = this.agentScores.get(agentName)
+    if (!score || score.totalTrades < 3) return "🧪 Ainda em observação — precisa de mais avaliações."
+
+    const grade = this.getGrade(score.score)
+    const recente = this.reports.filter(r => r.agentName === agentName).slice(-5)
+    const acertos = recente.filter(r => r.profit > 0).length
+    const erros = recente.filter(r => r.profit <= 0).length
+
+    let feedback = `${grade.icone} ${grade.nome} | Score: ${score.score.toFixed(1)}`
+    feedback += ` | ${score.wins}V ${score.losses}D (${score.winRate.toFixed(0)}%)`
+
+    if (score.streak >= 3) feedback += " 🔥 Racha de lucro!"
+    else if (score.streak >= 1) feedback += " 👍 Sequência positiva"
+    else if (score.streak <= -3) feedback += " ❄️ Precisa estudar mais"
+    else if (score.streak <= -1) feedback += " 📉 Momento difícil"
+
+    if (acertos > erros) feedback += " — Professor: 'Bom trabalho, continue assim!'"
+    else if (erros > acertos) feedback += " — Professor: 'Revise suas estratégias, pode melhorar.'"
+    else feedback += " — Professor: 'Regular. Identifique o que funciona e foque nisso.'"
+
+    const next = this.getNextGrade(score.score)
+    if (next) feedback += ` | Próximo: ${next.nome} (${next.pontosFaltando} pts)`
+    else feedback += " | 🏆 Nível máximo atingido!"
+
+    return feedback
+  }
+
   getStats() {
     const completed = this.reports.filter(r => r.status === "completed");
     const profitable = completed.filter(r => r.profit > 0);

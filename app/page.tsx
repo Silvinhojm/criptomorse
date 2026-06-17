@@ -2,6 +2,7 @@
 import { PanicButton } from "@/app/components/PanicButton";
 import { RealAutomatedTrader } from "./components/RealAutomatedTrader";
 import { PregãoDashboard } from "./components/PregãoDashboard";
+import { SalaDeAula } from "./components/SalaDeAula";
 import { NETWORKS } from "@/lib/real-swap-executor";
 
 import { useState, useCallback, useEffect, useRef } from "react";
@@ -998,6 +999,7 @@ export default function Home() {
             <RealAutomatedTrader account={account} currentNetwork={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} />
             <NanopaymentDashboard agentScores={agentScores} />
             <PregãoDashboard rede={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} />
+            <SalaDeAula />
           </>
         )}
 

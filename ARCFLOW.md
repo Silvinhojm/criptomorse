@@ -517,6 +517,14 @@ Se for adicionar um novo token, atualizar em **todos** os lugares:
 - Persiste em localStorage (`arcflow_vote_history`)
 - Agentes aprendem mesmo sem trades reais — toda votação vira treino
 
+### UI: "SalaDeAula" (app/components/SalaDeAula.tsx)
+- Componente React interativo exibido abaixo do PregãoDashboard
+- Ranking dos agentes com notas, nível (Aprendiz→Doutorado), barra de progresso
+- Mensagens do "Professor" baseadas no desempenho recente (elogios/críticas)
+- Próximo nível com pontos faltando — gamificação do aprendizado
+- Atualiza a cada 3s via `accountant.getRanking()` e `getTeacherFeedback()`
+- Níveis: 🌱 Aprendiz (0-10) → 📗 Primeiro Grau (10-30) → 📘 Segundo Grau (30-50) → 📙 Terceiro Grau (50-70) → 🎓 Mestrado (70-85) → 🏆 Doutorado (85+)
+
 ### Regra: "Só compra volátil se caixa livre"
 - Pregão/Pregueiros/Agentes não enviam OKs de compra (stable→volátil) enquanto houver posição aberta
 - Vendas (volátil→stable) continuam livres para fechar posição com lucro
