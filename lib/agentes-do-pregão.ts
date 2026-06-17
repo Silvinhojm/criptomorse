@@ -648,6 +648,14 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
     const sellConfidence = Math.min(90, Math.round((30 + Math.max(0, profitPercent) * 4) * confMult))
     if (sellConfidence < 35) continue
 
+    // Staircase rule: only sell at a loss if stop loss (-15%)
+    // Otherwise, only sell if position has seen profit
+    const STOP_LOSS = -15
+    if (profitPercent > STOP_LOSS && (pos.peakProfitPercent ?? 0) <= 0) {
+      pregão.adicionarLog(`⏳ ${pos.boughtToken}: ${profitPercent.toFixed(1)}% sem nunca ter lucrado — Staircase segura (hold)`)
+      continue
+    }
+
     const sellPar = `${pos.boughtToken}→USDC`
     const vendedores = uniqueAgents.size >= 2
       ? [...uniqueAgents].slice(0, 2)
