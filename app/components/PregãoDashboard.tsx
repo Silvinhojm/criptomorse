@@ -9,6 +9,7 @@ import type { NetworkKey } from "@/lib/real-swap-executor"
 import { caixa } from "@/lib/caixa"
 import { resumeFromPanic, setTestnetMode } from "@/lib/circuit-breaker"
 import { AGENTES_NOMES, AGENTE_CORES } from "@/lib/agentes-do-pregão"
+import { positionManager } from "@/lib/position-manager"
 
 const COR_PREGÃO = "#d4a574"
 const COR_FUNDO = "#1a1a2e"
@@ -32,6 +33,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
   const cicloRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [cicloAtivo, setCicloAtivo] = useState(false)
   const [cicloIntervalo, setCicloIntervalo] = useState(10)
+  const [openPositions, setOpenPositions] = useState(0)
   const redeRef = useRef(rede)
   const balanceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -120,6 +122,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         setWalletBalance(usdc)
         setDepositAmount(Math.floor(usdc).toString())
       }
+      setOpenPositions(positionManager.getOpenPositions().length)
     }, 8000)
 
     initCaixa()
@@ -207,6 +210,32 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     }, cicloIntervalo * 1000)
   }
 
+  const fecharPosicao = async () => {
+    const posicoes = positionManager.getOpenPositions()
+    if (posicoes.length === 0) {
+      addLog("ℹ️ Nenhuma posição aberta para fechar")
+      return
+    }
+    for (const pos of posicoes) {
+      positionManager.closePosition(pos.id, pos.currentPrice || pos.entryPrice)
+      addLog(`🔒 Posição ${pos.boughtToken} fechada manualmente`)
+      const par = `${pos.boughtToken}→USDC`
+      for (const nome of ["FechamentoManual", "ForcarVenda", "Cleanup"]) {
+        pregão.receberOK({
+          pregueiro: nome,
+          rede: pos.networkKey,
+          par,
+          confianca: 90,
+          timestamp: Date.now(),
+          fromToken: pos.boughtToken,
+          toToken: "USDC",
+        })
+      }
+      addLog(`📢 3 OKs de venda injetados para ${par}`)
+    }
+    atualizarTudo()
+  }
+
   const rodarUmCiclo = async () => {
     resumeFromPanic()
     pregão.limparOrdensTravadas()
@@ -283,6 +312,15 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         }}>
           ▶️ 1 Ciclo
         </button>
+        {openPositions > 0 && (
+          <button onClick={fecharPosicao} style={{
+            padding: "8px 12px", fontSize: 11, fontWeight: "bold",
+            background: "#ef4444", color: "#fff",
+            border: "none", borderRadius: 8, cursor: "pointer"
+          }}>
+            🔒 Fechar Posição ({openPositions})
+          </button>
+        )}
       </div>
 
       <div style={{ marginBottom: 12 }}>
