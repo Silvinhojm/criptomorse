@@ -97,6 +97,12 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 2.5 APRENDIZADO (agentes-do-pregão.ts)                         │
+│    ├── 📚 Sala de aula: cada voto é registrado com o preço     │
+│    │    do token volátil no momento do voto                    │
+│    ├── A cada ciclo, votos com 5+ min são avaliados:          │
+│    │   • Recomendou comprar → lucro se preço subiu            │
+│    │   • Recomendou vender → lucro se preço caiu              │
+│    │   → accountant.addReport() simulado ($5 fictício)        │
 │    ├── Confiança ajustada por volatilidade (VolTracker)        │
 │    ├── Confiança ponderada pelo score histórico do agente      │
 │    │   (accountant.getAgentScore → score/maxScore pondera      │
@@ -502,6 +508,14 @@ Se for adicionar um novo token, atualizar em **todos** os lugares:
 ### Problema: "Circuit breaker nunca desarma"
 - `resumeFromPanic()` existia mas nunca era chamado
 - Agora chamado a cada ciclo (manual e automático) no `PregãoDashboard.tsx`
+
+### Feature: "Sala de aula — aprendizado simulado dos votos"
+- Cada voto de agente é registrado com `{ agentName, par, preço, timestamp }`
+- A cada ciclo, votos com >5min são avaliados contra o preço atual
+- Se o voto teria dado lucro → score sobe (simulado com $5 fictício)
+- Se teria dado prejuízo → score desce
+- Persiste em localStorage (`arcflow_vote_history`)
+- Agentes aprendem mesmo sem trades reais — toda votação vira treino
 
 ### Regra: "Só compra volátil se caixa livre"
 - Pregão/Pregueiros/Agentes não enviam OKs de compra (stable→volátil) enquanto houver posição aberta

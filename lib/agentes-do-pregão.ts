@@ -8,6 +8,84 @@ import { accountant } from "./accountant"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 
+// ── Sala de aula: aprendizado simulado dos votos ──
+interface VotoRegistro {
+  agentName: string
+  fromToken: string
+  toToken: string
+  priceAtVote: number
+  confidence: number
+  action: "buy" | "sell"
+  timestamp: number
+  networkKey: string
+}
+const historicoVotos: VotoRegistro[] = []
+const MIN_AVALIACAO_MS = 5 * 60 * 1000  // avalia votos com 5+ min de idade
+
+function registrarVoto(voto: VotoRegistro) {
+  historicoVotos.push(voto)
+  if (historicoVotos.length > 500) historicoVotos.splice(0, 100)
+  // Persiste no localStorage
+  try { localStorage.setItem("arcflow_vote_history", JSON.stringify(historicoVotos.slice(-200))) } catch {}
+}
+
+async function avaliarVotosPassados(redeAtual: NetworkKey) {
+  const agora = Date.now()
+  const avaliados = new Set<string>()
+  for (const voto of historicoVotos) {
+    if (voto.networkKey !== redeAtual) continue
+    if (agora - voto.timestamp < MIN_AVALIACAO_MS) continue
+    const id = `${voto.agentName}_${voto.timestamp}`
+    if (avaliados.has(id)) continue
+    avaliados.add(id)
+
+    const tokenVolatil = voto.action === "buy" ? voto.toToken : voto.fromToken
+    if (STABLES.has(tokenVolatil)) continue  // stable-stable não avalia
+
+    const priceAgora = await positionManager.fetchTokenPrice(tokenVolatil as TokenSymbol)
+    if (priceAgora <= 0 || voto.priceAtVote <= 0) continue
+
+    let profitPercent = 0
+    if (voto.action === "buy") {
+      // Recomendou comprar: lucro se preço subiu
+      profitPercent = ((priceAgora - voto.priceAtVote) / voto.priceAtVote) * 100
+    } else {
+      // Recomendou vender: lucro se preço caiu
+      profitPercent = ((voto.priceAtVote - priceAgora) / voto.priceAtVote) * 100
+    }
+
+    const simulatedAmount = 5  // $5 fictício para aprendizado
+    const simulatedProfit = simulatedAmount * (profitPercent / 100)
+
+    accountant.addReport({
+      id: `sim_${voto.agentName}_${voto.timestamp}`,
+      agentName: voto.agentName,
+      action: voto.action,
+      fromToken: voto.fromToken,
+      toToken: voto.toToken,
+      amount: simulatedAmount,
+      toAmount: simulatedAmount + simulatedProfit,
+      profit: simulatedProfit,
+      profitPercent,
+      entryPrice: voto.priceAtVote,
+      exitPrice: priceAgora,
+      status: "completed",
+      duration: agora - voto.timestamp,
+      timestamp: agora,
+      networkKey: redeAtual,
+    })
+  }
+  if (avaliados.size > 0) {
+    pregão.adicionarLog(`📚 Sala de aula: ${avaliados.size} votos avaliados — agentes aprendendo sem trade real`)
+  }
+  // Limpa votos já avaliados
+  for (let i = historicoVotos.length - 1; i >= 0; i--) {
+    if (avaliados.has(`${historicoVotos[i].agentName}_${historicoVotos[i].timestamp}`)) {
+      historicoVotos.splice(i, 1)
+    }
+  }
+}
+
 export const AGENTES_NOMES = [
   { nome: "Quantum", icone: "🔮" },
   { nome: "Technical", icone: "📈" },
@@ -71,6 +149,9 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
     console.warn(`[AGENTES] Rede ${redeAtual} não configurada`)
     return { totalPairs: 0, votes: [], agreedPair: null, agreeingAgents: 0, waveCollapsed: false }
   }
+
+  // 📚 Sala de aula: avalia votos passados contra preço atual
+  await avaliarVotosPassados(redeAtual)
 
   // Mainnet: usar saldo real disponível (não $5 fixo)
   if (!net.isTestnet) {
@@ -419,6 +500,25 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
       action: bestWavePair.momentum > 0 ? "buy" : "sell",
       reason: `NIM: ondas de probabilidade — ${bestWavePair.label}`,
     })
+  }
+
+  // 📚 Sala de aula: registra votos com preço atual para aprendizado futuro
+  for (const v of votes) {
+    const tokenVolatil = v.action === "buy" ? v.toToken : v.fromToken
+    if (STABLES.has(tokenVolatil)) continue
+    const precoVoto = await positionManager.fetchTokenPrice(tokenVolatil as TokenSymbol).catch(() => 0)
+    if (precoVoto > 0) {
+      registrarVoto({
+        agentName: v.agentName,
+        fromToken: v.fromToken,
+        toToken: v.toToken,
+        priceAtVote: precoVoto,
+        confidence: v.confidence,
+        action: v.action,
+        timestamp: Date.now(),
+        networkKey: redeAtual,
+      })
+    }
   }
 
   // 🧠 Ajusta confiança com base na volatilidade real de cada token
