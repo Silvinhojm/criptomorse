@@ -551,6 +551,9 @@ class RealSwapExecutor {
       const toDecimals   = this.tokenBalances.get(toToken)?.decimals ?? 6;
       const toEstimate   = parseFloat(quote.toAmount ?? "0") / Math.pow(10, toDecimals);
       log(`✅ Rota via ${quote.tool} | Estimativa: ${toEstimate.toFixed(6)} ${toToken}`);
+      if (toEstimate <= 0) {
+        log(`⚠️ Estimativa zero — enviando mesmo assim (rota ${quote.tool} pode omitir toAmount)`);
+      }
 
       // Registrar saldo pré-swap para calcular valor real recebido on-chain
       const preSwapBalance = this.getBalance(toToken);

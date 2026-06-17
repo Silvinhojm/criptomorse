@@ -164,14 +164,14 @@ class PositionManager {
       return "close";
     }
 
-    // Stale close: se nunca teve lucro após N horas, fecha
+    // Stale close: se nunca teve lucro após N horas, espera mais (só fecha se já lucrou)
     if (age > STALE_NO_PROFIT_MS && pos.peakProfitPercent <= 0) {
-      console.log(`⏰ Posicao estagnada sem lucro ha ${(age / 3600000).toFixed(1)}h, forcando fechamento (${pos.boughtToken})`);
-      return "close";
+      console.log(`⏰ Posicao estagnada sem lucro ha ${(age / 3600000).toFixed(1)}h — segurando (${pos.boughtToken})`);
+      return "hold";
     }
 
-    // Forcar fechamento se posicao estiver estagnada apos N horas
-    if (age > MAX_POSITION_AGE_MS) {
+    // Forcar fechamento se posicao estiver muito antiga (só se já viu lucro)
+    if (age > MAX_POSITION_AGE_MS && pos.peakProfitPercent > 0) {
       console.log(`⌛ Posicao expirada ha ${(age / 3600000).toFixed(1)}h, forcando fechamento (${pos.boughtToken})`);
       return "close";
     }
@@ -218,14 +218,14 @@ class PositionManager {
       return "close";
     }
 
-    // Stale close: se nunca teve lucro após N horas, fecha
+    // Stale close: se nunca teve lucro após N horas, espera mais (só fecha se já lucrou)
     if (age > STALE_NO_PROFIT_MS && pos.peakProfitPercent <= 0) {
-      console.log(`⏰ Staircase stale: ${pos.boughtToken} sem lucro ha ${(age / 3600000).toFixed(1)}h, forcando fechamento`);
-      return "close";
+      console.log(`⏰ Staircase stale: ${pos.boughtToken} sem lucro ha ${(age / 3600000).toFixed(1)}h — segurando (nunca lucrou)`);
+      return "hold";
     }
 
-    // Forcar fechamento se posicao estiver muito antiga (qualquer lucro/prejuizo)
-    if (age > MAX_POSITION_AGE_MS) {
+    // Forcar fechamento se posicao estiver muito antiga (só se já viu lucro)
+    if (age > MAX_POSITION_AGE_MS && pos.peakProfitPercent > 0) {
       console.log(`⌛ Staircase expirada: ${pos.boughtToken} aberta ha ${(age / 3600000).toFixed(1)}h, forcando fechamento`);
       return "close";
     }
