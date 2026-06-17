@@ -461,6 +461,8 @@ class RealSwapExecutor {
       return this._fail(fromToken, toToken, amountUsd, "Circuit breaker bloqueou trade (modo pânico ativo)", timestamp);
     }
 
+    // Refresh saldos on-chain antes de decidir (cache pode estar podre)
+    await this.refreshAllBalances();
     const fromBalance     = this.getBalance(fromToken);
     const fromPrice       = await this._getTokenPrice(fromToken);
     const fromBalanceUsd  = fromBalance * fromPrice;
