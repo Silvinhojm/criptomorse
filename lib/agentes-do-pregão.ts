@@ -3,6 +3,7 @@ import { quantumWaveTrader } from "./quantum-wave"
 import { pregão } from "./pregão"
 import { NETWORKS, TRADING_PAIRS, realSwap, type NetworkKey, type TokenSymbol } from "./real-swap-executor"
 import { positionManager } from "./position-manager"
+import { volatilityTracker } from "./volatility-tracker"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 
@@ -83,6 +84,13 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
       amountUsd = balVol > 0.1 ? balVol * 9999 : Math.max(maiorStable, 5); // preço alto força findBestPair a usar o saldo real
     } else {
       amountUsd = Math.max(maiorStable, 5);
+      // Ajusta tamanho da posição pela volatilidade do par sendo negociado
+      const volMult = volatilityTracker.getPositionSizeMultiplier(pairs[0]?.to ?? "USDC")
+      if (volMult < 1.0) {
+        const original = amountUsd
+        amountUsd = Math.max(5, Math.round((amountUsd * volMult) * 100) / 100)
+        pregão.adicionarLog(`🧠 VolTracker: posição ajustada $${original.toFixed(2)} → $${amountUsd.toFixed(2)} (vol mult ${volMult.toFixed(1)}x)`)
+      }
     }
   }
 
@@ -91,6 +99,13 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
   const wavePairs = wave.pairs.filter(p => p.network === redeAtual)
 
   const votes: AgentPairVote[] = []
+
+  // Alimenta volatility tracker com preços dos tokens da rede
+  const tokensParaColetar = new Set<TokenSymbol>()
+  for (const p of pairs) {
+    tokensParaColetar.add(p.from); tokensParaColetar.add(p.to)
+  }
+  volatilityTracker.collectPrices([...tokensParaColetar]).catch(() => {})
 
   // 3. Cada agente avalia os pares
 
@@ -399,6 +414,19 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
       action: bestWavePair.momentum > 0 ? "buy" : "sell",
       reason: `NIM: ondas de probabilidade — ${bestWavePair.label}`,
     })
+  }
+
+  // 🧠 Ajusta confiança com base na volatilidade real de cada token
+  for (const v of votes) {
+    const volToken = v.action === "buy" ? v.toToken : v.fromToken
+    const mult = volatilityTracker.getConfidenceMultiplier(volToken)
+    if (mult !== 1.0) {
+      const original = v.confidence
+      v.confidence = Math.min(90, Math.round(v.confidence * mult))
+      if (v.confidence !== original) {
+        pregão.adicionarLog(`🧠 ${v.agentName}: vol ajustou confiança ${original}% → ${v.confidence}% (mult ${mult.toFixed(2)}x em ${volToken})`)
+      }
+    }
   }
 
   // Log votes

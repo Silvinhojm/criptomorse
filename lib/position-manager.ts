@@ -1,6 +1,9 @@
 // lib/position-manager.ts
 // Gerenciamento de posicoes com trailing stop dinâmico
 // Garante 50-100% do lucro conforme cresce, fechando com trailing stop progressivo
+//
+// Staircase (escada de lucro): sobe degrau por degrau, fecha se cair 2 degraus do pico.
+// Ex: lucro sobe 3%→5%→8%, se cair de 8% para 5% (2 degraus) → fecha garantindo ~5%.
 
 import { realSwap, type SwapResult, type NetworkKey, type TokenSymbol } from "./real-swap-executor";
 import { saveTradeHistory, loadTradeHistory } from "./persistence";
@@ -23,10 +26,25 @@ export interface OpenPosition {
   closeTimestamp?: number;
   profitUsd?: number;
   profitPercent?: number;
+  staircaseLevel?: number;
 }
 
 // Idade maxima da posicao (12h) — forca fechamento para liberar capital
 const MAX_POSITION_AGE_MS = 12 * 60 * 60 * 1000;
+const POSITIONS_STORAGE_KEY = "arcflow_open_positions";
+
+// Degraus da escada de lucro (%)
+// A cada novo degrau atingido, o lucro mínimo garantido sobe.
+// Se cair 2 degraus abaixo do pico, a posição fecha automaticamente.
+const PROFIT_LEVELS = [0, 3, 5, 8, 10, 15, 20, 30, 50, 70, 100];
+
+function getLevelIndex(profitPercent: number, levels?: number[]): number {
+  const list = levels ?? PROFIT_LEVELS;
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (profitPercent >= list[i]) return i;
+  }
+  return 0;
+}
 
 // Trail levels: as regras de fechamento ficam mais rigidas conforme o lucro cresce
 // "quanto maior o lucro, menor a porcentagem de fechamento"
@@ -56,9 +74,18 @@ class PositionManager {
   private positions: Map<string, OpenPosition> = new Map();
   private priceCache: Map<string, { price: number; timestamp: number }> = new Map();
   private onCloseCallback: ((position: OpenPosition) => void) | null = null;
+  private onStaircaseCloseCallback: ((position: OpenPosition) => void) | null = null;
+
+  constructor() {
+    this.loadPositions();
+  }
 
   onClose(cb: (position: OpenPosition) => void) {
     this.onCloseCallback = cb;
+  }
+
+  onStaircaseClose(cb: (position: OpenPosition) => void) {
+    this.onStaircaseCloseCallback = cb;
   }
 
   // Abrir posicao apos comprar token volatil (ex: USDC -> WETH)
@@ -85,8 +112,10 @@ class PositionManager {
       currentPrice: entryPrice,
       currentProfitPercent: 0,
       status: "open",
+      staircaseLevel: 0,
     };
     this.positions.set(id, pos);
+    this.savePositions();
     console.log(`Posicao ABERTA: ${boughtToken} @ $${entryPrice.toFixed(4)} (${id})`);
     return pos;
   }
@@ -101,6 +130,7 @@ class PositionManager {
     pos.profitPercent = ((closePrice - pos.entryPrice) / pos.entryPrice) * 100;
     pos.profitUsd = (closePrice - pos.entryPrice) * pos.amountBought;
     this.onCloseCallback?.(pos);
+    this.savePositions();
     console.log(`Posicao FECHADA: ${pos.boughtToken} lucro ${pos.profitPercent.toFixed(2)}% ($${pos.profitUsd.toFixed(4)})`);
     return pos;
   }
@@ -144,6 +174,52 @@ class PositionManager {
     return "hold";
   }
 
+  // Staircase (escada de lucro): sobe degraus, fecha se cair N degraus do pico
+  // Aceita níveis dinâmicos (do volatility tracker) ou usa o padrão PROFIT_LEVELS
+  staircaseUpdate(id: string, currentPrice: number, dropSteps: number = 2, levels?: number[]): "hold" | "close" {
+    const pos = this.positions.get(id);
+    if (!pos || pos.status !== "open") return "hold";
+
+    const profitLevels = levels ?? PROFIT_LEVELS;
+
+    const age = Date.now() - pos.entryTimestamp;
+    if (age > MAX_POSITION_AGE_MS && pos.peakProfitPercent < 2) {
+      console.log(`Posicao estagnada ha ${(age / 3600000).toFixed(1)}h, forcando fechamento (${pos.boughtToken})`);
+      return "close";
+    }
+
+    pos.currentPrice = currentPrice;
+    const profitPercent = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
+    pos.currentProfitPercent = profitPercent;
+
+    if (currentPrice > pos.highestPrice) {
+      pos.highestPrice = currentPrice;
+      pos.peakProfitPercent = profitPercent;
+    }
+
+    const currentLevel = getLevelIndex(profitPercent, profitLevels);
+    const peakLevel = pos.staircaseLevel ?? 0;
+
+    if (currentLevel > peakLevel) {
+      pos.staircaseLevel = currentLevel;
+      const nivelNome = profitLevels[currentLevel] >= 100 ? "🚀" : "📈";
+      console.log(`${nivelNome} Staircase ${pos.boughtToken}: subiu para nível ${currentLevel} (${profitLevels[currentLevel]}%${currentLevel >= profitLevels.length - 1 ? " — TETO!" : ""})`);
+    }
+
+    if (currentLevel <= peakLevel - dropSteps && peakLevel > 0) {
+      const locked = profitLevels[Math.max(0, peakLevel - dropSteps + 1)];
+      console.log(`🔒 Staircase fechou ${pos.boughtToken}: pico ${profitLevels[peakLevel]}%, caiu ${dropSteps} degraus → ${profitPercent.toFixed(2)}% (nível ${currentLevel}), lucro garantido ~${locked}%`);
+      this.onStaircaseCloseCallback?.(pos);
+      return "close";
+    }
+
+    if (peakLevel > 0) {
+      console.log(`📊 Staircase ${pos.boughtToken}: ${profitPercent.toFixed(2)}% (nível ${currentLevel}, pico ${peakLevel}=${profitLevels[peakLevel]}%, fecha ≤${profitLevels[Math.max(0, peakLevel - dropSteps)]}%)`);
+    }
+
+    return "hold";
+  }
+
   getOpenPositions(): OpenPosition[] {
     return Array.from(this.positions.values()).filter(p => p.status === "open");
   }
@@ -180,6 +256,31 @@ class PositionManager {
     } catch {
       return this.priceCache.get(token)?.price ?? 1.0;
     }
+  }
+
+  // ─── Persistência ───
+
+  private savePositions(): void {
+    try {
+      const open = this.getOpenPositions();
+      localStorage.setItem(POSITIONS_STORAGE_KEY, JSON.stringify(open));
+    } catch { /* localStorage indisponível (SSR, etc.) */ }
+  }
+
+  private loadPositions(): void {
+    try {
+      const raw = localStorage.getItem(POSITIONS_STORAGE_KEY);
+      if (!raw) return;
+      const saved: OpenPosition[] = JSON.parse(raw);
+      for (const pos of saved) {
+        if (pos.status === "open") {
+          this.positions.set(pos.id, pos);
+        }
+      }
+      if (saved.length > 0) {
+        console.log(`🧠 Posições restauradas do localStorage: ${saved.filter(p => p.status === "open").length} abertas`);
+      }
+    } catch { /* primeiro uso ou dados corrompidos */ }
   }
 }
 

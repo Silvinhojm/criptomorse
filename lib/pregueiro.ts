@@ -1,6 +1,8 @@
 import { pregão, type OkSignal } from "./pregão"
-import { TRADING_PAIRS, type NetworkKey, isStable } from "./real-swap-executor"
+import { TRADING_PAIRS, type NetworkKey, type TokenSymbol, isStable } from "./real-swap-executor"
 import { pairPriceFeed } from "./pair-price-feed"
+import { positionManager } from "./position-manager"
+import { volatilityTracker } from "./volatility-tracker"
 
 export interface PregueiroConfig {
   nome: string
@@ -191,6 +193,19 @@ export async function executarCicloPregueiros(rede?: string) {
 
   const redesParaEscalar: NetworkKey[] = rede ? [rede as NetworkKey] : ["arc"]
 
+  // Alimenta o volatility tracker com preços dos tokens desta rede
+  const tokensParaColetar = new Set<TokenSymbol>()
+  for (const redeAtual of redesParaEscalar) {
+    const pairs = TRADING_PAIRS[redeAtual]
+    if (pairs) {
+      for (const p of pairs) {
+        tokensParaColetar.add(p.from)
+        tokensParaColetar.add(p.to)
+      }
+    }
+  }
+  volatilityTracker.collectPrices([...tokensParaColetar]).catch(() => {})
+
   for (const pregueiro of PREGUEIROS) {
     for (const redeAtual of redesParaEscalar) {
       if (!pregueiro.config.redes.includes(redeAtual)) continue
@@ -227,6 +242,48 @@ export async function executarCicloPregueiros(rede?: string) {
           }
           pregão.receberOK(signal)
         }
+      }
+    }
+  }
+
+  // ─── Staircase: verifica posições abertas e fecha se cair 2 degraus ───
+  await verificarStaircaseFechamento(redesParaEscalar)
+}
+
+// Verifica posições abertas de cada rede e aciona fechamento via staircase
+async function verificarStaircaseFechamento(redes: NetworkKey[]) {
+  const posicoes = positionManager.getOpenPositions()
+    .filter(p => redes.includes(p.networkKey) && p.status === "open")
+
+  for (const pos of posicoes) {
+    const currentPrice = await positionManager.fetchTokenPrice(pos.boughtToken)
+
+    // Níveis dinâmicos baseados na volatilidade real do token
+    const levels = volatilityTracker.suggestLevels(pos.boughtToken)
+    const acao = positionManager.staircaseUpdate(pos.id, currentPrice, 2, levels)
+
+    if (levels[0] === 0 && levels[1] !== 3) {
+      const perfil = volatilityTracker.getProfile(pos.boughtToken)
+      console.log(`🧠 VolTracker: ${perfil}`)
+    }
+
+    if (acao === "close") {
+      // Vende sempre pra USDC (mais líquido, saldo unificado)
+      const stableDestino = "USDC"
+      const par = gerarParLabel(pos.boughtToken, stableDestino)
+      const confianca = 90
+
+      const pregueirosVirtuais = ["Staircase", "TrailingStop", "AutoClose"]
+      for (const nome of pregueirosVirtuais) {
+        pregão.receberOK({
+          pregueiro: nome,
+          rede: pos.networkKey,
+          par,
+          confianca,
+          timestamp: Date.now(),
+          fromToken: pos.boughtToken,
+          toToken: stableDestino,
+        })
       }
     }
   }
