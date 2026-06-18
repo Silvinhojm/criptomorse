@@ -37,7 +37,7 @@ const POSITIONS_STORAGE_KEY = "arcflow_open_positions";
 // Degraus da escada de lucro (%)
 // A cada novo degrau atingido, o lucro mínimo garantido sobe.
 // Se cair 2 degraus abaixo do pico, a posição fecha automaticamente.
-const PROFIT_LEVELS = [0, 3, 5, 8, 10, 15, 20, 30, 50, 70, 100];
+const PROFIT_LEVELS = [0, 4, 7, 10, 14, 18, 24, 32, 42, 55, 70, 90, 115];
 
 // Stop loss máximo — se o lucro cair abaixo disto, fecha imediatamente
 const MAX_LOSS_PERCENT = -15;
@@ -56,16 +56,16 @@ function getLevelIndex(profitPercent: number, levels?: number[]): number {
 // Trail levels: as regras de fechamento ficam mais rigidas conforme o lucro cresce
 // "quanto maior o lucro, menor a porcentagem de fechamento"
 const TRAIL_RULES = [
-  { minProfit: 0,    maxProfit: 3,    trailDrop: 80  }, // lucro < 3%: permite cair 80% do pico
-  { minProfit: 3,    maxProfit: 5,    trailDrop: 65  },
-  { minProfit: 5,    maxProfit: 10,   trailDrop: 50  }, // 50% do lucro garantido
-  { minProfit: 10,   maxProfit: 20,   trailDrop: 45  },
-  { minProfit: 20,   maxProfit: 30,   trailDrop: 40  },
-  { minProfit: 30,   maxProfit: 50,   trailDrop: 35  },
-  { minProfit: 50,   maxProfit: 70,   trailDrop: 30  }, // 70% do lucro garantido
-  { minProfit: 70,   maxProfit: 100,  trailDrop: 25  },
-  { minProfit: 100,  maxProfit: 200,  trailDrop: 20  }, // 80% do lucro garantido
-  { minProfit: 200,  maxProfit: Infinity, trailDrop: 15 }, // 85% do lucro garantido
+  { minProfit: 0,    maxProfit: 4,    trailDrop: 70  }, // lucro < 4%: caiu 70% do pico → fecha (garante 30%)
+  { minProfit: 4,    maxProfit: 7,    trailDrop: 55  },
+  { minProfit: 7,    maxProfit: 12,   trailDrop: 45  }, // 55% do lucro garantido
+  { minProfit: 12,   maxProfit: 18,   trailDrop: 40  },
+  { minProfit: 18,   maxProfit: 26,   trailDrop: 35  },
+  { minProfit: 26,   maxProfit: 38,   trailDrop: 30  },
+  { minProfit: 38,   maxProfit: 52,   trailDrop: 25  }, // 75% do lucro garantido
+  { minProfit: 52,   maxProfit: 72,   trailDrop: 22  },
+  { minProfit: 72,   maxProfit: 100,  trailDrop: 18  }, // 82% do lucro garantido
+  { minProfit: 100,  maxProfit: Infinity, trailDrop: 12 }, // 88% do lucro garantido
 ];
 
 function getTrailDrop(peakProfitPercent: number): number {

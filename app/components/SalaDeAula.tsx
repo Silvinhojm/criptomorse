@@ -76,7 +76,7 @@ export function SalaDeAula() {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6, marginBottom: 12 }}>
         <Quadro label="🎓 Agentes" valor={`${ranking.length}`} />
         <Quadro label="📝 Avaliações" valor={`${turmaStats.totalTrades}`} />
-        <Quadro label="📊 Média da Turma" valor={`${mediaTurma.toFixed(1)}`} cor="#fbbf24" />
+        <Quadro label="📊 Média" valor={`${mediaTurma.toFixed(1)}`} cor="#fbbf24" />
         <Quadro label="🥇 Primeiro" valor={turmaStats.bestAgent ?? "—"} cor="#22c55e" />
       </div>
 
@@ -117,6 +117,7 @@ export function SalaDeAula() {
 
               <div style={{ display: "flex", gap: 8, fontSize: 9, color: "#6b7280", flexWrap: "wrap" }}>
                 <span>{grade.nome}</span>
+                <span style={{ color: "#d4a574" }}>🏟️ {ag.points.toFixed(0)} pts</span>
                 <span>✅ {ag.wins}V</span>
                 <span>❌ {ag.losses}D</span>
                 <span>📈 {ag.winRate.toFixed(0)}%</span>

@@ -32,6 +32,7 @@ function registrarVoto(voto: VotoRegistro) {
 async function avaliarVotosPassados(redeAtual: NetworkKey) {
   const agora = Date.now()
   const avaliados = new Set<string>()
+  const results: { agentName: string; stake: number }[] = []
   for (const voto of historicoVotos) {
     if (voto.networkKey !== redeAtual) continue
     if (agora - voto.timestamp < MIN_AVALIACAO_MS) continue
@@ -47,10 +48,8 @@ async function avaliarVotosPassados(redeAtual: NetworkKey) {
 
     let profitPercent = 0
     if (voto.action === "buy") {
-      // Recomendou comprar: lucro se preço subiu
       profitPercent = ((priceAgora - voto.priceAtVote) / voto.priceAtVote) * 100
     } else {
-      // Recomendou vender: lucro se preço caiu
       profitPercent = ((voto.priceAtVote - priceAgora) / voto.priceAtVote) * 100
     }
 
@@ -74,7 +73,26 @@ async function avaliarVotosPassados(redeAtual: NetworkKey) {
       timestamp: agora,
       networkKey: redeAtual,
     })
+
+    // Pontuação competitiva: stake baseado na confiança e pontos atuais
+    const score = accountant.getAgentScore(voto.agentName)
+    if (score && score.points > 0) {
+      const stake = score.points * (voto.confidence / 100) * 0.15
+      const isCorrect = profitPercent > 0
+      results.push({
+        agentName: voto.agentName,
+        stake: isCorrect ? stake : -stake,
+      })
+    }
   }
+
+  if (results.length > 0) {
+    accountant.competitiveTransfer(results)
+    const winners = results.filter(r => r.stake > 0).length
+    const losers = results.filter(r => r.stake < 0).length
+    pregão.adicionarLog(`🏟️ Competitivo: ${winners} ganharam pontos, ${losers} perderam`)
+  }
+
   if (avaliados.size > 0) {
     pregão.adicionarLog(`📚 Sala de aula: ${avaliados.size} votos avaliados — agentes aprendendo sem trade real`)
   }
@@ -534,19 +552,17 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
     }
   }
 
-  // Aprendizado: pondera confiança pelo score histórico do agente
-  const ranking = accountant.getRanking()
-  const maxScore = ranking.length > 0 ? Math.max(...ranking.map(r => r.score)) : 0
-  if (maxScore > 0) {
-    for (const v of votes) {
-      const score = accountant.getAgentScore(v.agentName)
-      if (!score || score.totalTrades < 3 || score.score <= 0) continue
-      const scoreRatio = score.score / maxScore // 0 a 1
-      const original = v.confidence
-      v.confidence = Math.min(95, Math.round(v.confidence * (1.0 + scoreRatio * 0.15)))
-      if (v.confidence !== original) {
-        pregão.adicionarLog(`🧠 ${v.agentName}: score ${score.score.toFixed(1)} ajustou confiança ${original}% → ${v.confidence}%`)
-      }
+  // Pondera confiança pelos pontos competitivos
+  // Agentes com mais pontos têm mais peso na decisão
+  for (const v of votes) {
+    const score = accountant.getAgentScore(v.agentName)
+    if (!score || score.points <= 0) continue
+    const pointsRatio = score.points / 500 // 0 a 1
+    const original = v.confidence
+    // Abaixo de 1/N da piscina → penalidade leve; acima → boost
+    v.confidence = Math.min(95, Math.round(v.confidence * (0.8 + pointsRatio * 0.4)))
+    if (v.confidence !== original) {
+      pregão.adicionarLog(`🏟️ ${v.agentName}: ${score.points.toFixed(0)} pts (${(pointsRatio * 100).toFixed(0)}%) ajustou confiança ${original}% → ${v.confidence}%`)
     }
   }
 

@@ -35,13 +35,68 @@ export interface AgentScore {
   score: number;
   streak: number;
   lastDecide: "buy" | "sell" | "hold" | null;
+  points: number;
 }
 
 const STORAGE_KEY = "arcflow_accountant_reports";
+const TOTAL_POOL = 500;
 
 class Accountant {
   private reports: TradeReport[] = [];
   private agentScores: Map<string, AgentScore> = new Map();
+  private poolInitialized = false;
+
+  private initPool() {
+    if (this.poolInitialized) return;
+    this.poolInitialized = true;
+    const agents = Array.from(this.agentScores.keys());
+    if (agents.length === 0) return;
+    const each = Math.floor(TOTAL_POOL / agents.length);
+    let remainder = TOTAL_POOL - each * agents.length;
+    for (const name of agents) {
+      const a = this.agentScores.get(name)!;
+      a.points = each + (remainder > 0 ? 1 : 0);
+      if (remainder > 0) remainder--;
+    }
+  }
+
+  // Zero-sum competitive transfer: winners split the stake lost by losers
+  // Keeps TAMANHO_PISCINA constant across all agents
+  competitiveTransfer(results: { agentName: string; stake: number }[]) {
+    const losers = results.filter(r => r.stake < 0);
+    const winners = results.filter(r => r.stake > 0);
+    if (losers.length === 0 || winners.length === 0) return;
+
+    const totalLost = losers.reduce((s, r) => s + Math.abs(r.stake), 0);
+    const eachWin = totalLost / winners.length;
+
+    for (const w of winners) {
+      const a = this.agentScores.get(w.agentName);
+      if (a) a.points += eachWin;
+    }
+    for (const l of losers) {
+      const a = this.agentScores.get(l.agentName);
+      if (a) a.points = Math.max(1, a.points - Math.abs(l.stake));
+    }
+
+    // Rebalance to ensure total stays at TOTAL_POOL (fix rounding drift)
+    const currentTotal = Array.from(this.agentScores.values()).reduce((s, a) => s + a.points, 0);
+    if (Math.abs(currentTotal - TOTAL_POOL) > 1) {
+      const diff = TOTAL_POOL - currentTotal;
+      const top = this.getRanking();
+      if (top.length > 0) top[0].points += diff;
+    }
+  }
+
+  /** Vota em cada agente: positivo se acertou, negativo se errou */
+  getPointsShare(): Map<string, number> {
+    const total = Array.from(this.agentScores.values()).reduce((s, a) => s + a.points, 0);
+    const map = new Map<string, number>();
+    for (const [name, a] of this.agentScores) {
+      map.set(name, total > 0 ? a.points / total : 1 / Math.max(1, this.agentScores.size));
+    }
+    return map;
+  }
 
   constructor() {
     this._load();
@@ -79,8 +134,10 @@ class Accountant {
         agentName: report.agentName,
         totalTrades: 0, wins: 0, losses: 0, winRate: 0,
         totalProfit: 0, avgProfit: 0, bestTrade: 0, worstTrade: 0,
-        score: 0, streak: 0, lastDecide: null,
+        score: 0, streak: 0, lastDecide: null, points: 0,
       };
+      this.agentScores.set(report.agentName, score);
+      this.initPool();
     }
 
     score.totalTrades++;
