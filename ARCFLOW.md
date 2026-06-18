@@ -557,6 +557,14 @@ Se for adicionar um novo token, atualizar em **todos** os lugares:
 - Pontos abaixo da média → penalidade leve
 - Pontos acima da média → boost na confiança
 
+### Feature: "Variação 24h como meta de lucro" (position-manager.ts)
+- `fetchTokenChange24h(token)` busca variação percentual 24h da CoinGecko
+- `/api/price` agora retorna `{ prices, change24h }` com `include_24hr_change=true`
+- No sell loop: só vende se `profitPercent >= variation24h * 0.9`
+- Exemplo: ETH varia 3% → só vende com lucro >= 2.7%
+- Garante que posição busca capturar a maior parte do movimento diário
+- Se variação 24h for muito pequena (< 0.5%), usa fallback 2%
+
 ### Regra: "Só compra volátil se caixa livre"
 - Pregão/Pregueiros/Agentes não enviam OKs de compra (stable→volátil) enquanto houver posição aberta
 - Vendas (volátil→stable) continuam livres para fechar posição com lucro

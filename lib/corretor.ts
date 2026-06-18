@@ -154,7 +154,8 @@ class Corretor {
     const coinId = coinIds[token] || token.toLowerCase()
     try {
       const res = await fetch(`/api/price?ids=${coinId}`)
-      const data = await res.json()
+      const body = await res.json()
+      const data = body.prices ?? body
       return data[coinId] ?? 1
     } catch {
       return 1

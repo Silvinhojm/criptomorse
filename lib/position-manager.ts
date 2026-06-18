@@ -280,7 +280,8 @@ class PositionManager {
     try {
       const res = await fetch(`/api/price?ids=${coinId}`);
       if (!res.ok) return this.priceCache.get(token)?.price ?? 1.0;
-      const data = await res.json();
+      const body = await res.json();
+      const data = body.prices ?? body;
       const price = data[coinId] ?? 1.0;
       if (price > 0) {
         this.priceCache.set(token, { price, timestamp: Date.now() });
@@ -288,6 +289,28 @@ class PositionManager {
       return price;
     } catch {
       return this.priceCache.get(token)?.price ?? 1.0;
+    }
+  }
+
+  // Busca variação percentual 24h da CoinGecko
+  async fetchTokenChange24h(token: TokenSymbol): Promise<{ change24h: number; variation24h: number }> {
+    const coinIds: Record<string, string> = {
+      WETH: "ethereum", WMATIC: "matic-network", ARB: "arbitrum",
+      WBTC: "bitcoin", SOL: "solana",
+    };
+    const coinId = coinIds[token];
+    if (!coinId) return { change24h: 0, variation24h: 2 };
+
+    try {
+      const res = await fetch(`/api/price?ids=${coinId}`);
+      if (!res.ok) return { change24h: 0, variation24h: 2 };
+      const body = await res.json();
+      const changeData = body.change24h ?? {};
+      const change24h = changeData[coinId] ?? 0;
+      const variation24h = Math.abs(change24h);
+      return { change24h, variation24h: Math.max(variation24h, 0.5) };
+    } catch {
+      return { change24h: 0, variation24h: 2 };
     }
   }
 

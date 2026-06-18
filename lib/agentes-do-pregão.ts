@@ -135,7 +135,8 @@ async function getTokenPrice(token: TokenSymbol): Promise<number> {
   try {
     const res = await fetch(`/api/price?ids=${coinId}`)
     if (!res.ok) return 1.0
-    const data = await res.json()
+    const body = await res.json()
+    const data = body.prices ?? body
     return data[coinId] ?? 1.0
   } catch { return 1.0 }
 }
@@ -684,6 +685,14 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
     const profitUSD = positionValueUSD * (profitPercent / 100)
     if (profitUSD < estimatedGasUSD && profitPercent > 0) {
       pregão.adicionarLog(`⏳ ${pos.boughtToken}: lucro $${profitUSD.toFixed(2)} não cobre gas (~$${estimatedGasUSD.toFixed(2)}) — segurando`)
+      continue
+    }
+
+    // Variação 24h como meta de lucro: só vende se lucro >= 90% da variação diária
+    const { change24h, variation24h } = await positionManager.fetchTokenChange24h(pos.boughtToken as TokenSymbol)
+    const profitTarget = variation24h * 0.9
+    if (profitPercent < profitTarget && profitPercent > 0) {
+      pregão.adicionarLog(`📊 ${pos.boughtToken}: ${profitPercent.toFixed(1)}% < meta ${profitTarget.toFixed(1)}% (90% da variação 24h=${variation24h.toFixed(1)}%, change=${change24h.toFixed(1)}%) — segurando`)
       continue
     }
 
