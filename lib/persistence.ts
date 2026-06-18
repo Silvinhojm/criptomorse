@@ -1,5 +1,6 @@
 const TRADE_HISTORY_KEY = "arcflow_trade_history";
 const TRADER_STATE_KEY = "arcflow_trader_state";
+const CIRCUIT_BREAKER_KEY = "arcflow_circuit_breaker";
 
 async function apiCall(url: string, method: string, body?: any): Promise<any> {
   try {
@@ -70,5 +71,14 @@ export function clearPersistence(): void {
   try {
     localStorage.removeItem(TRADE_HISTORY_KEY);
     localStorage.removeItem(TRADER_STATE_KEY);
+    localStorage.removeItem(CIRCUIT_BREAKER_KEY);
   } catch { /* ignore */ }
+}
+
+export function saveCircuitBreakerState(state: any): void {
+  setLocal(CIRCUIT_BREAKER_KEY, state);
+}
+
+export function loadCircuitBreakerState<T>(fallback: T): T {
+  return getLocal(CIRCUIT_BREAKER_KEY, fallback);
 }

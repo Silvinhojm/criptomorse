@@ -4,6 +4,9 @@ import { pairPriceFeed } from "./pair-price-feed"
 import { positionManager } from "./position-manager"
 import { volatilityTracker } from "./volatility-tracker"
 
+// Debounce: evita OKs duplicados do Staircase/TrailingStop/AutoClose no mesmo ciclo
+const staircaseCloseSent = new Set<string>()
+
 export interface PregueiroConfig {
   nome: string
   apelido: string
@@ -243,10 +246,11 @@ export async function executarCicloPregueiros(rede?: string) {
             fromToken: decisao.fromToken,
             toToken: decisao.toToken
           }
-          // Só compra volátil se não houver posição aberta
+          // Máximo de 3 posições simultâneas
           const comprandoVolatil = isStable(decisao.fromToken) && !isStable(decisao.toToken)
-          if (comprandoVolatil && positionManager.getOpenPositions().length > 0) {
-            console.log(`⏳ ${pregueiro.config.nome} — posição aberta, aguardando fechamento com lucro antes de comprar ${decisao.toToken}`)
+          const MAX_POSICOES = 3
+          if (comprandoVolatil && positionManager.getOpenPositions().length >= MAX_POSICOES) {
+            console.log(`⏳ ${pregueiro.config.nome} — ${MAX_POSICOES} posições atingidas, aguardando vaga`)
             continue
           }
           pregão.receberOK(signal)
@@ -270,6 +274,7 @@ export async function executarCicloPregueiros(rede?: string) {
 
 // Verifica posições abertas de cada rede e aciona fechamento via staircase
 async function verificarStaircaseFechamento(redes: NetworkKey[]) {
+  staircaseCloseSent.clear()
   const posicoes = positionManager.getOpenPositions()
     .filter(p => redes.includes(p.networkKey) && p.status === "open")
 
@@ -286,6 +291,10 @@ async function verificarStaircaseFechamento(redes: NetworkKey[]) {
     }
 
     if (acao === "close") {
+      // Debounce: evita OKs duplicados no mesmo ciclo
+      if (staircaseCloseSent.has(pos.id)) continue
+      staircaseCloseSent.add(pos.id)
+
       // Marca como fechada imediatamente para evitar acumulação
       // Se o swap falhar, o reconcile recria a posição com o saldo residual
       positionManager.closePosition(pos.id, currentPrice)

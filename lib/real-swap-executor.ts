@@ -245,7 +245,8 @@ class RealSwapExecutor {
     try {
       const res = await fetch(`/api/price?ids=${coinId}`);
       if (!res.ok) return this.priceCache.get(token)?.price ?? 1.0;
-      const data = await res.json();
+      const body = await res.json();
+      const data = body.prices ?? body;
       const price = data[coinId] || 1.0;
       if (price > 0) {
         this.priceCache.set(token, { price, timestamp: Date.now() });

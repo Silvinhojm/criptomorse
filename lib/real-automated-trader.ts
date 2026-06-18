@@ -155,11 +155,17 @@ class RealAutomatedTrader {
       this.log(`Par volatil: ${best.pair.label} — comprando e abrindo posicao`);
       const result = await this._executeSwap(best.pair.from, best.pair.to, adjustedTrade.netAmount);
       if (result.success) {
+        if (result.toAmount <= 0) {
+          this.log(`⚠️ Swap executou mas toAmount = ${result.toAmount} — pulando registro de posição`);
+          return { id, action: "BUY" as const, fromToken: best.pair.from, toToken: best.pair.to, fromAmount: tradeAmount, toAmount: 0, profit: 0, txHash: result.txHash, explorerUrl: result.explorerUrl, message: "toAmount zero", timestamp, confirmed: false };
+        }
         const volatileToken = best.pair.to;
         const paidToken = best.pair.from;
-        const currentPrice = await positionManager.fetchTokenPrice(volatileToken);
+        const currentPrice = result.toAmount > 0
+          ? tradeAmount / result.toAmount
+          : await positionManager.fetchTokenPrice(volatileToken);
         positionManager.openPosition(this.networkKey, volatileToken, paidToken, result.toAmount, tradeAmount, currentPrice);
-        this.log(`Posicao ${volatileToken} aberta: ${result.toAmount.toFixed(6)} @ $${currentPrice.toFixed(2)} (trailing stop ativo)`);
+        this.log(`Posicao ${volatileToken} aberta: ${result.toAmount.toFixed(6)} @ $${currentPrice.toFixed(2)} (entrada real via swap)`);
       }
       const profit = 0;
       this.totalProfit += profit;

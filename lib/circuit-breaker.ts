@@ -1,4 +1,6 @@
-﻿type CircuitBreakerState = {
+﻿import { saveCircuitBreakerState, loadCircuitBreakerState } from "./persistence";
+
+type CircuitBreakerState = {
   isPanicActive: boolean;
   panicReason: string | null;
   panicTimestamp: string | null;
@@ -24,7 +26,11 @@ const initialState: CircuitBreakerState = {
   peakNetEquity: 0,
 };
 
-let state: CircuitBreakerState = { ...initialState };
+let state: CircuitBreakerState = loadCircuitBreakerState<CircuitBreakerState>({ ...initialState });
+// Se o panic estava ativo no F5, mantém — segurança
+if (state.isPanicActive) {
+  console.warn(`🔁 Circuit breaker restaurado do F5: pânico ativo desde ${state.panicTimestamp}`);
+}
 
 export function getCircuitBreakerState(): CircuitBreakerState {
   return { ...state };
@@ -40,6 +46,7 @@ export function setTestnetMode(isTestnet: boolean): void {
     state.maxLossesBeforePanic = 5;
     state.maxDrawdownPercent = 10;
   }
+  saveCircuitBreakerState(state);
 }
 
 export function recordTradeResult(profit: number): CircuitBreakerState {
@@ -81,6 +88,7 @@ export function recordTradeResult(profit: number): CircuitBreakerState {
     }
   }
 
+  saveCircuitBreakerState(state);
   return { ...state };
 }
 
@@ -91,6 +99,7 @@ export function recordError(agentName: string, errorType: string): CircuitBreake
   if (state.consecutiveLosses >= state.maxLossesBeforePanic && !state.isPanicActive) {
     activatePanic(`Erros consecutivos: ${state.consecutiveLosses} erros`);
   }
+  saveCircuitBreakerState(state);
   return { ...state };
 }
 
@@ -107,6 +116,7 @@ export function activatePanic(reason: string): void {
   state.panicReason = reason;
   state.panicTimestamp = new Date().toISOString();
   state.consecutiveLosses = 0;
+  saveCircuitBreakerState(state);
   console.error('🚨 MODO PÂNICO ATIVADO! 🚨 Motivo: ' + reason);
 }
 
@@ -114,6 +124,7 @@ export function resumeFromPanic(): void {
   const wasTestnet = state.isTestnet;
   state = { ...initialState };
   if (wasTestnet) setTestnetMode(true);
+  saveCircuitBreakerState(state);
   console.log('✅ Sistema retomado do modo pânico');
 }
 
@@ -121,5 +132,6 @@ export function resetCircuitBreaker(): void {
   const wasTestnet = state.isTestnet;
   state = { ...initialState };
   if (wasTestnet) setTestnetMode(true);
+  saveCircuitBreakerState(state);
   console.log('🔄 Circuit breaker resetado');
 }

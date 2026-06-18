@@ -150,7 +150,7 @@ export async function getQuote(params: SwapParams, retryCount = 0): Promise<Quot
 
     if (res.status === 429) {
       cooldownUntil = Date.now() + COOLDOWN_MS;
-      console.error(`LI.FI 429 — cooldown global de ${COOLDOWN_MS/1000}s ativado`);
+      console.warn(`LI.FI 429 — cooldown global de ${COOLDOWN_MS/1000}s ativado`);
       return null; // não retry, só volta depois do cooldown
     }
 

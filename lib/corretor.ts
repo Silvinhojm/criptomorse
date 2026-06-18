@@ -67,7 +67,9 @@ class Corretor {
 
         if (isStableFrom && !isStableTo) {
           profit = 0
-          const currentPrice = await this.buscarPreco(toKey)
+          const currentPrice = resultado.toAmount > 0
+            ? valorTrade / resultado.toAmount
+            : await this.buscarPreco(toKey)
           positionManager.openPosition(
             redeKey,
             toKey,
@@ -76,7 +78,7 @@ class Corretor {
             valorTrade,
             currentPrice
           )
-          this.log(`📦 Posição ${toKey} aberta: ${resultado.toAmount.toFixed(6)} @ $${currentPrice.toFixed(2)}`)
+          this.log(`📦 Posição ${toKey} aberta: ${resultado.toAmount.toFixed(6)} @ $${currentPrice.toFixed(2)} (entrada real via swap)`)
         }
 
         if (!isStableFrom && isStableTo) {

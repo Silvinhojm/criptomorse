@@ -270,6 +270,13 @@ class Accountant {
       ranking: this.getRanking(),
     };
   }
+
+  resetScores() {
+    this.reports = [];
+    this.agentScores.clear();
+    this.initPool();
+    try { localStorage.removeItem(STORAGE_KEY); } catch {}
+  }
 }
 
 export const accountant = new Accountant();

@@ -103,19 +103,27 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
 │    │   • Recomendou comprar → lucro se preço subiu            │
 │    │   • Recomendou vender → lucro se preço caiu              │
 │    │   → accountant.addReport() simulado ($5 fictício)        │
+│    ├── Testnet: avaliação pulada (agentes praticam sem          │
+│    │   impacto no ranking competitivo)                          │
 │    ├── Confiança ajustada por volatilidade (VolTracker)        │
-│    ├── Confiança ponderada pelo score histórico do agente      │
-│    │   (accountant.getAgentScore → score/maxScore pondera      │
-│    │    a confiança: agentes mais acertativos pesam mais)       │
-│    └── Síntese: maior score composto vence (totalConfidence    │
-│        × número de votos)                                       │
+│    ├── Confiança ponderada pelos pontos competitivos (points/500)│
+│    ├── Confiança ajustada pelo streak do agente                │
+│    │   (streak < 0: conf *= 1 + streak×0.08; streak ≤ -5: min 15%)│
+│    │   (streak > 0: conf *= 1 + streak×0.04; max 1.3x)        │
+│    ├── 🏆 Top 3 agents decidem o trade                         │
+│    │   (ranking do accountant define os 3 melhores;            │
+│    │    se 2 dos 3 concordam no mesmo par → ordem gerada)      │
+│    ├── Fallback: qualquer 2+ agentes no mesmo par se Top 3 sem │
+│    │   consenso                                                 │
 └──────────────────────────┬──────────────────────────────────────┘
                            │ OKs
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 3. PREGÃO (pregão.ts)                                          │
-│    ├── Quando 3+ OKs para o mesmo par → gera ORDEM             │
-│    ├── ⚠️ Só gera ordem de COMPRA se NÃO houver posição aberta │
+│    ├── Agentes: Top 3 agents decidem (2+ no mesmo par → ORDEM)│
+│    ├── Pregueiros: 3+ OKs para o mesmo par → gera ORDEM       │
+│    ├── ⚠️ Máximo de 3 posições simultâneas (MAX_POSITIONS=3)      │
+│    ├── Pregão calcula valor dinâmico: saldo/vagasRestantes        │
 │    │   (check em pregueiro.ts + agentes-do-pregão.ts)           │
 │    ├── Vendas (volátil→stable) nunca são bloqueadas             │
 │    ├── Cria OrdemExecucao com participantes e confiança média  │
@@ -224,7 +232,7 @@ dropSteps = 2
 // ARB:    USDC→WETH, WETH→USDC, USDC→ARB, ARB→USDC, etc.
 ```
 
-### 4.4 Config de Rede (real-swap-executor.ts)
+### 4.4 Config de Rede + Gas Oracle (real-swap-executor.ts + gas-price-oracle.ts)
 
 ```typescript
 GAS_COST_ESTIMATE: {
@@ -234,30 +242,58 @@ GAS_COST_ESTIMATE: {
   ethereum: 1.50,
   arbitrum: 0.03,
 }
+
+// Gas real da RPC (gas-price-oracle.ts):
+// getGasCost(network) → provider.getFeeData() → gwei → USD
+// Fallback para GAS_COST_ESTIMATE se RPC falhar
+// Cache de 30s
+
+// Usado por agentes (agentes-do-pregão.ts):
+// - Venda: profitUSD >= gasCost × 3
+// - Compra mainnet: aborta se gasCost > 50% do trade
 ```
 
 ### 4.5 Pregão (pregão.ts)
 
 ```typescript
-LIMIAR_OK = 3      // Quantos OKs para gerar uma ordem
+LIMIAR_OK = 3      // Quantos OKs para gerar uma ordem (pregueiros)
 JANELA_MS = 30000  // 30s — OKs expiram após este tempo
 ORDEM_TIMEOUT_MS = 120000  // 2min — ordem "preparando"/"pronto"/"executando" expira
+
+// Agentes usam Top 3 (accountant ranking): 2 dos Top 3 = ordem
+// Fallback: qualquer 2+ agentes no mesmo par
 ```
 
 ### 4.6 Agent Learning (corretor.ts + accountant.ts)
 
 ```typescript
 // Score composto por agente:
-// score = winRate * 0.6 + max(0, avgProfit) * 30 + streak * 5
+// score = winRate * 0.6 + min(avgProfit, 1) * 30 + max(0, streak) * 1
+// streak * 5 → max(0, streak) * 1 (streak negativa não domina)
+// min(avgProfit, 1) * 30 (capped em $1 pra não distorcer)
 // Mínimo 3 trades para entrar no ranking
 
-// Peso do score na confiança do voto (agentes-do-pregão.ts):
-// confiança *= 0.5 + (score / maxScore) * 0.5
-// Agentes com score máximo mantêm 100% da confiança
-// Agentes com score 0 perdem 50% da confiança
+// Sistema competitivo de 500 pontos (zero-sum):
+// - 500 pontos totais distribuídos entre todos agentes
+// - initPool() redistribui igualmente sempre que novos agentes entram
+// - Cada avaliação: stake = points * (confidence/100) * 0.15
+// - Acertou direção → ganha stake do perdedor; errou → perde stake
+// - Pool sempre soma 500 (rebalanceamento automático)
 
-// Quando um trade conclui, cada agente que votou recebe:
-// profit / número_de_agentes_votantes
+// Peso na confiança do voto (agentes-do-pregão.ts):
+// confidence *= (0.8 + pointsRatio * 0.4)
+// pointsRatio = points / 500
+// Abaixo de 1/N da piscina → penalidade leve; acima → boost
+
+// Streak learning:
+// streak < 0: confidence *= max(0.2, 1 + streak * 0.08)
+// streak > 0: confidence *= min(1.3, 1 + streak * 0.04)
+// streak ≤ -5: confidence = max(15, confidence) — nunca 0%, pra poder recuperar
+
+// 🏆 Top 3 agents decidem:
+// Ranking do accountant → top 3 têm voto decisivo
+// Se 2 dos 3 concordam no mesmo par → ordem gerada
+// Fallback: qualquer 2+ agentes no mesmo par
 ```
 
 ### 4.7 Dust Threshold (position-manager.ts)
@@ -318,9 +354,18 @@ Cada agente vota com confiança 0-90% (cap. removemos os tetos quebrados):
 | **NVIDIAgent** | LLM NIM (probability × liquidity) | `pairPriceFeed` |
 | **Synthesis** | Combina votos, decide | `pairScores` |
 
-### Ajuste do VolatilityTracker:
-Após todos votarem, a confiança de cada voto é multiplicada por:
-- `getConfidenceMultiplier(tokenVolatil)` — reduz se vol está subindo
+### Ajustes de confiança (ordem de aplicação):
+1. **VolatilityTracker**: `getConfidenceMultiplier(tokenVolatil)` — reduz se vol está subindo
+2. **Pontos competitivos**: `confidence *= 0.8 + (points/500) * 0.4`
+3. **Streak learning**: `confidence *= streakMult` (negativo reduz, positivo aumenta)
+   - Streak ≤ -5: mínimo 15% (nunca zero)
+
+### 🏆 Top 3 agents decidem:
+- Ranking do accountant define os 3 melhores agentes
+- Só os votos do Top 3 com confiança > 0% contam pra decisão
+- Se 2 dos 3 concordam no mesmo par → ordem gerada
+- Fallback: qualquer 2+ agentes no mesmo par se Top 3 sem consenso
+- Todos agentes continuam votando (aprendizado), mas só o Top 3 tem poder decisório
 
 ---
 
@@ -566,9 +611,12 @@ Se for adicionar um novo token, atualizar em **todos** os lugares:
 - Se variação 24h for muito pequena (< 0.5%), usa fallback 2%
 
 ### Regra: "Só compra volátil se caixa livre"
-- Pregão/Pregueiros/Agentes não enviam OKs de compra (stable→volátil) enquanto houver posição aberta
+- Antes: Pregão/Pregueiros/Agentes não enviavam OKs de compra (stable→volátil) enquanto houvesse **qualquer** posição aberta
+- Agora: permite até **3 posições simultâneas** (MAX_POSITIONS = 3)
+- Valor por trade é calculado dinamicamente: `(saldoStable * 0.9) / vagasRestantes`
+- O `Valor por trade` da UI vira teto máximo — Pregão decide o valor real
 - Vendas (volátil→stable) continuam livres para fechar posição com lucro
-- Garante ciclo completo: compra → lucro → venda → caixa de volta → nova compra
+- Garante diversificação: múltiplas oportunidades sem precisar fechar uma pra abrir outra
 
 ### Problema: "LI.FI rota fly com estimate 0"
 - Mainnet: `toEstimate <= 0` aborta com `_fail` — não envia TX que vai reverter
@@ -583,6 +631,66 @@ Se for adicionar um novo token, atualizar em **todos** os lugares:
   - `min(avgProfit, 1) * 30` (capped em $1 pra não distorcer)
 - `agentes-do-pregão.ts` pondera confiança dos votos por points/500 (competitivo)
 - Dados persistem em localStorage (`arcflow_accountant_reports`)
+
+### Feature: "Gas oracle nos agentes" (agentes-do-pregão.ts)
+- Substitui hardcoded `$0.50` por `gasPriceOracle.getGasCost(redeAtual)` 
+- Venda: só executa se `profitUSD >= gasCost × 3`
+- Compra (mainnet): aborta se `gasCost > 50% do valor do trade`
+- Dinâmico por rede — Polygon ~$0.08, Arc ~$0.006, Ethereum ~$1.50
+- Gas real da RPC com cache de 30s (gas-price-oracle.ts)
+
+### Feature: "Streak learning — agentes perdem confiança com derrotas"
+- Agent com streak negativo vota com confiança reduzida (8% por derrota consecutiva)
+- Streak ≤ -5: confiança cai pra mínimo 15% (nunca zero)
+- Streak positivo: +4% por vitória consecutiva (max 1.3x)
+- Sistema natural de feedback: errar → menos influência → acertar → mais influência
+
+### Feature: "🏆 Top 3 agents decidem o trade"
+- Todos agentes votam, mas só o Top 3 do ranking do accountant tem voto decisivo
+- Se 2 dos Top 3 concordam no mesmo par → OKs enviados ao Pregão
+- Fallback: qualquer 2+ agentes no mesmo par se Top 3 não chegar a consenso
+- Substitui o antigo sistema de "3+ agentes no mesmo par"
+- Democracia representativa: competição para entrar no Top 3
+
+### Feature: "Testnet isolada do ranking competitivo"
+- `avaliarVotosPassados` retorna cedo em testnet
+- Agentes praticam votação sem perder streak nem pontos competitivos
+- Apenas mainnet (Polygon, Base, Ethereum) afeta o ranking
+- Testnet: votos antigos são limpos sem avaliação
+
+### Problema: "LI.FI 429 rate limit poluindo console"
+- `console.error` → `console.warn` no lifi-executor.ts
+- Rate limit é comportamento esperado, não erro
+
+### Feature: "🔄 Múltiplas posições simultâneas (até 3)"
+- Substitui o antigo bloqueio "uma posição por vez"
+- MAX_POSITIONS = 3 em agentes-do-pregão.ts e pregueiro.ts
+- Pregão divide saldo disponível pelas vagas restantes
+- Ex: $18 com 2 posições abertas → $18 * 0.9 / 1 vaga = $16.20 para o próximo trade
+- Ex: $18 com 0 posições → $18 * 0.9 / 3 vagas = $5.40 por trade (até 3 trades)
+- Rotation implícita: posição estagnada pode ser fechada via Staircase para liberar vaga
+
+### Fix: "💰 Preço de entrada real (não $1.00)"
+- `real-automated-trader.ts`: entryPrice usa `tradeAmount / result.toAmount` (preço real do swap) em vez de `fetchTokenPrice` que caía pra $1.00
+- `corretor.ts`: mesma lógica — `valorTrade / resultado.toAmount`
+- Swap falhou com toAmount=0 → posição não é registrada (retorna early)
+- Elimina o "184900% de lucro fantasma" e o loop de venda sem saldo
+
+### Fix: "🔇 Debounce nos OKs do Staircase/TrailingStop/AutoClose"
+- `pregueiro.ts`: Set `staircaseCloseSent` rastreia positions que já geraram OKs de fechamento no ciclo atual
+- Limpo no início de cada `verificarStaircaseFechamento()`
+- Evita dezenas de OKs idênticos no mesmo segundo
+
+### Fix: "💾 Persistência do circuit breaker (localStorage)"
+- `circuit-breaker.ts`: estado salvo em `localStorage` via `arcflow_circuit_breaker`
+- Persiste após cada `setTestnetMode`, `recordTradeResult`, `recordError`, `activatePanic`, `resumeFromPanic`, `resetCircuitBreaker`
+- Restaura no carregamento: se pânico estava ativo no F5, mantém (segurança)
+- `persistence.ts`: funções `saveCircuitBreakerState` / `loadCircuitBreakerState`
+
+### Fix: "🎯 Sala de aula: stable-stable não conta micro-variação como acerto"
+- `agentes-do-pregão.ts` `avaliarVotosPassados`: se ambos os tokens são stables, spread precisa ser ≥ 0.1% pra contar como acerto
+- Variações menores que 0.1% em 5 minutos são ruído e não geram pontuação
+- Para voláteis, a lógica de direção do preço permanece inalterada
 
 ### Problema: "Lucro sempre $0.0000"
 - Testnet: swaps simulados não têm slippage real
