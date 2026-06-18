@@ -154,9 +154,25 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
 ### 4.1 Staircase (position-manager.ts)
 
 ```typescript
-PROFIT_LEVELS = [0, 3, 5, 8, 10, 15, 20, 30, 50, 70, 100]
-// Degraus padrão. Usado se VolatilityTracker não tiver dados.
-// Cada token pode ter níveis diferentes sugeridos pelo tracker.
+// Degraus de lucro expandidos — segura mais tempo por degrau
+PROFIT_LEVELS = [0, 4, 7, 10, 14, 18, 24, 32, 42, 55, 70, 90, 115]
+
+// Trail rules mais rigorosos (menor trailDrop, mais lucro garantido)
+TRAIL_RULES = [
+  { minProfit: 0,    maxProfit: 4,    trailDrop: 70  }, // garante 30%
+  { minProfit: 4,    maxProfit: 7,    trailDrop: 55  },
+  { minProfit: 7,    maxProfit: 12,   trailDrop: 45  }, // garante 55%
+  { minProfit: 12,   maxProfit: 18,   trailDrop: 40  },
+  { minProfit: 18,   maxProfit: 26,   trailDrop: 35  },
+  { minProfit: 26,   maxProfit: 38,   trailDrop: 30  },
+  { minProfit: 38,   maxProfit: 52,   trailDrop: 25  }, // garante 75%
+  { minProfit: 52,   maxProfit: 72,   trailDrop: 22  },
+  { minProfit: 72,   maxProfit: 100,  trailDrop: 18  }, // garante 82%
+  { minProfit: 100,  maxProfit: Infinity, trailDrop: 12 }, // garante 88%
+]
+
+// Venda só se lucro cobrir gas (~$0.50 em Polygon)
+SELL_MIN_PROFIT_USD = 0.50
 
 MAX_POSITION_AGE_MS = 12 * 60 * 60 * 1000
 // 12h — força fechamento SÓ se a posição já viu lucro (peakProfitPercent > 0)
@@ -512,33 +528,52 @@ Se for adicionar um novo token, atualizar em **todos** os lugares:
 ### Feature: "Sala de aula — aprendizado simulado dos votos"
 - Cada voto de agente é registrado com `{ agentName, par, preço, timestamp }`
 - A cada ciclo, votos com >5min são avaliados contra o preço atual
-- Se o voto teria dado lucro → score sobe (simulado com $5 fictício)
-- Se teria dado prejuízo → score desce
+- Se o voto teria dado lucro → score+ e ganha pontos competitivos
+- Se teria dado prejuízo → score- e perde pontos competitivos
+- Simulado com $5 fictício para o score tradicional
 - Persiste em localStorage (`arcflow_vote_history`)
-- Agentes aprendem mesmo sem trades reais — toda votação vira treino
 
 ### UI: "SalaDeAula" (app/components/SalaDeAula.tsx)
 - Componente React interativo exibido abaixo do PregãoDashboard
 - Ranking dos agentes com notas, nível (Aprendiz→Doutorado), barra de progresso
+- Exibe "🏟️ N pts" (pontos competitivos) ao lado de ✅/❌
 - Mensagens do "Professor" baseadas no desempenho recente (elogios/críticas)
 - Próximo nível com pontos faltando — gamificação do aprendizado
 - Atualiza a cada 3s via `accountant.getRanking()` e `getTeacherFeedback()`
 - Níveis: 🌱 Aprendiz (0-10) → 📗 Primeiro Grau (10-30) → 📘 Segundo Grau (30-50) → 📙 Terceiro Grau (50-70) → 🎓 Mestrado (70-85) → 🏆 Doutorado (85+)
+
+### Feature: "Sistema competitivo de 500 pontos" (accountant.ts)
+- Zero-sum: 500 pontos totais distribuídos entre todos os agentes
+- Cada avaliação de voto: `stake = points * (confidence/100) * 0.15`
+- Acertou direção do preço → ganha stake
+- Errou → perde stake (distribuído aos ganhadores)
+- `initPool()` redistribui igualmente sempre que novos agentes entram
+- Pool sempre soma 500 (rebalanceamento automático)
+
+### Regra: "Confiança por pontos competitivos"
+- Substituiu score/maxScore por points/500
+- Fórmula: `confidence *= (0.8 + pointsRatio * 0.4)`
+- Agentes com mais pontos têm mais peso nas decisões
+- Pontos abaixo da média → penalidade leve
+- Pontos acima da média → boost na confiança
 
 ### Regra: "Só compra volátil se caixa livre"
 - Pregão/Pregueiros/Agentes não enviam OKs de compra (stable→volátil) enquanto houver posição aberta
 - Vendas (volátil→stable) continuam livres para fechar posição com lucro
 - Garante ciclo completo: compra → lucro → venda → caixa de volta → nova compra
 
-### Problema: "LI.FI rota fly com estimate 0 bloqueava trades legítimos"
-- `toEstimate <= 0` não bloqueia mais a transação — só loga aviso
-- Rota "fly" às vezes retorna `toAmount: "0"` no JSON mas o `transactionRequest.data` é válido
-- Confirmação on-chain via `txResponse.wait()` detecta revert (status 0) se falhar
+### Problema: "LI.FI rota fly com estimate 0"
+- Mainnet: `toEstimate <= 0` aborta com `_fail` — não envia TX que vai reverter
+- Testnet: continua enviando (pode funcionar com rota fly)
+- Rota "fly" retorna `toAmount: "0"` no JSON, TX sempre reverte na mainnet
+- Salvou ~$5 de gas por ciclo que seria desperdiçado
 
 ### Problema: "Agentes não aprendem com os resultados"
 - `corretor.ts` agora pontua cada agente que votou na ordem após trade concluído
-- `accountant.ts` mantém score composto (winRate, lucro médio, streak)
-- `agentes-do-pregão.ts` pondera confiança dos votos pelo score histórico
+- `accountant.ts` mantém score composto: `winRate * 0.6 + min(avgProfit, 1) * 30 + max(0, streak) * 1`
+  - `streak * 5` → `max(0, streak) * 1` (streak negativa não domina mais)
+  - `min(avgProfit, 1) * 30` (capped em $1 pra não distorcer)
+- `agentes-do-pregão.ts` pondera confiança dos votos por points/500 (competitivo)
 - Dados persistem em localStorage (`arcflow_accountant_reports`)
 
 ### Problema: "Lucro sempre $0.0000"

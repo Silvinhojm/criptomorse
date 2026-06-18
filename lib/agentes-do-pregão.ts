@@ -672,6 +672,21 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
       continue
     }
 
+    // Sanity check: lucro irreal (> 100%) indica entryPrice quebrado
+    if (profitPercent > 100) {
+      pregão.adicionarLog(`⚠️ ${pos.boughtToken}: profit ${profitPercent.toFixed(1)}% irreal — entryPrice corrompido ($${pos.entryPrice.toFixed(4)}), pulando venda`)
+      continue
+    }
+
+    // Só vende se lucro estimado cobrir gas (~$0.50 em Polygon)
+    const estimatedGasUSD = 0.50
+    const positionValueUSD = pos.amountBought * currentPrice
+    const profitUSD = positionValueUSD * (profitPercent / 100)
+    if (profitUSD < estimatedGasUSD && profitPercent > 0) {
+      pregão.adicionarLog(`⏳ ${pos.boughtToken}: lucro $${profitUSD.toFixed(2)} não cobre gas (~$${estimatedGasUSD.toFixed(2)}) — segurando`)
+      continue
+    }
+
     const sellPar = `${pos.boughtToken}→USDC`
     const vendedores = uniqueAgents.size >= 2
       ? [...uniqueAgents].slice(0, 2)

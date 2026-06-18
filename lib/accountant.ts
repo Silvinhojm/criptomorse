@@ -44,13 +44,13 @@ const TOTAL_POOL = 500;
 class Accountant {
   private reports: TradeReport[] = [];
   private agentScores: Map<string, AgentScore> = new Map();
-  private poolInitialized = false;
 
   private initPool() {
-    if (this.poolInitialized) return;
-    this.poolInitialized = true;
     const agents = Array.from(this.agentScores.keys());
     if (agents.length === 0) return;
+    // Redistribui sempre que o número de agentes mudar
+    const currentTotal = agents.reduce((s, name) => s + this.agentScores.get(name)!.points, 0);
+    if (currentTotal >= TOTAL_POOL - 1 && agents.length >= 2 && agents.every(name => this.agentScores.get(name)!.points > 0)) return;
     const each = Math.floor(TOTAL_POOL / agents.length);
     let remainder = TOTAL_POOL - each * agents.length;
     for (const name of agents) {

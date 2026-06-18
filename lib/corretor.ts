@@ -147,10 +147,15 @@ class Corretor {
   }
 
   private async buscarPreco(token: TokenSymbol): Promise<number> {
+    const coinIds: Record<string, string> = {
+      WETH: "ethereum", WMATIC: "matic-network", WBTC: "bitcoin",
+      ARB: "arbitrum", SOL: "solana",
+    };
+    const coinId = coinIds[token] || token.toLowerCase()
     try {
-      const res = await fetch(`/api/price?ids=${token}`)
+      const res = await fetch(`/api/price?ids=${coinId}`)
       const data = await res.json()
-      return data[token] ?? 1
+      return data[coinId] ?? 1
     } catch {
       return 1
     }
