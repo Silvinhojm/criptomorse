@@ -554,7 +554,11 @@ class RealSwapExecutor {
       const toEstimate   = parseFloat(quote.toAmount ?? "0") / Math.pow(10, toDecimals);
       log(`✅ Rota via ${quote.tool} | Estimativa: ${toEstimate.toFixed(6)} ${toToken}`);
       if (toEstimate <= 0) {
-        log(`⚠️ Estimativa zero — enviando mesmo assim (rota ${quote.tool} pode omitir toAmount)`);
+        if (net.isTestnet) {
+          log(`⚠️ Estimativa zero — testnet: enviando mesmo assim (rota ${quote.tool} pode omitir toAmount)`);
+        } else {
+          return this._fail(fromToken, toToken, amountUsd, `Rota ${quote.tool} retornou estimativa 0 — ${toToken} não disponível`, timestamp);
+        }
       }
 
       // Registrar saldo pré-swap para calcular valor real recebido on-chain

@@ -98,7 +98,7 @@ class Accountant {
     if (report.profit < score.worstTrade) score.worstTrade = report.profit;
 
     // Score composto: winRate * 0.6 + lucroMedio * 0.3 + streak * 0.1
-    score.score = (score.winRate * 0.6) + (Math.max(0, score.avgProfit) * 30) + (score.streak * 5);
+    score.score = (score.winRate * 0.6) + (Math.min(score.avgProfit, 1.0) * 30) + (Math.max(0, score.streak) * 1);
     score.score = Math.max(0, score.score);
 
     this.agentScores.set(report.agentName, score);
