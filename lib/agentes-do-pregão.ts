@@ -195,18 +195,15 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
     return { totalPairs: 0, votes: [], agreedPair: null, agreeingAgents: 0, waveCollapsed: false }
   }
 
-  // Auto-reset: se todos os agentes estão com streak muito negativa, reseta
-  // Streaks de -50+ indicam avaliações corrompidas do sistema antigo (stable-stable ruído)
+  // Auto-reset: detecta streaks corrompidas pelo sistema antigo de avaliação
+  // Critério: mais da metade dos agentes com streak ≤ -10 e 0 vitórias
   if (!_autoResetDone) {
     const ranking = accountant.getRanking()
-    if (ranking.length >= 3 && ranking.every(s => s.streak <= -20)) {
-      pregão.adicionarLog(`🧹 Todos ${ranking.length} agentes com streak ≤ -20 — resetando scores e votos históricos`)
+    const corrupted = ranking.filter(s => s.streak <= -10 && s.wins === 0)
+    if (ranking.length >= 3 && corrupted.length >= Math.ceil(ranking.length / 2)) {
+      pregão.adicionarLog(`🧹 ${corrupted.length}/${ranking.length} agentes com streak ≤ -10 e 0 vitórias — resetando scores e votos históricos`)
       accountant.resetScores()
       limparVotos()
-      // Re-inicializa o pool com os agentes atuais
-      for (const nome of ranking.map(s => s.agentName)) {
-        accountant.getAgentScore(nome) // força criação no map
-      }
       _autoResetDone = true
       pregão.adicionarLog(`✅ Scores resetados — agentes começam do zero com o novo sistema de avaliação`)
     }
