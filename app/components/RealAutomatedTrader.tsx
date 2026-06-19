@@ -274,20 +274,12 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
       </div>
 
       {/* Configurações */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
-        <div>
-          <div style={{ fontSize: 9, color: "#64748b", marginBottom: 4 }}>💵 Valor por trade ($)</div>
-          <input
-            type="number"
-            value={tradeAmount}
-            onChange={(e) => setTradeAmount(Math.max(1, parseFloat(e.target.value) || 5))}
-            min={1}
-            max={isMainnet ? 25 : 50}
-            style={{ width: "100%", background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, padding: "8px 10px", color: "#e2e8f0", fontSize: 13 }}
-          />
+      <div style={{ display: "flex", gap: 10, marginBottom: 14, alignItems: "center" }}>
+        <div style={{ flex: 1, padding: "8px 10px", borderRadius: 8, background: "rgba(212,165,116,0.08)", border: "1px solid rgba(212,165,116,0.2)", fontSize: 10, color: "#d4a574" }}>
+          💰 Valor do trade definido pelo <strong>Pregão</strong> — configure o saldo permitido na seção Pregão
         </div>
-        <div>
-          <div style={{ fontSize: 9, color: "#64748b", marginBottom: 4 }}>⏱️ Intervalo (segundos)</div>
+        <div style={{ width: 140 }}>
+          <div style={{ fontSize: 9, color: "#64748b", marginBottom: 4 }}>⏱️ Intervalo (s)</div>
           <input
             type="number"
             value={intervalSec}

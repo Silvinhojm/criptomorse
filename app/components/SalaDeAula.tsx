@@ -1,11 +1,23 @@
 "use client"
 import { useState, useEffect } from "react"
 import { accountant } from "@/lib/accountant"
+import { DESIGN_SYSTEM as DS } from "@/constants/design-system"
 
-const COR_FUNDO = "#1a1a2e"
 const COR_DOURADO = "#d4a574"
 
-// Mensagens do "Professor" conforme o nível
+const AGENTE_ICONES = [
+  "🟦", "🟪", "🟥", "🟧", "🟨", "🟩", "🟫", "⬛", "⬜", "🔶", "🔷", "🟢",
+]
+
+const MEDALHAS: Record<string, string> = {
+  "🌱 Aprendiz": "📖",
+  "📗 Primeiro Grau": "📗",
+  "📘 Segundo Grau": "📘",
+  "📙 Terceiro Grau": "📙",
+  "🎓 Mestrado": "🎓",
+  "🏆 Doutorado": "🏆",
+}
+
 const ELOGIOS = [
   "Excelente! Seu raciocínio está afiado hoje.",
   "Análise precisa — continue confiando nos seus indicadores.",
@@ -36,10 +48,16 @@ function professorFeedback(score: number, streak: number, wins: number, losses: 
   return NEUTRAS[Math.floor(Math.random() * NEUTRAS.length)]
 }
 
+function MedalVisual({ nome }: { nome: string }) {
+  const medal = MEDALHAS[nome]
+  return <span style={{ fontSize: 16 }}>{medal ?? "📖"}</span>
+}
+
 export function SalaDeAula() {
   const [ranking, setRanking] = useState(accountant.getRanking())
   const [turmaStats, setTurmaStats] = useState(accountant.getStats())
   const [professorMsg, setProfessorMsg] = useState("📚 Bem-vindos à Sala de Aula! Vamos ver como os agentes estão se saindo hoje...")
+  const [animatingBar, setAnimatingBar] = useState("")
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -56,20 +74,23 @@ export function SalaDeAula() {
     : 0
 
   return (
-    <div style={{ marginTop: 16, padding: 16, background: COR_FUNDO, borderRadius: 16, border: `1px solid ${COR_DOURADO}44` }}>
+    <div className="rounded-xl p-4" style={{ background: DS.colors.bg.card, border: `1px solid ${DS.colors.bg.border}` }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
         <span style={{ fontSize: 24 }}>📚</span>
-        <span style={{ fontWeight: "bold", color: COR_DOURADO, fontSize: 16 }}>Sala de Aula</span>
-        <span style={{ fontSize: 10, color: "#94a3b8" }}>— Ranking dos Agentes</span>
+        <span style={{ fontWeight: "bold", color: DS.colors.text.primary, fontSize: 16 }}>Sala de Aula</span>
+        <span style={{ fontSize: 10, color: DS.colors.text.muted }}>— Ranking dos Agentes</span>
       </div>
 
-      {/* Mensagem do Professor */}
+      {/* Mensagem do Professor com ícone de quadro-negro */}
       <div style={{
-        background: "linear-gradient(135deg, rgba(212,165,116,0.15), rgba(212,165,116,0.05))",
-        border: `1px solid ${COR_DOURADO}33`, borderRadius: 12, padding: "10px 14px",
-        marginBottom: 12, fontSize: 11, color: COR_DOURADO, fontStyle: "italic"
+        background: `linear-gradient(135deg, ${DS.colors.accent.blue}15, rgba(212,165,116,0.05))`,
+        border: `1px solid ${DS.colors.accent.blue}33`,
+        borderRadius: 12, padding: "10px 14px",
+        marginBottom: 12, fontSize: 11, color: DS.colors.text.primary, fontStyle: "italic",
+        display: "flex", alignItems: "center", gap: 8,
       }}>
-        👨‍🏫 <strong>Professor:</strong> {professorMsg}
+        <span style={{ fontSize: 20 }}>📖</span>
+        <span><strong>Professor:</strong> {professorMsg}</span>
       </div>
 
       {/* Estatísticas da Turma */}
@@ -77,7 +98,7 @@ export function SalaDeAula() {
         <Quadro label="🎓 Agentes" valor={`${ranking.length}`} />
         <Quadro label="📝 Avaliações" valor={`${turmaStats.totalTrades}`} />
         <Quadro label="📊 Média" valor={`${mediaTurma.toFixed(1)}`} cor="#fbbf24" />
-        <Quadro label="🥇 Primeiro" valor={turmaStats.bestAgent ?? "—"} cor="#22c55e" />
+        <Quadro label="🥇 Primeiro" valor={turmaStats.bestAgent ?? "—"} cor={DS.colors.accent.green} />
       </div>
 
       {/* Ranking dos Agentes */}
@@ -87,51 +108,56 @@ export function SalaDeAula() {
           const feedback = professorFeedback(ag.score, ag.streak, ag.wins, ag.losses)
           const proximo = accountant.getNextGrade(ag.score)
           const barraWidth = Math.min(100, ag.score)
+          const agIcon = AGENTE_ICONES[i % AGENTE_ICONES.length]
 
           return (
             <div key={ag.agentName} style={{
-              background: "rgba(0,0,0,0.3)", borderRadius: 10, padding: 8,
-              border: `1px solid ${i === 0 ? COR_DOURADO : "transparent"}44`,
-              boxShadow: i === 0 ? `0 0 8px ${COR_DOURADO}22` : "none"
+              background: "rgba(0,0,0,0.2)", borderRadius: 10, padding: 8,
+              border: `1px solid ${i === 0 ? `${COR_DOURADO}44` : "transparent"}`,
+              boxShadow: i === 0 ? `0 0 12px ${COR_DOURADO}22` : "none",
             }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                <span style={{ fontSize: 10, color: "#6b7280", minWidth: 20 }}>#{i + 1}</span>
-                <span style={{ fontSize: 14 }}>{grade.icone}</span>
-                <span style={{ fontWeight: "bold", color: "#fff", fontSize: 12 }}>{ag.agentName}</span>
+                <span style={{ fontSize: 10, color: DS.colors.text.muted, minWidth: 20 }}>#{i + 1}</span>
+                <MedalVisual nome={grade.nome} />
+                <span style={{ fontSize: 12 }}>{agIcon}</span>
+                <span style={{ fontWeight: "bold", color: DS.colors.text.primary, fontSize: 12 }}>{ag.agentName}</span>
                 <span style={{
-                  marginLeft: "auto", fontSize: 11, fontWeight: "bold",
-                  color: ag.score > 50 ? "#22c55e" : ag.score > 20 ? "#fbbf24" : "#ef4444"
+                  marginLeft: "auto", fontSize: 12, fontWeight: "bold",
+                  color: ag.score > 50 ? DS.colors.accent.green : ag.score > 20 ? "#fbbf24" : DS.colors.accent.red,
                 }}>
                   {ag.score.toFixed(1)}
                 </span>
               </div>
 
-              {/* Barra de progresso */}
-              <div style={{ background: "rgba(255,255,255,0.05)", borderRadius: 4, height: 4, marginBottom: 4 }}>
+              {/* Barra de progresso animada */}
+              <div style={{ background: "rgba(255,255,255,0.05)", borderRadius: 4, height: 6, marginBottom: 4, overflow: "hidden" }}>
                 <div style={{
                   width: `${barraWidth}%`, height: "100%", borderRadius: 4,
-                  background: ag.score > 50 ? "#22c55e" : ag.score > 20 ? COR_DOURADO : "#ef4444",
-                  transition: "width 1s ease"
+                  background: `linear-gradient(90deg, ${DS.colors.accent.blue}, ${ag.score > 50 ? DS.colors.accent.green : COR_DOURADO})`,
+                  transition: "width 1s cubic-bezier(0.4, 0, 0.2, 1)",
+                  boxShadow: `0 0 8px ${ag.score > 50 ? DS.colors.accent.green : DS.colors.accent.blue}44`,
                 }} />
               </div>
 
-              <div style={{ display: "flex", gap: 8, fontSize: 9, color: "#6b7280", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 8, fontSize: 9, color: DS.colors.text.muted, flexWrap: "wrap", alignItems: "center" }}>
                 <span>{grade.nome}</span>
-                <span style={{ color: "#d4a574" }}>🏟️ {ag.points.toFixed(0)} pts</span>
+                <span>🏟️ {ag.points.toFixed(0)} pts</span>
                 <span>✅ {ag.wins}V</span>
                 <span>❌ {ag.losses}D</span>
                 <span>📈 {ag.winRate.toFixed(0)}%</span>
-                <span style={{ color: ag.streak >= 0 ? "#22c55e" : "#ef4444" }}>
+                <span style={{ color: ag.streak >= 0 ? DS.colors.accent.green : DS.colors.accent.red }}>
                   {ag.streak >= 0 ? `🔥 +${ag.streak}` : `❄️ ${ag.streak}`}
                 </span>
                 {proximo && (
-                  <span style={{ color: COR_DOURADO }}>🎯 {proximo.nome} em {proximo.pontosFaltando} pts</span>
+                  <span style={{ color: COR_DOURADO, fontSize: 9 }}>
+                    🎯 {proximo.nome} em {proximo.pontosFaltando} pts
+                  </span>
                 )}
               </div>
 
               {/* Feedback do Professor */}
-              <div style={{ fontSize: 9, color: "#94a3b8", marginTop: 3, fontStyle: "italic" }}>
-                👨‍🏫 {feedback}
+              <div style={{ fontSize: 9, color: DS.colors.text.secondary, marginTop: 3, fontStyle: "italic" }}>
+                📖 {feedback}
               </div>
             </div>
           )
@@ -139,7 +165,7 @@ export function SalaDeAula() {
       </div>
 
       {ranking.length === 0 && (
-        <div style={{ textAlign: "center", padding: 20, color: "#6b7280", fontSize: 11 }}>
+        <div style={{ textAlign: "center", padding: 20, color: DS.colors.text.muted, fontSize: 11 }}>
           📚 Nenhum agente avaliado ainda. Os votos acumulados na Sala de Aula aparecerão aqui.
         </div>
       )}
@@ -150,8 +176,8 @@ export function SalaDeAula() {
 function Quadro({ label, valor, cor }: { label: string; valor: string; cor?: string }) {
   return (
     <div style={{ background: "rgba(255,255,255,0.05)", borderRadius: 8, padding: 8, textAlign: "center" }}>
-      <div style={{ fontSize: 9, color: "#94a3b8", marginBottom: 2 }}>{label}</div>
-      <div style={{ fontSize: 14, fontWeight: "bold", color: cor ?? "#fff" }}>{valor}</div>
+      <div style={{ fontSize: 9, color: DS.colors.text.muted, marginBottom: 2 }}>{label}</div>
+      <div style={{ fontSize: 14, fontWeight: "bold", color: cor ?? DS.colors.text.primary }}>{valor}</div>
     </div>
   )
 }

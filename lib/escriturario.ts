@@ -1,6 +1,7 @@
 import { realSwap, NETWORKS, type TokenSymbol, isStable } from "./real-swap-executor"
 import { pregão, type OrdemExecucao } from "./pregão"
 import { corretor } from "./corretor"
+import { unifiedBalance } from "./unified-balance"
 
 const VALOR_PADRAO_TRADE = 5
 
@@ -53,6 +54,14 @@ class Escriturário {
       await realSwap.refreshAllBalances()
       saldoTokens = realSwap.getBalance(fromToken as TokenSymbol)
       if (isTestnet) this.log(`📊 Após refresh: ${saldoTokens.toFixed(4)} ${fromToken}`)
+      // Na testnet, se wallet está vazia, usa Caixa Livre (Unified Balance)
+      if (isTestnet && saldoTokens < 0.0001 && fromToken === "USDC") {
+        const ub = unifiedBalance.getUnifiedBalance()
+        if (ub > saldoTokens) {
+          this.log(`🏦 Usando Caixa Livre: $${ub.toFixed(2)} USDC disponível`)
+          saldoTokens = ub
+        }
+      }
     }
 
     if (saldoTokens < 0.0001) {

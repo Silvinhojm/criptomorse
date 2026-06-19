@@ -6,6 +6,7 @@ import { positionManager } from "./position-manager"
 import { volatilityTracker } from "./volatility-tracker"
 import { accountant } from "./accountant"
 import { gasPriceOracle } from "./gas-price-oracle"
+import { jumperLearn } from "./jumper-learn"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 const MAX_POSITIONS = 3
@@ -186,7 +187,20 @@ export interface CicloResultado {
   waveCollapsed: boolean
 }
 
-export async function executarCicloAgentes(rede?: string, amountUsd: number = 5): Promise<CicloResultado> {
+export function getPregãoAllowedBalance(): number {
+  if (typeof window === "undefined") return Infinity
+  const raw = localStorage.getItem("arcflow_pregão_allowed")
+  if (!raw) return Infinity
+  const n = parseFloat(raw)
+  return isNaN(n) || n <= 0 ? Infinity : n
+}
+
+export function setPregãoAllowedBalance(val: number): void {
+  if (typeof window === "undefined") return
+  localStorage.setItem("arcflow_pregão_allowed", String(val))
+}
+
+export async function executarCicloAgentes(rede?: string, amountUsd?: number): Promise<CicloResultado> {
   const redeAtual = (rede ?? "arc") as NetworkKey
   const net = NETWORKS[redeAtual]
   const pairs = TRADING_PAIRS[redeAtual]
@@ -209,32 +223,47 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
     }
   }
 
+  // 📖 Jumper Learn: atualiza conhecimento dos agentes (1x por hora)
+  const jumperArticles = await jumperLearn.getArticles()
+  if (jumperArticles.length > 0 && Math.random() < 0.1) {
+    pregão.adicionarLog(`📖 Agentes consultaram Jumper Learn: ${jumperArticles[0].title} — ${jumperArticles[0].summary.slice(0, 80)}`)
+  }
+
   // 📚 Sala de aula: avalia votos passados contra preço atual
   await avaliarVotosPassados(redeAtual)
 
-  // Mainnet: Pregão decide o valor por trade (amountUsd vira limite máximo)
+  // Mainnet: Pregão decide o valor por trade (usa saldo permitido + saldo real)
   if (!net.isTestnet) {
     const balUSDC = realSwap.getBalance("USDC");
     const balUSDT = realSwap.getBalance("USDT");
     const balDAI  = realSwap.getBalance("DAI");
     const maiorStable = Math.max(balUSDC, balUSDT, balDAI);
+    const allowed = getPregãoAllowedBalance();
+    // Usa o menor entre: saldo real da wallet, saldo permitido pelo usuário
+    const saldoEfetivo = allowed === Infinity ? maiorStable : Math.min(maiorStable, allowed);
     const posAbertas = positionManager.getOpenPositions().length;
     const vagas = Math.max(1, MAX_POSITIONS - posAbertas);
 
-    // Valor dinâmico: divide saldo disponível pelas vagas restantes
-    const valorDinamico = Math.max(5, (maiorStable * 0.9) / vagas);
-    // amountUsd do usuário vira teto máximo
-    amountUsd = Math.min(amountUsd, valorDinamico);
+    if (saldoEfetivo < 5) {
+      amountUsd = 0
+      pregão.adicionarLog(`⚠️ Saldo efetivo $${saldoEfetivo.toFixed(2)} abaixo do mínimo $5.00 — pulando alocação`)
+    } else {
+      // Valor dinâmico: divide saldo disponível pelas vagas restantes
+      amountUsd = (saldoEfetivo * 0.9) / vagas;
 
-    // Ajusta pela volatilidade do par
-    const volMult = volatilityTracker.getPositionSizeMultiplier(pairs[0]?.to ?? "USDC")
-    if (volMult < 1.0) {
-      const original = amountUsd
-      amountUsd = Math.max(5, Math.round((amountUsd * volMult) * 100) / 100)
-      pregão.adicionarLog(`🧠 VolTracker: trade $${original.toFixed(2)} → $${amountUsd.toFixed(2)} (vol mult ${volMult.toFixed(1)}x)`)
+      // Ajusta pela volatilidade do par
+      const volMult = volatilityTracker.getPositionSizeMultiplier(pairs[0]?.to ?? "USDC")
+      if (volMult < 1.0) {
+        const original = amountUsd
+        amountUsd = Math.round((amountUsd * volMult) * 100) / 100
+        pregão.adicionarLog(`🧠 VolTracker: trade $${original.toFixed(2)} → $${amountUsd.toFixed(2)} (vol mult ${volMult.toFixed(1)}x)`)
+      }
+      pregão.adicionarLog(`💰 Pregão alocou $${amountUsd.toFixed(2)} para este trade (saldo real $${maiorStable.toFixed(2)}, permitido $${allowed === Infinity ? "∞" : allowed.toFixed(2)}, ${posAbertas}/${MAX_POSITIONS} posições ocupadas)`)
     }
-    pregão.adicionarLog(`💰 Pregão alocou $${amountUsd.toFixed(2)} para este trade (saldo $${maiorStable.toFixed(2)}, ${posAbertas}/${MAX_POSITIONS} posições ocupadas)`)
   }
+
+  // Garante valor padrão para testnet (mainnet já definiu amountUsd acima)
+  if (amountUsd === undefined || amountUsd <= 0) amountUsd = 5
 
   // 1. Broadcast quantum wave com todos os pares
   const wave = await quantumWaveTrader.broadcastIntent(amountUsd)
@@ -613,6 +642,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
     const score = accountant.getAgentScore(v.agentName)
     if (!score || score.totalTrades < 3) continue
     const original = v.confidence
+    const preStreak = v.confidence
     const streak = score.streak
     // Streak negativa → reduz confiança (perdeu 3x seguidas = -30%)
     // Streak positiva → aumenta um pouco (+5% por vitória consecutiva)
@@ -621,9 +651,10 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
       : Math.min(1.3, 1 + streak * 0.04)
     v.confidence = Math.round(v.confidence * streakMult)
     // Streak muito negativa → confiança mínima (nunca zero, pra poder recuperar)
+    // Mas só se o agente tinha convicção originalmente (> 0%)
     if (streak <= -5) {
-      v.confidence = Math.max(15, v.confidence)
-      pregão.adicionarLog(`📉 ${v.agentName}: ${streak} derrotas consecutivas — confiança reduzida para ${v.confidence}%`)
+      v.confidence = preStreak > 0 ? Math.max(15, v.confidence) : v.confidence
+      pregão.adicionarLog(`📉 ${v.agentName}: ${streak} derrotas consecutivas — confiança ${preStreak > 0 ? `reduzida para ${v.confidence}%` : `permanece ${v.confidence}% (sem convicção)`}`)
     } else if (v.confidence !== original) {
       pregão.adicionarLog(`📊 ${v.agentName}: streak ${streak > 0 ? "+" : ""}${streak} ajustou confiança ${original}% → ${v.confidence}%`)
     }
@@ -771,12 +802,15 @@ export async function executarCicloAgentes(rede?: string, amountUsd: number = 5)
       continue
     }
 
-    // Variação 24h como meta de lucro: só vende se lucro >= 90% da variação diária
-    const { change24h, variation24h } = await positionManager.fetchTokenChange24h(pos.boughtToken as TokenSymbol)
-    const profitTarget = variation24h * 0.9
-    if (profitPercent < profitTarget && profitPercent > 0) {
-      pregão.adicionarLog(`📊 ${pos.boughtToken}: ${profitPercent.toFixed(1)}% < meta ${profitTarget.toFixed(1)}% (90% da variação 24h=${variation24h.toFixed(1)}%, change=${change24h.toFixed(1)}%) — segurando`)
-      continue
+    // Variação 24h como meta de lucro: só se aplica quando lucro é positivo
+    // Se está no prejuízo, o stop loss decide a venda
+    if (profitPercent > 0) {
+      const { change24h, variation24h } = await positionManager.fetchTokenChange24h(pos.boughtToken as TokenSymbol)
+      const profitTarget = variation24h * 0.9
+      if (profitPercent < profitTarget) {
+        pregão.adicionarLog(`📊 ${pos.boughtToken}: ${profitPercent.toFixed(1)}% < meta ${profitTarget.toFixed(1)}% (90% da variação 24h=${variation24h.toFixed(1)}%, change=${change24h.toFixed(1)}%) — segurando`)
+        continue
+      }
     }
 
     const sellPar = `${pos.boughtToken}→USDC`

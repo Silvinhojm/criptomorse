@@ -1,4 +1,6 @@
 ﻿"use client";
+import DashboardShell from "@/app/components/DashboardShell"
+import { useSection } from "@/app/components/SectionContext"
 import { PanicButton } from "@/app/components/PanicButton";
 import { RealAutomatedTrader } from "./components/RealAutomatedTrader";
 import { PregãoDashboard } from "./components/PregãoDashboard";
@@ -707,6 +709,13 @@ function ReceiveModal({ account, onClose, network }: { account: string; onClose:
 // ============================================================
 // COMPONENTE: AUTO-TRADE CONTROL
 // ============================================================
+
+function SectionMatch({ section, children }: { section: string; children: React.ReactNode }) {
+  const ctx = useSection()
+  const hidden = ctx.section !== section
+  return <div style={{ display: hidden ? "none" : undefined }}>{children}</div>
+}
+
 // COMPONENTE PRINCIPAL HOME
 // ============================================================
 
@@ -882,136 +891,132 @@ export default function Home() {
     return () => clearInterval(id);
   }, [account, loadAllBalances]);
 
+  const CHAIN_TO_KEY: Record<number, string> = {
+    5042002: "arc",
+    137: "polygon",
+    8453: "base",
+    1: "ethereum",
+    42161: "arbitrum",
+  }
+  const currentNetworkKey = (CHAIN_TO_KEY[currentNetwork.chainId] ?? "polygon") as "arc" | "polygon" | "base" | "ethereum" | "arbitrum"
+  const handleNetworkKeyChange = (key: "arc" | "polygon" | "base" | "ethereum" | "arbitrum") => {
+    const netMap: Record<string, typeof ARC_TESTNET | typeof POLYGON_MAINNET | typeof BASE_MAINNET | typeof ETHEREUM_MAINNET> = {
+      arc: ARC_TESTNET,
+      polygon: POLYGON_MAINNET,
+      base: BASE_MAINNET,
+      ethereum: ETHEREUM_MAINNET,
+    }
+    const newNet = netMap[key]
+    if (newNet) handleNetworkSwitch(newNet)
+  }
+
   if (!isClient) {
     return <div style={{ minHeight: "100vh", background: "#eef0f5", display: "flex", alignItems: "center", justifyContent: "center" }}>Carregando...</div>;
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: "#eef0f5", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+    <DashboardShell account={account} networkName={currentNetwork.name} isTestnet={currentNetwork.isTestnet} currentNetworkKey={currentNetworkKey} onNetworkChange={handleNetworkKeyChange} onConnect={connect}>
       <Toaster position="top-center" />
-      <div style={{ width: 550, borderRadius: 28, overflow: "hidden", boxShadow: "0 8px 40px rgba(0,0,0,0.13)" }}>
 
-        {/* Header */}
-        <div style={{ background: "linear-gradient(135deg, #3a6cc8 0%, #2952a3 100%)", padding: "20px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
-            <NetworkSwitcher currentNetwork={currentNetwork} onSwitch={handleNetworkSwitch} isConnected={!!account} />
-            {account ? (
-              <span style={{ fontSize: 12, background: "rgba(255,255,255,0.15)", padding: "4px 10px", borderRadius: 8 }}>🟢 {short(account)}</span>
-            ) : (
-              <button onClick={connect} style={{ fontSize: 12, background: "rgba(255,255,255,0.25)", color: "#fff", border: "none", padding: "4px 12px", borderRadius: 8, cursor: "pointer" }}>
-                Conectar
-              </button>
-            )}
-          </div>
-
-          <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 11, opacity: 0.75, marginBottom: 4 }}>
-              CARTEIRA
-              <button onClick={() => loadAllBalances(account)} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 12, opacity: 0.7, marginLeft: 8, textDecoration: "underline" }}>
-                🔄 atualizar
-              </button>
-            </div>
-            {usdcEntry && (
-              <>
-                <div style={{ fontSize: 40, fontWeight: 700 }}>{usdcDisplay}</div>
-                <div style={{ fontSize: 13, opacity: 0.8 }}>USDC</div>
-              </>
-            )}
-            {portfoliosWithBalance.length > 1 && (
-              <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "4px 12px" }}>
-                {portfoliosWithBalance.filter(p => p.symbol !== "USDC").map(p => (
-                  <div key={p.symbol} style={{ fontSize: 11, background: "rgba(255,255,255,0.1)", padding: "3px 8px", borderRadius: 6 }}>
-                    {p.icon} {parseFloat(ethers.formatUnits(p.balance, p.decimals)).toFixed(p.decimals > 6 ? 4 : 2)} {p.symbol}
-                  </div>
-                ))}
-              </div>
-            )}
-            {currentNetwork.isTestnet && <div style={{ fontSize: 10, marginTop: 4, opacity: 0.7 }}>🧪 USDC de teste - sem valor real</div>}
-          </div>
-
-          <div style={{ display: "flex", justifyContent: "space-around", marginTop: 20, gap: 6, flexWrap: "wrap" }}>
-            <button onClick={() => setTab("send")} style={{ background: tab === "send" ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.15)", border: "none", color: "#fff", borderRadius: 12, padding: "8px 10px", cursor: "pointer", fontSize: 11 }}>✈️ Enviar</button>
-            <button onClick={() => setModal("receive")} style={{ background: "rgba(255,255,255,0.15)", border: "none", color: "#fff", borderRadius: 12, padding: "8px 10px", cursor: "pointer", fontSize: 11 }}>📥 Receber</button>
-            <button onClick={() => setTab("bridge")} style={{ background: tab === "bridge" ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.15)", border: "none", color: "#fff", borderRadius: 12, padding: "8px 10px", cursor: "pointer", fontSize: 11 }}>🔄 Bridge/Swap</button>
-            <button onClick={() => setTab("jobs")} style={{ background: tab === "jobs" ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.15)", border: "none", color: "#fff", borderRadius: 12, padding: "8px 10px", cursor: "pointer", fontSize: 11 }}>💼 Jobs</button>
-            <button onClick={() => setTab("agents")} style={{ background: tab === "agents" ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.15)", border: "none", color: "#fff", borderRadius: 12, padding: "8px 10px", cursor: "pointer", fontSize: 11 }}>🤖 Agents</button>
-            <button onClick={() => setTab("history")} style={{ background: tab === "history" ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.15)", border: "none", color: "#fff", borderRadius: 12, padding: "8px 10px", cursor: "pointer", fontSize: 11 }}>📜 Histórico</button>
-          </div>
-        </div>
-
-        {/* Conteúdo das Tabs */}
-        <div style={{ background: "#fff", padding: 20, minHeight: 320 }}>
-          {tab === "send" && (
-            <div>
-              <input value={dest} onChange={e => setDest(e.target.value)} placeholder="Destino (0x...)" style={{ width: "100%", padding: 10, borderRadius: 10, border: `1px solid ${BORDER}`, marginBottom: 12, boxSizing: "border-box" }} />
-              <input value={amount} onChange={e => setAmount(e.target.value)} type="number" placeholder="Valor" style={{ width: "100%", padding: 10, borderRadius: 10, border: `1px solid ${BORDER}`, marginBottom: 12, boxSizing: "border-box" }} />
-              <button onClick={account ? send : connect} disabled={sending} style={{ width: "100%", background: currentNetwork.isTestnet ? ORANGE : GREEN, color: "#fff", padding: 13, borderRadius: 14, border: "none", cursor: "pointer", fontWeight: 600 }}>
-                {sending ? "Enviando..." : account ? `Transferir USDC (${currentNetwork.shortName})` : "Conectar carteira"}
-              </button>
-            </div>
-          )}
-
-          {tab === "bridge" && (
-            <div>
-              <div style={{ textAlign: "center", marginBottom: 16 }}>
-                <span style={{ fontSize: 48 }}>🔄</span>
-                <h3 style={{ margin: "8px 0", color: "#333" }}>Bridge / Swap</h3>
-                <p style={{ fontSize: 12, color: "#6b7280" }}>Swap na mesma rede ou Bridge entre redes diferentes</p>
-              </div>
-              <button onClick={() => setModal("swap")} style={{ width: "100%", background: BLUE, color: "#fff", padding: 14, borderRadius: 14, border: "none", cursor: "pointer", fontWeight: 600 }}>
-                🚀 Abrir Bridge / Swap (LI.FI)
-              </button>
-            </div>
-          )}
-
-          {tab === "jobs" && (
-            account ? <JobsPanel account={account} network={currentNetwork} /> : 
-            <div style={{ textAlign: "center", color: "#9ca3af", padding: 40 }}>🔌 Conecte a carteira para ver os Jobs ERC-8183</div>
-          )}
-
-          {tab === "history" && (
-            <div>
-              {history.length === 0 ? (
-                <div style={{ textAlign: "center", color: "#9ca3af", paddingTop: 40 }}>Nenhuma transação</div>
-              ) : (
-                history.map((h, i) => (
-                  <div key={i} style={{ background: "#f9fafb", borderRadius: 12, padding: 12, marginBottom: 10 }}>
-                    → {short(h.to)} -{h.amount} USDC
-                    <div style={{ fontSize: 11, color: "#9ca3af" }}>{h.time} - {h.network}</div>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-
-          {tab === "agents" && account && (
-            <div style={{ padding: 20, color: "#94a3b8", fontSize: 12, textAlign: "center" }}>
-              🤖 Trading agents rodando nos painéis abaixo
-            </div>
-          )}
-        </div>
-
-        {/* Seções de Trading Real */}
+      {/* Tabs de Navegação */}
+      <div className="flex gap-2 mb-4 overflow-x-auto pb-1" style={{ borderBottom: `1px solid rgba(148,163,184,0.15)` }}>
+        {[
+          { key: "send" as const, label: "✈️ Enviar" },
+          { key: "bridge" as const, label: "🔄 Bridge/Swap" },
+          { key: "jobs" as const, label: "💼 Jobs" },
+          { key: "history" as const, label: "📜 Histórico" },
+          { key: "agents" as const, label: "🤖 Robôs" },
+        ].map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)}
+            className="text-xs font-medium px-3 py-2 rounded-t-lg transition-colors whitespace-nowrap"
+            style={{
+              background: tab === t.key ? "rgba(74,158,255,0.15)" : "transparent",
+              color: tab === t.key ? "#4A9EFF" : "#94a3b8",
+              borderBottom: tab === t.key ? "2px solid #4A9EFF" : "2px solid transparent",
+            }}>
+            {t.label}
+          </button>
+        ))}
         {account && (
-          <>
-            <BotBank />
-            <BridgeWidget userAddress={account} />
-            <RealAutomatedTrader account={account} currentNetwork={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} />
-            <NanopaymentDashboard agentScores={agentScores} />
-            <PregãoDashboard rede={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} />
-            <SalaDeAula />
-          </>
+          <button onClick={connect} className="text-xs font-medium px-3 py-2 ml-auto whitespace-nowrap"
+            style={{ color: "#00D4AA" }}>
+            🟢 {short(account)}
+          </button>
         )}
-
-        <div style={{ padding: "12px", borderTop: `1px solid ${BORDER}`, background: "#fff", fontSize: "10px", color: "#9ca3af", textAlign: "center" }}>
-          🤖 Híbrido | {currentNetwork.isTestnet ? '🧪 TESTNET' : '💰 MAINNET'} | {currentNetwork.name} | TLAY Nanopayments | Bridge USDC
-        </div>
       </div>
+
+      {/* Conteúdo das Tabs */}
+      {tab === "send" && (
+        <div className="rounded-xl p-4" style={{ background: "#1E2128", border: "1px solid rgba(148,163,184,0.15)" }}>
+          <input value={dest} onChange={e => setDest(e.target.value)} placeholder="Destino (0x...)"
+            className="w-full p-2.5 rounded-lg text-sm mb-3 outline-none"
+            style={{ background: "#0A0B0E", border: "1px solid rgba(148,163,184,0.15)", color: "#F1F5F9" }} />
+          <input value={amount} onChange={e => setAmount(e.target.value)} type="number" placeholder="Valor"
+            className="w-full p-2.5 rounded-lg text-sm mb-3 outline-none"
+            style={{ background: "#0A0B0E", border: "1px solid rgba(148,163,184,0.15)", color: "#F1F5F9" }} />
+          <button onClick={account ? send : connect} disabled={sending}
+            className="w-full py-3 rounded-xl font-semibold text-sm transition-all duration-200 hover:brightness-110"
+            style={{ background: currentNetwork.isTestnet ? "#e05a3a" : "#00D4AA", color: "#fff" }}>
+            {sending ? "Enviando..." : account ? `Transferir USDC (${currentNetwork.shortName})` : "Conectar carteira"}
+          </button>
+        </div>
+      )}
+
+      {tab === "bridge" && (
+        <div className="rounded-xl p-6 text-center" style={{ background: "#1E2128", border: "1px solid rgba(148,163,184,0.15)" }}>
+          <div className="text-4xl mb-3">🔄</div>
+          <h3 className="text-base font-semibold mb-1" style={{ color: "#F1F5F9" }}>Bridge / Swap</h3>
+          <p className="text-xs mb-4" style={{ color: "#94a3b8" }}>Swap na mesma rede ou Bridge entre redes diferentes</p>
+          <button onClick={() => setModal("swap")}
+            className="py-3 px-6 rounded-xl font-semibold text-sm transition-all duration-200 hover:brightness-110"
+            style={{ background: "#4A9EFF", color: "#fff" }}>
+            🚀 Abrir Bridge / Swap (LI.FI)
+          </button>
+        </div>
+      )}
+
+      {tab === "jobs" && (
+        account ? <JobsPanel account={account} network={currentNetwork} /> :
+        <div className="py-10 text-center text-xs" style={{ color: "#64748b" }}>🔌 Conecte a carteira para ver os Jobs ERC-8183</div>
+      )}
+
+      {tab === "history" && (
+        <div className="rounded-xl p-4" style={{ background: "#1E2128", border: "1px solid rgba(148,163,184,0.15)" }}>
+          {history.length === 0 ? (
+            <div className="py-8 text-center text-xs" style={{ color: "#64748b" }}>Nenhuma transação</div>
+          ) : (
+            history.map((h, i) => (
+              <div key={i} className="p-3 rounded-lg mb-2 text-xs" style={{ background: "#262A33" }}>
+                → {short(h.to)} -{h.amount} USDC
+                <div style={{ color: "#64748b", marginTop: 2 }}>{h.time} - {h.network}</div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {tab === "agents" && account && (
+        <div className="py-4 text-center text-xs" style={{ color: "#64748b" }}>
+          🤖 Robôs traders rodando nos painéis abaixo
+        </div>
+      )}
+
+      {/* Seções de Trading */}
+      {account && (
+        <div className="space-y-4 mt-4">
+          <SectionMatch section="bot"><BotBank /></SectionMatch>
+          <SectionMatch section="bridge"><BridgeWidget userAddress={account} /></SectionMatch>
+          <SectionMatch section="trading"><RealAutomatedTrader account={account} currentNetwork={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} /></SectionMatch>
+          <SectionMatch section="payments"><NanopaymentDashboard agentScores={agentScores} /></SectionMatch>
+          <SectionMatch section="trading"><PregãoDashboard rede={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} /></SectionMatch>
+          <SectionMatch section="classroom"><SalaDeAula /></SectionMatch>
+        </div>
+      )}
 
       {/* Modais */}
       {modal === "receive" && <ReceiveModal account={account} onClose={() => setModal("")} network={currentNetwork} />}
       {modal === "swap" && <SwapBridgeModal account={account} onClose={() => setModal("")} currentNetwork={currentNetwork} onComplete={() => loadAllBalances(account)} />}
-    </div>
+    </DashboardShell>
   );
 }
 

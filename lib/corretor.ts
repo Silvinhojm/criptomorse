@@ -51,7 +51,7 @@ class Corretor {
 
       this.log(`💱 Executando: ${ordem.fromToken}→${ordem.toToken} $${valorLiquido.toFixed(2)} (fee: $${fee.fee.toFixed(4)})`)
 
-      const resultado = await realSwap.executeSwap(fromKey, toKey, valorLiquido, (msg) => this.log(msg))
+      const resultado = await realSwap.executeSwap(fromKey, toKey, valorLiquido, (msg) => this.log(msg), ordem.id)
 
       if (resultado.success) {
         const memo = transactionMemos.createTradeMemo(

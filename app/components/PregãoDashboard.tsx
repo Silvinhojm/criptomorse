@@ -8,11 +8,12 @@ import { NETWORKS, realSwap } from "@/lib/real-swap-executor"
 import type { NetworkKey } from "@/lib/real-swap-executor"
 import { caixa } from "@/lib/caixa"
 import { resumeFromPanic, setTestnetMode } from "@/lib/circuit-breaker"
-import { AGENTES_NOMES, AGENTE_CORES } from "@/lib/agentes-do-pregão"
+import { AGENTES_NOMES, AGENTE_CORES, getPregãoAllowedBalance, setPregãoAllowedBalance } from "@/lib/agentes-do-pregão"
 import { positionManager } from "@/lib/position-manager"
+import { narrador } from "@/lib/narrator"
 
 const COR_PREGÃO = "#d4a574"
-const COR_FUNDO = "#1a1a2e"
+const COR_FUNDO = "#0f172a"
 
 interface PregãoDashboardProps {
   rede: string
@@ -29,6 +30,10 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
   const [caixaDepositando, setCaixaDepositando] = useState(false)
   const [depositAmount, setDepositAmount] = useState("10")
   const [walletBalance, setWalletBalance] = useState(0)
+  const [allowedBalance, setAllowedBalance] = useState(() => {
+    const v = getPregãoAllowedBalance()
+    return v === Infinity ? 0 : v
+  })
   const logRef = useRef<HTMLDivElement>(null)
   const cicloRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [cicloAtivo, setCicloAtivo] = useState(false)
@@ -39,6 +44,21 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
 
   const addLog = useCallback((msg: string) => {
     setLogs(prev => [...prev.slice(-99), `[${new Date().toLocaleTimeString()}] ${msg}`])
+    if (msg.includes("🏛️ ORDEM GERADA")) {
+      const m = msg.match(/ORDEM GERADA: (\S+) na/)
+      if (m) narrador.ordemGerada(m[1], 0, [])
+    } else if (msg.includes("✅ ORDEM CONCLUÍDA")) {
+      const m = msg.match(/ORDEM CONCLUÍDA: (\S+) \|.*Lucro: \$([-\d.]+)/)
+      if (m) narrador.ordemExecutada(m[1], parseFloat(m[2]))
+    } else if (msg.includes("🚫 Confiança")) {
+      narrador.confiançaBaixa()
+    } else if (msg.includes("Saldo stable") && msg.includes("abaixo do mínimo")) {
+      const m = msg.match(/Saldo stable \$([\d.]+)/)
+      if (parseFloat(m?.[1] ?? "99") < 5) narrador.saldoBaixo("Polygon")
+    } else if (msg.includes("Usando Caixa Livre")) {
+      const m = msg.match(/Caixa Livre: \$([\d.]+)/)
+      if (m) narrador.caixaLivre("testnet", parseFloat(m[1]))
+    }
   }, [])
 
   useEffect(() => {
@@ -118,10 +138,8 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     balanceTimerRef.current = setInterval(async () => {
       await realSwap.refreshAllBalances()
       const usdc = realSwap.getBalance("USDC")
-      if (usdc > 0) {
-        setWalletBalance(usdc)
-        setDepositAmount(Math.floor(usdc).toString())
-      }
+      setWalletBalance(usdc)
+      if (usdc > 0) setDepositAmount(Math.floor(usdc).toString())
       setOpenPositions(positionManager.getOpenPositions().length)
     }, 8000)
 
@@ -295,6 +313,41 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         <div style={{ fontSize: 9, color: "#6b7280", marginTop: 2 }}>
           {NETWORKS[rede as NetworkKey]?.name || rede}
         </div>
+        <div style={{ marginTop: 8, borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: 8 }}>
+          <div style={{ fontSize: 9, color: "#d4a574", marginBottom: 4 }}>💳 SALDO PERMITIDO P/ TRADE</div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input type="number" value={allowedBalance || ""}
+              onChange={e => {
+                const v = parseFloat(e.target.value)
+                if (!isNaN(v) && v > 0) {
+                  setAllowedBalance(v)
+                  setPregãoAllowedBalance(v)
+                } else {
+                  setAllowedBalance(0)
+                }
+              }}
+              placeholder="Sem limite"
+              style={{
+                flex: 1, padding: "6px 8px", fontSize: 12, borderRadius: 6,
+                background: "#0f0f23", border: "1px solid rgba(212,165,116,0.3)",
+                color: "#fff", outline: "none"
+              }}
+            />
+            <button onClick={() => { setAllowedBalance(0); setPregãoAllowedBalance(0) }}
+              style={{
+                padding: "4px 10px", fontSize: 10, borderRadius: 6,
+                background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)",
+                color: "#94a3b8", cursor: "pointer"
+              }}>
+              ♾️
+            </button>
+          </div>
+          <div style={{ fontSize: 9, color: "#6b7280", marginTop: 4 }}>
+            {allowedBalance > 0
+              ? `Pregão usará até $${allowedBalance.toFixed(2)} USDC por ciclo`
+              : "Pregão usará todo o saldo disponível"}
+          </div>
+        </div>
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
@@ -333,7 +386,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
 
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 11, color: COR_PREGÃO, marginBottom: 6, display: "flex", alignItems: "center", gap: 4 }}>
-          <span>📢</span> Pregueiros ({PREGUEIROS.length}) + Agentes ({AGENTES_NOMES.length})
+          <span>👥</span> {PREGUEIROS.length + AGENTES_NOMES.length} robôs ativos
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 4 }}>
           {PREGUEIROS.map(p => (
@@ -363,7 +416,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       {oksAtivos.length > 0 && (
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 11, color: COR_PREGÃO, marginBottom: 6, display: "flex", alignItems: "center", gap: 4 }}>
-            <span>👀</span> OKs Ativos no Pregão
+            <span>🔍</span> Robôs analisando oportunidades
           </div>
           {oksAtivos.map((ok, i) => (
             <div key={i} style={{
@@ -430,22 +483,29 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         </div>
       )}
 
-      <div>
-        <div style={{ fontSize: 11, color: COR_PREGÃO, marginBottom: 6, display: "flex", alignItems: "center", gap: 4 }}>
-          <span>📋</span> Registro do Pregão
-        </div>
+      {/* Item 12: Log técnico oculto por padrão */}
+      <details>
+        <summary style={{ fontSize: 11, color: COR_PREGÃO, marginBottom: 6, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+          <span>📋</span> Ver log técnico
+        </summary>
         <div ref={logRef} style={{
           background: "rgba(0,0,0,0.4)", borderRadius: 8, padding: 8,
-          maxHeight: 150, overflowY: "auto", fontSize: 9, color: "#94a3b8",
+          maxHeight: 200, overflowY: "auto", fontSize: 9, color: "#94a3b8",
           fontFamily: "monospace"
         }}>
           {logs.length === 0 ? (
             <span style={{ color: "#6b7280" }}>Aguardando atividade dos Pregueiros...</span>
           ) : (
-            logs.map((log, i) => <div key={i}>{log}</div>)
+            logs.map((log, i) => {
+              const cor = log.includes("✅") || log.includes("✔️") ? "#22c55e"
+                : log.includes("❌") || log.includes("⚠️") ? "#ef4444"
+                : log.includes("⏳") || log.includes("⏸️") || log.includes("ℹ️") ? "#fbbf24"
+                : "#94a3b8"
+              return <div key={i} style={{ color: cor }}>{log}</div>
+            })
           )}
         </div>
-      </div>
+      </details>
     </div>
   )
 }

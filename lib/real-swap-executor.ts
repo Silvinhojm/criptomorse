@@ -9,6 +9,8 @@ import { getCircuitBreakerState, recordError, recordTradeResult, setTestnetMode 
 import { gasPriceOracle } from "./gas-price-oracle";
 import { getArcFeeParams } from "./arc-gas";
 import { generateSyntheticQuote, executeDirectSwap } from "./arc-direct-swap";
+import { arcMemo } from "./arc-memo";
+import { transactionMemos } from "./transaction-memos";
 
 // ─── Redes suportadas ────────────────────────────────────────────────────────
 // Custo estimado de gas em USD por rede (para deducao do lucro)
@@ -203,6 +205,10 @@ export interface SwapResult {
   timestamp: number;
   confirmed: boolean;
   profit?: number;
+  /** FUTURO: modo privado com selective disclosure (Arc roadmap) */
+  private?: boolean;
+  /** Hash da transacao do Memo contract (Arc), se aplicavel */
+  memoTxHash?: string;
 }
 
 export interface BestPairResult {
@@ -447,7 +453,8 @@ class RealSwapExecutor {
     fromToken: TokenSymbol,
     toToken: TokenSymbol,
     amountUsd: number,
-    onUpdate?: (msg: string) => void
+    onUpdate?: (msg: string) => void,
+    memoRef?: string
   ): Promise<SwapResult> {
     const net = NETWORKS[this.networkKey];
     const timestamp = Date.now();
@@ -646,6 +653,35 @@ class RealSwapExecutor {
         log(`🚨 Circuit breaker ativado!`);
       }
 
+      // Post-trade memo on-chain (apenas Arc, se memoRef fornecido)
+      let memoTxHash: string | undefined
+      if (
+        memoRef &&
+        this.networkKey === "arc" &&
+        this.signer
+      ) {
+        try {
+          const tradeMemoId = transactionMemos.generateMemoId(`swap:${memoRef}`)
+          const tradeMemoData = transactionMemos.encodeMemoData({
+            ref: memoRef,
+            pair: `${fromToken}/${toToken}`,
+            amount: String(amountUsd),
+            profit: String(profit),
+            txHash: txResponse.hash,
+          })
+          memoTxHash = await arcMemo.sendUSDCWithMemo(
+            this.signer,
+            this.userAddress,
+            0,
+            tradeMemoId,
+            tradeMemoData
+          )
+          log(`📝 Memo on-chain: ${memoTxHash.slice(0, 10)}...`)
+        } catch {
+          // memo falhou — não interrompe o trade
+        }
+      }
+
       return {
         success: true,
         txHash: txResponse.hash,
@@ -659,6 +695,7 @@ class RealSwapExecutor {
         timestamp,
         confirmed: true,
         profit,
+        memoTxHash,
       };
     } catch (err: any) {
       const msg =

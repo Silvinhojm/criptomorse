@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Criptomorse",
-  description: "Banking-grade stablecoin wallet on Arc Testnet with ERC-8183 agentic jobs",
+  title: "ARCFLOW — Trading Automatizado Multi-Chain",
+  description: "Seus robôs trabalhando para você 24h — Trading automatizado multi-chain com agentes inteligentes",
   icons: { icon: "/favicon.ico" },
 };
 

@@ -712,4 +712,142 @@ npx tsc --noEmit     # TypeScript check
 
 ---
 
-*Documento gerado em 16/06/2026. Mantenha atualizado conforme novas features.*
+---
+
+## 17. UI/UX — DESIGN SYSTEM E COMPONENTES
+
+### 17.1 Design System (`constants/design-system.ts`)
+
+```typescript
+// Paleta de cores global (redesign 06/2026)
+colors: {
+  bg: { DEFAULT: "#0f172a", card: "#1e293b", hover: "#262A33", border: "rgba(148,163,184,0.15)" },
+  accent: { green: "#22c55e", blue: "#3b82f6", red: "#ef4444", gold: "#FFD700" },
+  text: { primary: "#F1F5F9", secondary: "#94a3b8", muted: "#64748B" },
+  gradient: { from: "#0f172a", to: "#1e3a5f" },
+}
+```
+
+### 17.2 Nova Hierarquia Visual (DashboardShell)
+
+```
+Zona 1 (topo):  KpiPanel — 4 métricas lado a lado (Saldo, Lucro, Win Rate, Status)
+Zona 2 (meio):  DecisionFeed — o que os robôs estão fazendo agora
+Zona 3 (baixo): ActiveTrades + AgentGrid — posições ativas e ranking
+```
+
+### 17.3 WelcomeScreen (`app/components/WelcomeScreen.tsx`)
+- Tela de boas-vindas quando desconectado
+- Logo ARCFLOW centralizado com gradiente animado
+- Frase "Seus robôs trabalhando para você 24h"
+- Botão "Conectar Carteira" verde vibrante com gradiente
+- Fundo gradiente azul escuro (#0f172a → #1e3a5f)
+
+### 17.4 Narrador (`app/components/NarratorBot.tsx`)
+- Card fixo no topo do painel em vez de popup de rodapé
+- Avatar robô com expressões: 😴 dormindo, 🤖 animado, 🤔 pensativo, 🎉 feliz
+- Avatar muda conforme evento recebido
+- Mensagens em linguagem natural simplificada
+
+### 17.5 Sala de Aula (`app/components/SalaDeAula.tsx`)
+- Barra de progresso animada com gradiente
+- Medalhas visuais por nível
+- Ícone colorido único por agente
+- Mensagem do professor com ícone de quadro-negro 📖
+- Usa paleta global do design system
+
+### 17.6 KPI Cards (`app/components/dashboard/KpiPanel.tsx`)
+- Card Win Rate com gráfico circular (SVG donut)
+- Card Status com indicador pulsante verde 🟢 ou amarelo 🟡
+- Cores dinâmicas (verde para lucro, vermelho para perda)
+- Efeito hover de elevação
+
+### 17.7 Mensagens Simplificadas (`constants/messages.ts`)
+- "🔍 Robôs analisando oportunidades" em vez de "OKs Ativos no Pregão"
+- "⏳ Aguardando melhor momento" em vez de "Confiança X% < 50% mínimo"
+- "👥 16 robôs ativos" em vez de "Pregueiros (4) + Agentes (12)"
+- "🛡️ Proteção ativada" em vez de "Circuit breaker ativo"
+- "📈 Posição subindo" em vez de "Staircase Level X"
+- "💰 Aguardando saldo" em vez de "Saldo insuficiente"
+- "⚙️ Realizando trade agora" em vez de "Ordem executando"
+- "📂 X investimentos ativos" em vez de "Posições em polygon: X"
+
+### 17.8 Log Técnico
+- Oculta atrás de `<details>` com label "Ver log técnico"
+- Fonte monospace reduzida com scroll limitado a 200px
+- Linhas coloridas por tipo (verde=sucesso, vermelho=erro, amarelo=aviso)
+
+---
+
+## 18. ORACLE STORK (Arc Testnet)
+
+### 18.1 Integração
+- `pair-price-feed.ts`: suporte ao oracle Stork on-chain na Arc Testnet
+- Contrato: `0xacC0a0cF13571d30B4b8637996F5D6D774d4fd62` (Arc)
+- Feed IDs disponíveis:
+  - `EURCUSD`: `0x64ffe1382a02f37d4e16872cde1e7379679aa83bba98d99036921942203afafb`
+  - `BTCUSD`: `0x7404e3d104ea7841c3d9e6fd20adfe99b4ad586bc08d8f3bd3afef894cf184de` (usado para cirBTC/mcirBTC)
+
+### 18.2 Comportamento
+- Ativado automaticamente quando a rede é `arc` (via `executarCicloPregueiros`)
+- Stork como fonte primária → CoinGecko como fallback
+- `pairPriceFeed.setUseStork(true/false)` para controle programático
+- `getTemporalNumericValueUnsafeV1(bytes32 id)` → retorna preço com 18 decimais
+
+### 18.3 Chainlink e Pyth
+Segundo a documentação da Stork, os adapters Pyth e Chainlink também estão disponíveis:
+- Stork pode ser consumido via interfaces Pyth e Chainlink (adapters)
+- Para verificar feeds específicos de EURC/cirBTC na Arc, consultar `https://docs.stork.network/resources/adapters.md`
+- Stork também tem SDK npm: `@storknetwork/stork-evm-sdk`
+
+## 19. PRIVACIDADE (Roadmap)
+
+### 19.1 Estrutura Preparada
+- `SwapResult.private?: boolean` — campo opcional para modo privado (sempre false por enquanto)
+- `arc-direct-swap.ts`: documentação comentada sobre onde aplicar selective disclosure
+- UI: toggle "🔒 Privado" desabilitado no Header com tooltip "Modo privado em breve"
+
+### 19.2 Próximos Passos (quando disponível)
+1. SDK Arc liberar transações privadas
+2. Propagadar flag `private` do SwapResult → executor
+3. Usar AgenticCommerce (ERC-8183) para intenções sem expor dados completos
+
+## 20. TRANSACTION MEMOS (Arc Testnet)
+
+### 20.1 Contrato
+
+| Contrato | Endereço                                                                                                                            |
+| :------- | :---------------------------------------------------------------------------------------------------------------------------------- |
+| `Memo`   | [`0x5294E9927c3306DcBaDb03fe70b92e01cCede505`](https://testnet.arcscan.app/address/0x5294E9927c3306DcBaDb03fe70b92e01cCede505)      |
+| `USDC`   | [`0x3600000000000000000000000000000000000000`](https://testnet.arcscan.app/address/0x3600000000000000000000000000000000000000)      |
+
+### 20.2 Como funciona
+
+O `Memo` contract usa a precompile `CallFrom` da Arc para encaminhar uma chamada ao contrato alvo preservando o `msg.sender` original (EOA). Emite `BeforeMemo` + `Memo` events — eventos `Memo` carregam `sender`, `target`, `callDataHash`, `memoId`, `memoData`, `memoIndex`.
+
+### 20.3 Módulos
+
+- **`lib/arc-memo.ts`** — interação com o contrato `Memo` (singleton `arcMemo`)
+  - `sendUSDCWithMemo(signer, recipient, amount, memoId, memoData)` — envia USDC com memo em 1 tx
+  - `sendWithMemo(signer, target, data, memoId, memoData)` — versão genérica
+  - `queryMemoEvents(provider, memoId)` — busca eventos `Memo` pelo `memoId`
+  - `isDeployed(provider)` — verifica se contrato existe na rede
+- **`lib/transaction-memos.ts`** — encoding local + helpers
+  - `generateMemoId(reference)` → `keccak256(utf8(ref))` = bytes32 compatível
+  - `encodeMemoData(record)` → `hexlify(utf8(JSON.stringify(data)))`
+
+### 20.4 Fluxo de integração
+
+1. **`arc-micro-trader.ts` `send()`** — se `memoRef` for passado e chain='arc', usa `arcMemo.sendUSDCWithMemo()` em vez de `arcAppKit.sendToken()`
+2. **`arc-micro-trader.ts` `executeMicroTrade()`** — após swap bem-sucedido, se `memoEnabled`, envia post-trade memo registrando resultado (par, profit, txHash)
+3. **`real-swap-executor.ts` `executeSwap()`** — aceita `memoRef` como 5º parâmetro; na Arc, envia post-trade memo com metadados da execução
+4. **`corretor.ts` `executar()`** — passa `ordem.id` como `memoRef` para `realSwap.executeSwap()`
+
+### 20.5 Guardrails (contrato impõe)
+
+- Chamar `Memo.memo()` apenas de EOA (contract calls revertem)
+- Não usar `STATICCALL` nem `DELEGATECALL` no Memo
+- Se a call filha reverte, a tx inteira reverte
+- `memoId` = `keccak256(utf8(reference))` via `transactionMemos.generateMemoId()`
+
+*Documento gerado em 19/06/2026. Mantenha atualizado conforme novas features.*

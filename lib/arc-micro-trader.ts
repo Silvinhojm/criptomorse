@@ -1,6 +1,7 @@
 import { ethers } from 'ethers';
 import { feeMonetization } from './fee-monetization';
 import { transactionMemos } from './transaction-memos';
+import { arcMemo } from './arc-memo';
 import { confidenceStaking } from './confidence-staking';
 import { arcAppKit, ArcChain } from './arc-app-kit-native';
 import type { CCTPTransfer, CCTPStep } from './cctp';
@@ -235,6 +236,27 @@ class ArcMicroTrader {
             .hex
         : '';
 
+      // Post-trade memo on-chain (apenas Arc, se habilitado)
+      let memoTxHash: string | undefined
+      if (this.config.memoEnabled && swapResult.txHash) {
+        try {
+          const { signer } = await this.getSigner()
+          const memoId = transactionMemos.generateMemoId(`trade:${tradeId}`)
+          const memoData = transactionMemos.encodeMemoData({
+            tradeId,
+            pair: `${fromToken}/${toToken}`,
+            profit: String(profit),
+            txHash: swapResult.txHash,
+          })
+          memoTxHash = await arcMemo.sendUSDCWithMemo(
+            signer, address, 0, memoId, memoData
+          )
+          console.log(`[MICRO_TRADER] 📝 Memo on-chain: ${memoTxHash.slice(0, 10)}...`)
+        } catch {
+          // memo falhou — não interrompe o trade
+        }
+      }
+
       const elapsed = Date.now() - startTime;
 
       return {
@@ -318,14 +340,28 @@ class ArcMicroTrader {
    * Mapeia o símbolo (USDC, EURC…) para o endereço on-chain antes de chamar o kit.
    */
   async send(
-    token:  string,
-    to:     string,
-    amount: number,
-    chain:  ArcChain = 'arc',
-  ): Promise<{ txHash: string; explorerUrl: string }> {
-    const { address } = await this.getSigner();
+    token:   string,
+    to:      string,
+    amount:  number,
+    chain:   ArcChain = 'arc',
+    memoRef?: string,
+  ): Promise<{ txHash: string; explorerUrl: string; memoTxHash?: string }> {
+    const { signer, address } = await this.getSigner();
     const tokenAddr   = TOKEN_ADDRESSES[token];
     if (!tokenAddr) throw new Error(`Token não suportado: ${token}`);
+
+    // Se memoRef foi informado e a chain é Arc, usa Memo contract on-chain
+    if (memoRef && chain === 'arc') {
+      const memoId = transactionMemos.generateMemoId(memoRef)
+      const memoData = transactionMemos.encodeMemoData({
+        token,
+        amount: String(amount),
+        ref: memoRef,
+      })
+      const memoTxHash = await arcMemo.sendUSDCWithMemo(signer, to, amount, memoId, memoData)
+      const explorerUrl = `https://testnet.arcscan.app/tx/${memoTxHash}`
+      return { txHash: memoTxHash, explorerUrl, memoTxHash }
+    }
 
     const result = await arcAppKit.sendToken({
       chain,

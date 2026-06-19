@@ -156,7 +156,7 @@ export async function getQuote(params: SwapParams, retryCount = 0): Promise<Quot
 
     if (!res.ok) {
       const err = await res.text();
-      console.error(`LI.FI quote erro ${res.status}:`, err);
+      console.warn(`LI.FI quote erro ${res.status}: amount too small or no route`, err.slice(0, 200));
       return null;
     }
 

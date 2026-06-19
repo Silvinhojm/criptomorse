@@ -189,6 +189,13 @@ function gerarParLabel(from: string, to: string): string {
 }
 
 export async function executarCicloPregueiros(rede?: string) {
+  // Ativa oracle Stork na Arc Testnet para preços on-chain
+  if (rede === "arc") {
+    pairPriceFeed.setUseStork(true)
+  } else {
+    pairPriceFeed.setUseStork(false)
+  }
+
   await Promise.all([
     volumePregueiro.atualizarMercado(),
     sentimentoPregueiro.atualizarSentimento()

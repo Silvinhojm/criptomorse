@@ -1,6 +1,13 @@
 import { ethers } from 'ethers';
 import type { QuoteResult } from './lifi-executor';
 
+// FUTURO: Modo privado com selective disclosure (Arc roadmap)
+// Quando o SDK Arc disponibilizar transações privadas, aplicar aqui:
+// 1. Se swap.private === true, usar método privado do SDK Arc
+// 2. O contrato AgenticCommerce (ERC-8183) pode ser usado para
+//    registrar intenções sem expor detalhes completos na chain
+// 3. A flag private será propagada de SwapResult para o executor
+
 const ERC20_ABI = [
   'function approve(address spender, uint256 amount) returns (bool)',
   'function allowance(address owner, address spender) view returns (uint256)',

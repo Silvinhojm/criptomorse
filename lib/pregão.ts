@@ -126,6 +126,12 @@ class Pregão {
       const participantes = okValidos.slice(0, this.LIMIAR_OK)
       const confiancaMedia = Math.round(participantes.reduce((s, p) => s + p.sinal.confianca, 0) / participantes.length)
 
+      // Confiança mínima em mainnet: 50%
+      if (rede === "polygon" && confiancaMedia < 50) {
+        this.log(`🚫 Confiança ${confiancaMedia}% < 50% mínimo em mainnet — ordem rejeitada`)
+        return
+      }
+
       // Sequencial: uma ordem por vez, aguarda confirmação na rede
       if (this.getOrdensAtivas().length > 0) {
         this.log(`⏳ Ordem anterior ainda não confirmada — aguardando`)

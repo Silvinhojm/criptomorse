@@ -2,6 +2,8 @@
 // Suporte a Transaction Memos - v0.7.2 hardfork (18 Jun 2026)
 // Anexa referencias de pagamento onchain para rastrear transfers entre agentes
 
+import { keccak256, toUtf8Bytes, hexlify } from "ethers"
+
 interface TransactionMemo {
   version: number;
   type: MemoType;
@@ -81,6 +83,16 @@ class TransactionMemos {
       timestamp: Date.now(),
       metadata,
     });
+  }
+
+  /** Gera bytes32 memoId via keccak256(reference) — compatível com Memo contract on-chain */
+  generateMemoId(reference: string): string {
+    return keccak256(toUtf8Bytes(reference))
+  }
+
+  /** Codifica metadados como bytes hex para memoData no Memo contract */
+  encodeMemoData(data: Record<string, string>): string {
+    return hexlify(toUtf8Bytes(JSON.stringify(data)))
   }
 
   createJobMemo(jobId: string, reference: string, metadata?: Record<string, string>): EncodedMemo {
