@@ -42,6 +42,19 @@ const PROFIT_LEVELS = [0, 4, 7, 10, 14, 18, 24, 32, 42, 55, 70, 90, 115];
 // Stop loss máximo — se o lucro cair abaixo disto, fecha imediatamente
 const MAX_LOSS_PERCENT = -15;
 
+// Custo estimado de gas por rede (USD)
+const GAS_ESTIMATE_USD: Record<string, number> = {
+  polygon: 0.10,
+  base: 0.08,
+  arbitrum: 0.15,
+  ethereum: 8.00,
+};
+// Spread estimado (% do valor do trade)
+const SPREAD_ESTIMATE_PCT = 0.005; // 0.5%
+// Margem de lucro mínima adicional (%)
+const MIN_PROFIT_MARGIN = 0.005; // 0.5%
+
+
 // Tempo máximo sem nenhum lucro — se a posição nunca passou de 0% após N horas, fecha
 const STALE_NO_PROFIT_MS = 4 * 60 * 60 * 1000;
 
@@ -230,6 +243,14 @@ class PositionManager {
       return "close";
     }
 
+    // Custo mínimo para valer a pena fechar: gas + spread + margem de lucro
+    const tradeValueUsd = currentPrice * pos.amountBought;
+    const gasCost = GAS_ESTIMATE_USD[pos.networkKey] ?? 0.10;
+    const spreadCost = tradeValueUsd * SPREAD_ESTIMATE_PCT;
+    const profitMarginUsd = tradeValueUsd * MIN_PROFIT_MARGIN;
+    const minProfitUsd = gasCost + spreadCost + profitMarginUsd;
+    const currentProfitUsd = (currentPrice - pos.entryPrice) * pos.amountBought;
+
     const currentLevel = getLevelIndex(profitPercent, profitLevels);
     const peakLevel = pos.staircaseLevel ?? 0;
 
@@ -240,6 +261,11 @@ class PositionManager {
     }
 
     if (currentLevel <= peakLevel - dropSteps && peakLevel > 0) {
+      // Só fecha se o lucro cobrir gas + spread + margem mínima
+      if (currentProfitUsd < minProfitUsd) {
+        console.log(`⏳ Staircase ${pos.boughtToken}: lucro $${currentProfitUsd.toFixed(2)} insuficiente (precisa ~$${minProfitUsd.toFixed(2)} = gas $${gasCost.toFixed(2)} + spread $${spreadCost.toFixed(2)} + margem $${profitMarginUsd.toFixed(2)}), segurando`);
+        return "hold";
+      }
       const locked = profitLevels[Math.max(0, peakLevel - dropSteps + 1)];
       console.log(`🔒 Staircase fechou ${pos.boughtToken}: pico ${profitLevels[peakLevel]}%, caiu ${dropSteps} degraus → ${profitPercent.toFixed(2)}% (nível ${currentLevel}), lucro garantido ~${locked}%`);
       this.onStaircaseCloseCallback?.(pos);

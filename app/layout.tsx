@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ARCFLOW — Trading Automatizado Multi-Chain",
-  description: "Seus robôs trabalhando para você 24h — Trading automatizado multi-chain com agentes inteligentes",
+  title: "CriptoMorse — Trading Automatizado Multi-Chain",
+  description: "Robôs que leem velas RSI e Bollinger como código Morse — detectam quedas falsas, subidas falsas e flutuações iminentes. Trading multi-chain 24/7 com agentes inteligentes.",
   icons: { icon: "/favicon.ico" },
 };
 

@@ -19,13 +19,19 @@ export default function ActiveTrades() {
 
   if (positions.length === 0) {
     return (
-      <div className="rounded-xl p-4" style={{ background: DS.colors.bg.card, border: `1px solid ${DS.colors.bg.border}` }}>
-        <div className="flex items-center gap-2 mb-1">
-          <TrendingUp size={14} style={{ color: DS.colors.accent.green }} />
-          <span className="text-xs font-semibold" style={{ color: DS.colors.text.primary }}>Trades Ativos</span>
-        </div>
-        <div className="text-[11px] py-4 text-center" style={{ color: DS.colors.text.muted }}>
-          {FRASES.analisando}
+      <div className="rounded-xl p-4 flex flex-col items-center gap-2" style={{ background: DS.colors.bg.card, border: `1px solid ${DS.colors.bg.border}` }}>
+        <span className="text-2xl mt-2">💤</span>
+        <span className="text-xs font-semibold" style={{ color: DS.colors.text.primary }}>Nenhum trade ativo agora</span>
+        <span className="text-[10px] text-center leading-relaxed max-w-[200px]" style={{ color: DS.colors.text.muted }}>
+          Os robôs estão aguardando uma oportunidade com lucro garantido
+        </span>
+        <div className="flex gap-2 mt-1 mb-2">
+          <span className="text-[9px] px-2 py-1 rounded-full" style={{ background: "rgba(148,163,184,0.1)", color: DS.colors.text.muted }}>
+            🟢 Monitorando
+          </span>
+          <span className="text-[9px] px-2 py-1 rounded-full" style={{ background: "rgba(148,163,184,0.1)", color: DS.colors.text.muted }}>
+            💰 Aguardando
+          </span>
         </div>
       </div>
     )

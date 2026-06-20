@@ -3,6 +3,7 @@
 // O robo contador desempata votacoes concordando com o melhor rankeado
 
 import { saveTradeHistory, loadTradeHistory } from "./persistence";
+import { provaoRanking } from "./provao-ranking";
 
 export interface TradeReport {
   id: string;
@@ -125,6 +126,8 @@ class Accountant {
     this.reports.push(report);
     this._updateAgentScore(report);
     this._save();
+    // Notifica o sistema de provão sobre o trade
+    provaoRanking.recordTrade(report.agentName, report.profit);
   }
 
   private _updateAgentScore(report: TradeReport) {
@@ -198,6 +201,11 @@ class Accountant {
 
   getAgentScore(agentName: string): AgentScore | undefined {
     return this.agentScores.get(agentName);
+  }
+
+  getLastTradeTime(): number {
+    if (this.reports.length === 0) return 0;
+    return this.reports[this.reports.length - 1].timestamp;
   }
 
   // ── Sistema de graduação dos agentes ──

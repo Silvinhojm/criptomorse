@@ -60,6 +60,8 @@ interface PairStats {
 class PairPriceFeed {
   // cache de preço USD por token (coinId), evita repetir fetch pra cada par no mesmo ciclo
   private usdPriceCache: Map<string, PricePoint> = new Map();
+  // contagem de falhas consecutivas por cacheKey — usado para limpar cache após 3+ erros
+  private consecutiveFetchFailures: Map<string, number> = new Map();
   // histórico do preço relativo to/from por par (chave: "FROM:TO")
   private pairHistory: Map<string, number[]> = new Map();
   // provider para RPC da Arc (Stork oracle)
@@ -141,7 +143,17 @@ class PairPriceFeed {
     // Fallback: CoinGecko via /api/price
     try {
       const res = await fetch(`/api/price?ids=${coinId}`, { signal: AbortSignal.timeout(5000) });
-      if (!res.ok) return cached?.price ?? 1.0;
+      if (!res.ok) {
+        const failures = (this.consecutiveFetchFailures.get(cacheKey) ?? 0) + 1;
+        this.consecutiveFetchFailures.set(cacheKey, failures);
+        if (failures >= 3) {
+          console.warn(`[PairPriceFeed] ${failures}x falha em ${cacheKey} — limpando cache para forçar refresh`);
+          this.usdPriceCache.delete(cacheKey);
+          this.consecutiveFetchFailures.delete(cacheKey);
+        }
+        return cached?.price ?? 1.0;
+      }
+      this.consecutiveFetchFailures.delete(cacheKey);
       const data = await res.json();
       const price = data[coinId] ?? data.prices?.[coinId];
       if (typeof price === "number" && price > 0) {
@@ -150,6 +162,13 @@ class PairPriceFeed {
       }
       return cached?.price ?? 1.0;
     } catch {
+      const failures = (this.consecutiveFetchFailures.get(cacheKey) ?? 0) + 1;
+      this.consecutiveFetchFailures.set(cacheKey, failures);
+      if (failures >= 3) {
+        console.warn(`[PairPriceFeed] ${failures}x erro em ${cacheKey} — limpando cache para forçar refresh`);
+        this.usdPriceCache.delete(cacheKey);
+        this.consecutiveFetchFailures.delete(cacheKey);
+      }
       return cached?.price ?? 1.0;
     }
   }
@@ -225,6 +244,7 @@ class PairPriceFeed {
   reset() {
     this.usdPriceCache.clear();
     this.pairHistory.clear();
+    this.consecutiveFetchFailures.clear();
     this.arcProvider = null;
     this.storkContract = null;
   }

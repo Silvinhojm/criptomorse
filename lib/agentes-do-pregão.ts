@@ -7,9 +7,14 @@ import { volatilityTracker } from "./volatility-tracker"
 import { accountant } from "./accountant"
 import { gasPriceOracle } from "./gas-price-oracle"
 import { jumperLearn } from "./jumper-learn"
+import { provaoRanking } from "./provao-ranking"
+import { nanopaymentSystem } from "./nanopayment-system"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 const MAX_POSITIONS = 3
+
+// Lucro mínimo real por trade (após gas + spread)
+const MIN_PROFIT_REAL = 0.05
 
 // ── Sala de aula: aprendizado simulado dos votos ──
 interface VotoRegistro {
@@ -144,12 +149,13 @@ export const AGENTES_NOMES = [
   { nome: "MomentumTrader", icone: "🚀" },
   { nome: "NVIDIAgent", icone: "🧠" },
   { nome: "Synthesis", icone: "🔬" },
+  { nome: "Morse", icone: "📻" },
 ]
 
 export const AGENTE_CORES = [
   "#a78bfa", "#60a5fa", "#34d399", "#f472b6", "#fbbf24",
   "#fb923c", "#e879f9", "#f97316", "#22d3ee", "#f43f5e",
-  "#f59e0b", "#10b981",
+  "#f59e0b", "#10b981", "#06b6d4",
 ]
 
 async function getTokenPrice(token: TokenSymbol): Promise<number> {
@@ -258,6 +264,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         amountUsd = Math.round((amountUsd * volMult) * 100) / 100
         pregão.adicionarLog(`🧠 VolTracker: trade $${original.toFixed(2)} → $${amountUsd.toFixed(2)} (vol mult ${volMult.toFixed(1)}x)`)
       }
+
       pregão.adicionarLog(`💰 Pregão alocou $${amountUsd.toFixed(2)} para este trade (saldo real $${maiorStable.toFixed(2)}, permitido $${allowed === Infinity ? "∞" : allowed.toFixed(2)}, ${posAbertas}/${MAX_POSITIONS} posições ocupadas)`)
     }
   }
@@ -591,6 +598,58 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     })
   }
 
+  // ── Morse: múltiplas métricas alinhadas = mensagem forte do mercado ──
+  for (const wp of wavePairs) {
+    if (wp.fromToken === wp.toToken) continue
+
+    const metrics: { nome: string; alinhado: boolean; direcao: "buy" | "sell"; peso: number }[] = []
+
+    // Métrica 1: Momentum — direção da tendência
+    const momSignal = wp.momentum > 0.02 ? "buy" : wp.momentum < -0.02 ? "sell" : null
+    if (momSignal) {
+      metrics.push({ nome: "Momentum", alinhado: true, direcao: momSignal, peso: Math.abs(wp.momentum) })
+    }
+
+    // Métrica 2: Volatilidade — baixa = squeeze (preparando), alta = expansão (movimento acontecendo)
+    const volSignal = wp.volatility > 0.6 ? (wp.momentum > 0 ? "buy" : "sell") : null
+    if (volSignal) {
+      metrics.push({ nome: "Bollinger", alinhado: true, direcao: volSignal, peso: wp.volatility })
+    }
+
+    // Métrica 3: Amplitude — força combinada do sinal
+    const ampSignal = wp.amplitude > 0.03 ? (wp.momentum > 0 ? "buy" : "sell") : null
+    if (ampSignal) {
+      metrics.push({ nome: "Amplitude", alinhado: true, direcao: ampSignal, peso: wp.amplitude })
+    }
+
+    // Métrica 4: Dados — confiabilidade da leitura
+    if (wp.probability > 10) {
+      metrics.push({ nome: "Confiabilidade", alinhado: true, direcao: wp.momentum > 0 ? "buy" : "sell", peso: wp.probability / 100 })
+    }
+
+    if (metrics.length < 2) continue
+
+    // Verifica alinhamento: todas as métricas apontam pra mesma direção?
+    const direcoes = new Set(metrics.map(m => m.direcao))
+    if (direcoes.size !== 1) continue
+
+    const direcaoUnica = [...direcoes][0]
+    const pesoTotal = metrics.reduce((s, m) => s + m.peso, 0) / metrics.length
+    const confianca = Math.min(90, Math.round(30 + pesoTotal * 60))
+    const metrs = metrics.map(m => m.nome).join(" · ")
+
+    votes.push({
+      agentName: "Morse",
+      pair: wp.label,
+      fromToken: wp.fromToken,
+      toToken: wp.toToken,
+      network: redeAtual,
+      confidence: confianca,
+      action: direcaoUnica,
+      reason: `📻 ${metrs} → ${direcaoUnica === "buy" ? "⬆ COMPRA" : "⬇ VENDA"} (${metrics.length}/${metrics.length} alinhadas)`,
+    })
+  }
+
   // 📚 Sala de aula: registra votos com preço atual para aprendizado futuro
   for (const v of votes) {
     const tokenVolatil = v.action === "buy" ? v.toToken : v.fromToken
@@ -660,6 +719,50 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     }
   }
 
+  // 💰 Boost M2M: agentes com saldo acumulado acima da média ganham +5% de confiança
+  const earningsList = votes.map(v => nanopaymentSystem.getPerformanceEarnings(v.agentName)).filter(e => e > 0)
+  const avgEarnings = earningsList.length > 0 ? earningsList.reduce((s, e) => s + e, 0) / earningsList.length : 0
+  if (avgEarnings > 0) {
+    for (const v of votes) {
+      const agentEarnings = nanopaymentSystem.getPerformanceEarnings(v.agentName)
+      if (agentEarnings >= avgEarnings) {
+        const original = v.confidence
+        v.confidence = Math.min(95, v.confidence + 5)
+        pregão.adicionarLog(`💰 ${v.agentName}: saldo M2M $${agentEarnings.toFixed(4)} acima da média ($${avgEarnings.toFixed(4)}) — confiança ${original}% → ${v.confidence}% (+5%)`)
+      }
+    }
+  }
+
+  // 🗳️ Boost de Poder de Voto: agentes com alto poder no Provão (>70%) recebem confiança mínima de 25%
+  const votePowerMap = new Map(provaoRanking.getVotePower().map(vp => [vp.agentName, vp.power]))
+  if (votePowerMap.size > 0) {
+    for (const v of votes) {
+      const agentPower = votePowerMap.get(v.agentName)
+      if (agentPower !== undefined && agentPower > 0.7 && v.confidence < 25) {
+        pregão.adicionarLog(`🔥 ${v.agentName} tem poder de voto ${(agentPower * 100).toFixed(0)}% — confiança ${v.confidence}% → 25% (boost mínimo)`)
+        v.confidence = 25
+      }
+    }
+  }
+
+  // Modo emergência: se todos os agentes estão abaixo de 20% há 30min+ sem trades, recupera streaks
+  const allBelow20 = votes.every(v => v.confidence < 20)
+  const lastTrade = accountant.getLastTradeTime()
+  const idleMs = Date.now() - lastTrade
+  const EMERGENCY_KEY = "arcflow_emergency_triggered"
+  const emergencyTriggered = typeof window !== "undefined" ? parseInt(localStorage.getItem(EMERGENCY_KEY) || "0") : 0
+  if (allBelow20 && idleMs > 30 * 60 * 1000 && Date.now() - emergencyTriggered > 60 * 60 * 1000) {
+    pregão.adicionarLog(`🚨 Modo emergência: ${votes.length} agentes abaixo de 20% há ${Math.round(idleMs / 60000)}min sem trades — recuperando streaks para -3`)
+    for (const score of accountant.getRanking()) {
+      if (score.streak < -3) {
+        const originalStreak = score.streak
+        score.streak = -3
+        pregão.adicionarLog(`📈 ${score.agentName}: streak ${originalStreak} → -3 (recuperação emergencial)`)
+      }
+    }
+    if (typeof window !== "undefined") localStorage.setItem(EMERGENCY_KEY, String(Date.now()))
+  }
+
   // Log votes
   for (const v of votes) {
     pregão.adicionarLog(`🗳️ ${v.agentName} → ${v.pair} (${v.confidence}%)`)
@@ -694,6 +797,26 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
 
   let uniqueAgents = new Set<string>()
   let agentesStr = ""
+
+  // ⚡ Tendência Express: se Tendência vota com >70% e pelo menos 1 agente concorda, vira ordem
+  if (!agreedPair || agreeingAgents.length < 2) {
+    const tendenciaVotes = votes.filter(v => v.confidence > 70)
+    for (const tv of tendenciaVotes) {
+      const supporters = votes.filter(v =>
+        v.agentName !== tv.agentName &&
+        v.pair === tv.pair &&
+        v.network === tv.network &&
+        v.action === tv.action &&
+        v.confidence > 0
+      )
+      if (supporters.length >= 1) {
+        agreedPair = tv
+        agreeingAgents = [tv, supporters[0]]
+        pregão.adicionarLog(`⚡ Tendência Express: ${tv.agentName} (${tv.confidence}%) + ${supporters[0].agentName} (${supporters[0].confidence}%) em ${tv.pair} — ordem formada com peso diferenciado`)
+        break
+      }
+    }
+  }
 
   if (!agreedPair || agreeingAgents.length < 2) {
     pregão.adicionarLog(`🤔 Top 3 não chegou a consenso — ${topVotes.length} votos distribuídos em ${pairCount.size} pares diferentes`)
@@ -732,23 +855,41 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     const gasCost = await gasPriceOracle.getGasCost(redeAtual)
     const balFrom = realSwap.getBalance(agreedPair.fromToken as TokenSymbol)
     const valorFinal = Math.min(amountUsd * 0.9, balFrom)
-    if (gasCost > 0.01 && gasCost > valorFinal * 0.5) {
-      pregão.adicionarLog(`⏳ Gas $${gasCost.toFixed(4)} é ${((gasCost/valorFinal)*100).toFixed(0)}% do trade $${valorFinal.toFixed(2)} — muito caro, abortando`)
+
+    // Busca volatilidade 24h real do token via volatility tracker
+    const volData = volatilityTracker.getVolatility(agreedPair.toToken as TokenSymbol)
+    const vol24h = Math.max(volData.vol24h, 0.005) // mínimo 0.5%
+    const avgConfidence = agreeingAgents.reduce((s: number, v: any) => s + v.confidence, 0) / agreeingAgents.length
+
+    // Retorno esperado = confiança média dos agentes × volatilidade 24h
+    const expectedReturn = (avgConfidence / 100) * vol24h
+
+    // Custos
+    const spreadPct = 0.005 // 0.5% fixo
+
+    // Trade mínimo viável: precisa cobrir gas + spread + $0.05 de lucro real
+    const minViableTrade = (MIN_PROFIT_REAL + gasCost) / Math.max(0.001, expectedReturn - spreadPct)
+
+    if (minViableTrade > 0 && valorFinal < minViableTrade) {
+      pregão.adicionarLog(`⏳ Mercado pouco volátil — trade de $${valorFinal.toFixed(2)} não cobre custos (precisa ~$${minViableTrade.toFixed(2)}). Retorno esperado ${(expectedReturn * 100).toFixed(2)}% com ${(vol24h * 100).toFixed(1)}% vol`)
     } else {
-      pregão.adicionarLog(`⏳ Gas $${gasCost.toFixed(4)} aceitável para trade $${valorFinal.toFixed(2)} — prosseguindo`)
-        pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair} (${agreedPair.fromToken}→${agreedPair.toToken})`)
-        for (const v of agreeingAgents) {
-          pregão.receberOK({
-            pregueiro: `Agente:${v.agentName}`,
-            rede: v.network,
-            par: v.pair,
-            confianca: v.confidence,
-            timestamp: Date.now(),
-            fromToken: v.fromToken,
-            toToken: v.toToken,
-          })
-        }
+      pregão.adicionarLog(`✅ Trade viável: retorno esperado ${(expectedReturn * 100).toFixed(2)}% cobre gas + spread + $${MIN_PROFIT_REAL.toFixed(2)}`)
+      if (vol24h >= 0.02) {
+        pregão.adicionarLog(`📈 Mercado volátil (${(vol24h * 100).toFixed(1)}%) — condições favoráveis`)
       }
+      pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair} (${agreedPair.fromToken}→${agreedPair.toToken})`)
+      for (const v of agreeingAgents) {
+        pregão.receberOK({
+          pregueiro: `Agente:${v.agentName}`,
+          rede: v.network,
+          par: v.pair,
+          confianca: v.confidence,
+          timestamp: Date.now(),
+          fromToken: v.fromToken,
+          toToken: v.toToken,
+        })
+      }
+    }
   } else {
     // Testnet ou stable-stable: envia OKs sem verificação de gas
     pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair} (${agreedPair.fromToken}→${agreedPair.toToken})`)

@@ -14,6 +14,7 @@ interface TradeEntry {
   message: string;
   timestamp: number;
   confirmed: boolean;
+  networkKey?: string;
 }
 
 const CARD_BG = "#0a0f1e";
@@ -40,28 +41,49 @@ export function BotBank() {
     let mounted = true;
 
     async function fetchTrades() {
-      try {
-        const res = await fetch("/api/trades");
-        if (res.ok) {
-          const data = await res.json();
-          if (Array.isArray(data) && data.length > 0 && mounted) {
-            setTrades(data.reverse());
-            setLoading(false);
-            return;
-          }
-        }
-      } catch { /* fallback */ }
+      let found: any[] = [];
 
+      // Fonte 1: accountant (pregão, corretor, nanopayments)
       try {
-        const local = localStorage.getItem("arcflow_trade_history");
-        if (local && mounted) {
-          const data = JSON.parse(local);
-          if (Array.isArray(data)) {
-            setTrades(data.reverse());
+        const raw = localStorage.getItem("arcflow_accountant_reports");
+        if (raw) {
+          const data = JSON.parse(raw);
+          if (Array.isArray(data) && data.length > 0) {
+            found = data.map((r: any) => ({
+              id: r.id || `${r.agentName}-${r.timestamp}`,
+              action: r.action,
+              agentName: r.agentName,
+              fromToken: r.fromToken,
+              toToken: r.toToken,
+              fromAmount: r.amount,
+              toAmount: r.toAmount,
+              profit: r.profit,
+              message: `${r.agentName} ${r.action} ${r.fromToken}→${r.toToken}`,
+              timestamp: r.timestamp,
+              confirmed: true,
+            }));
           }
         }
-      } catch { /* no data */ }
-      if (mounted) setLoading(false);
+      } catch { /* ignore */ }
+
+      // Fonte 2: trade history legado (real-automated-trader)
+      if (found.length === 0) {
+        try {
+          const local = localStorage.getItem("arcflow_trade_history");
+          if (local) {
+            const data = JSON.parse(local);
+            if (Array.isArray(data) && data.length > 0) {
+              found = data;
+            }
+          }
+        } catch { /* no data */ }
+      }
+
+      if (mounted) {
+        found.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        setTrades(found);
+        setLoading(false);
+      }
     }
 
     fetchTrades();

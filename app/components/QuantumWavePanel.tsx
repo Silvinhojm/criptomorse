@@ -13,6 +13,8 @@ function getDirection(label: string): "compra" | "venda" {
   return label.includes("→USDC") || label.includes("→USDT") || label.includes("→DAI") ? "venda" : "compra"
 }
 
+const MEDALHAS = ["🥇", "🥈", "🥉"]
+
 export default function QuantumWavePanel() {
   const [wave, setWave] = useState(quantumWaveTrader.getLatestWave())
 
@@ -31,21 +33,28 @@ export default function QuantumWavePanel() {
           <span className="text-xs font-semibold" style={{ color: DS.colors.text.primary }}>Onda Quântica</span>
         </div>
         <div className="text-[11px] py-6 text-center" style={{ color: DS.colors.text.muted }}>
-          Nenhuma onda ativa no momento. Inicie o ciclo dos pregueiros.
+          Nenhuma oportunidade identificada no momento. Os robôs estão analisando o mercado.
         </div>
       </div>
     )
   }
 
-  const pairs = wave.pairs.slice(0, 20)
-  const maxAmplitude = Math.max(...pairs.map(p => p.amplitude), 1)
+  // Filtra pares com amplitude > 0, ordena decrescente, pega top 3
+  const topPairs = wave.pairs
+    .filter(p => p.amplitude > 0)
+    .sort((a, b) => b.amplitude - a.amplitude)
+    .slice(0, 3)
+
+  // Agrupa por rede
+  const testnetPairs = topPairs.filter(p => p.network === "arc")
+  const mainnetPairs = topPairs.filter(p => p.network !== "arc")
 
   return (
     <div className="rounded-xl p-4" style={{ background: DS.colors.bg.card, border: `1px solid ${DS.colors.bg.border}` }}>
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <span className="text-lg">🌊</span>
-          <span className="text-xs font-semibold" style={{ color: DS.colors.text.primary }}>Onda Quântica</span>
+          <span className="text-xs font-semibold" style={{ color: DS.colors.text.primary }}>Melhores Oportunidades</span>
         </div>
         {wave.collapsed && wave.collapsedPair && (
           <span className="text-[10px] px-2 py-1 rounded-md font-semibold"
@@ -55,50 +64,53 @@ export default function QuantumWavePanel() {
         )}
       </div>
 
-      <div className="flex flex-wrap gap-3 justify-center py-3" style={{ minHeight: 120 }}>
-        {pairs.map((pair, i) => {
-          const dir = getDirection(pair.label)
-          const size = 48 + (pair.amplitude / maxAmplitude) * 64
-          const isCollapsed = wave.collapsed && wave.collapsedPair?.label === pair.label && wave.collapsedPair?.network === pair.network
+      {/* Pairs agrupados por rede */}
+      {testnetPairs.length > 0 && (
+        <div className="mb-2">
+          <span className="text-[9px] px-2 py-0.5 rounded-full font-semibold"
+            style={{ background: "rgba(234,179,8,0.15)", color: "#eab308" }}>
+            🧪 Testnet (Arc)
+          </span>
+        </div>
+      )}
+      {testnetPairs.map((pair, i) => (
+        <PairRow key={`arc-${pair.label}`} pair={pair} medalIndex={i} />
+      ))}
 
-          return (
-            <div key={`${pair.network}-${pair.label}-${i}`}
-              className="flex flex-col items-center transition-all duration-700 cursor-default"
-              style={{
-                opacity: wave.collapsed && !isCollapsed ? 0.2 : 1,
-                transform: isCollapsed ? "scale(1.3)" : "scale(1)",
-                filter: wave.collapsed && !isCollapsed ? "blur(1px)" : "none",
-              }}>
-              <div className="rounded-full flex items-center justify-center font-bold text-[10px] font-mono transition-all duration-1000"
-                style={{
-                  width: size,
-                  height: size,
-                  background: `radial-gradient(circle at 30% 30%, ${DIRECTION_COLORS[dir]}33, ${DIRECTION_COLORS[dir]}15)`,
-                  border: `2px solid ${DIRECTION_COLORS[dir]}66`,
-                  color: DS.colors.text.primary,
-                  animation: wave.collapsed && isCollapsed ? "none" : "pulse-dot 3s ease-in-out infinite",
-                  animationDelay: `${i * 0.2}s`,
-                }}>
-                <span className="text-center leading-tight">
-                  {pair.label.replace("→", "\n→")}
-                </span>
-              </div>
-              <span className="text-[9px] mt-1 font-mono" style={{ color: DIRECTION_COLORS[dir] }}>
-                {pair.amplitude.toFixed(2)}
-              </span>
-              <span className="text-[8px]" style={{ color: DS.colors.text.muted }}>
-                {pair.network}
-              </span>
-            </div>
-          )
-        })}
-      </div>
+      {mainnetPairs.length > 0 && (
+        <div className={`${testnetPairs.length > 0 ? "mt-3" : ""} mb-2`}>
+          <span className="text-[9px] px-2 py-0.5 rounded-full font-semibold"
+            style={{ background: "rgba(34,197,94,0.15)", color: "#22c55e" }}>
+            💰 Mainnet ({mainnetPairs.map(p => p.network).filter((v, i, a) => a.indexOf(v) === i).join(", ")})
+          </span>
+        </div>
+      )}
+      {mainnetPairs.map((pair, i) => (
+        <PairRow key={`main-${pair.label}`} pair={pair} medalIndex={testnetPairs.length + i} />
+      ))}
 
-      <div className="flex gap-4 text-[10px] justify-center pt-2 border-t" style={{ borderColor: DS.colors.bg.border, color: DS.colors.text.muted }}>
-        <span style={{ color: DS.colors.accent.green }}>🟢 Compra</span>
-        <span style={{ color: DS.colors.accent.red }}>🔴 Venda</span>
-        <span>🌊 {pairs.length} pares · ${wave.investmentAmount.toFixed(2)}</span>
+      <div className="flex gap-4 text-[10px] justify-center pt-2 border-t mt-3"
+        style={{ borderColor: DS.colors.bg.border, color: DS.colors.text.muted }}>
+        <span style={{ color: DS.colors.accent.green }}>🟢 Compra (stable→volátil)</span>
+        <span style={{ color: DS.colors.accent.red }}>🔴 Venda (volátil→stable)</span>
       </div>
+    </div>
+  )
+}
+
+function PairRow({ pair, medalIndex }: { pair: { label: string; amplitude: number; network: string }; medalIndex: number }) {
+  const dir = getDirection(pair.label)
+  const strengthPct = Math.round(pair.amplitude * 100)
+  return (
+    <div className="flex items-center gap-3 py-2 px-3 rounded-lg mb-1 transition-all hover:-translate-y-0.5"
+      style={{ background: "rgba(148,163,184,0.05)", border: `1px solid ${DS.colors.bg.border}` }}>
+      <span className="text-sm">{MEDALHAS[medalIndex]}</span>
+      <span className="text-xs font-bold flex-1" style={{ color: DS.colors.text.primary }}>
+        {pair.label}
+      </span>
+      <span className="text-[10px] font-mono font-bold" style={{ color: DIRECTION_COLORS[dir] }}>
+        {dir === "compra" ? "🟢" : "🔴"} força {strengthPct}%
+      </span>
     </div>
   )
 }

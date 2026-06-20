@@ -47,7 +47,7 @@ class Pregão {
     saldosPorRede: {},
     ultimaAtualizacao: Date.now()
   }
-  private LIMIAR_OK = 3
+  private LIMIAR_OK = 2
   private JANELA_MS = 30_000
   private ORDEM_TIMEOUT_MS = 120_000 // 2 min — trava em "preparando" = falha
   private onOrdemCallback: ((ordem: OrdemExecucao) => void) | null = null
@@ -126,15 +126,15 @@ class Pregão {
       const participantes = okValidos.slice(0, this.LIMIAR_OK)
       const confiancaMedia = Math.round(participantes.reduce((s, p) => s + p.sinal.confianca, 0) / participantes.length)
 
-      // Confiança mínima em mainnet: 50%
-      if (rede === "polygon" && confiancaMedia < 50) {
-        this.log(`🚫 Confiança ${confiancaMedia}% < 50% mínimo em mainnet — ordem rejeitada`)
+      // Confiança mínima em mainnet: 40%
+      if (rede === "polygon" && confiancaMedia < 40) {
+        this.log(`🚫 Confiança ${confiancaMedia}% < 40% mínimo em mainnet — ordem rejeitada`)
         return
       }
 
-      // Sequencial: uma ordem por vez, aguarda confirmação na rede
-      if (this.getOrdensAtivas().length > 0) {
-        this.log(`⏳ Ordem anterior ainda não confirmada — aguardando`)
+      // Múltiplas ordens simultâneas (max 5, mas MAX_POSITIONS=3 no agente limita na prática)
+      if (this.getOrdensAtivas().length >= 5) {
+        this.log(`⏳ ${this.getOrdensAtivas().length} ordens ativas — aguardando`)
         return
       }
 

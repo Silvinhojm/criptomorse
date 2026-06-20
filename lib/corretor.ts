@@ -5,11 +5,13 @@ import { positionManager } from "./position-manager"
 import { feeMonetization } from "./fee-monetization"
 import { transactionMemos } from "./transaction-memos"
 import { accountant } from "./accountant"
+import { nanopaymentSystem } from "./nanopayment-system"
 
 const AGENTES_CONHECIDOS = new Set([
   "Quantum", "Technical", "TrendFollower", "MeanReversion",
   "QuantumTrader", "ArbitrageHunter", "MarketMaker", "BTCTrader",
   "Liquidator", "MomentumTrader", "NVIDIAgent", "Synthesis",
+  "Morse",
 ])
 
 class Corretor {
@@ -118,6 +120,18 @@ class Corretor {
           })
         }
         this.log(`🧠 Agentes pontuados: ${ordem.pregueiros.filter(n => AGENTES_CONHECIDOS.has(n.replace("Agente:", ""))).join(", ")} (profit: $${profitPorAgente.toFixed(4)} cada)`)
+
+        // Recompensa financeira por performance: 10% do lucro como pool proporcional
+        const agentesQueVotaram = ordem.pregueiros.filter(n => AGENTES_CONHECIDOS.has(n.replace("Agente:", "")))
+        if (profit > 0 && agentesQueVotaram.length > 0) {
+          const rewardPool = profit * 0.1 // 10% do lucro
+          const rewardPerAgent = rewardPool / agentesQueVotaram.length
+          for (const nome of agentesQueVotaram) {
+            const agente = nome.replace("Agente:", "")
+            nanopaymentSystem.rewardAgentForTrade(agente, rewardPerAgent, ordem.id, ordem.par)
+          }
+          this.log(`🏅 Pool de recompensa: 10% do lucro = $${rewardPool.toFixed(4)} — $${rewardPerAgent.toFixed(4)} para cada um dos ${agentesQueVotaram.length} agentes`)
+        }
 
         const { isPanicActive } = recordTradeResult(profit)
         if (isPanicActive) {

@@ -1,4 +1,4 @@
-# ARCFLOW — Manual de Arquitetura e Parâmetros
+# CriptoMorse — Manual de Arquitetura e Parâmetros
 
 > **LEIA ESTE ARQUIVO PRIMEIRO** antes de qualquer modificação no código.
 > Este documento contém o mapa completo do sistema. Consulte-o sempre que for
@@ -8,13 +8,23 @@
 
 ## 1. VISÃO GERAL
 
-Arcflow é uma plataforma de trading automatizado multi-chain com:
+CriptoMorse é uma plataforma de trading automatizado multi-chain com:
 - **Carteira** multi-chain (Arc Testnet, Polygon, Base, Ethereum)
 - **Sistema de agentes** que votam em oportunidades de swap
 - **Pregão** — um "pregão de bolsa" que coleta votos e gera ordens
 - **Execução real** via LI.FI (mainnet) ou simulação (testnet)
 - **Staircase** — fechamento automático com garantia de lucro
 - **Volatility Tracker** — aprendizado contínuo do comportamento de cada token
+
+### Origem do nome
+
+O nome "CriptoMorse" vem do agente **Morse**, que interpreta velas e indicadores
+(RSI, Bollinger, momentum, amplitude, volatilidade) como se fossem código Morse:
+cada candle é um sinal, cada padrão uma mensagem. Quando múltiplas métricas
+apontam na mesma direção (ex.: RSI sobrevendido + Bollinger squeeze +
+volatilidade baixa + momentum revertendo), o Morse traduz isso como uma
+**mensagem forte do mercado** e vota com alta confiança. Agentes que acertam
+ganham pontos, lucros e podem entrar no Top 3 para ter poder decisório.
 
 ### Stack
 - Next.js 15.5 + React 19.2 + TypeScript strict
@@ -40,7 +50,7 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
        │   └── lifi-executor.ts          ← Integração LI.FI
        │
        ├── SISTEMA DE AGENTES
-       │   ├── agentes-do-pregão.ts      ← 12 agentes de trading (VOTAM AQUI)
+        │   ├── agentes-do-pregão.ts      ← 13 agentes de trading (VOTAM AQUI)
        │   ├── multi-agent-system.ts     ← 5 agentes clássicos
        │   ├── voting-system.ts          ← Sistema de votação
        │   ├── quantum-wave.ts           ← "Onda quântica" (preço real agora)
@@ -57,12 +67,13 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
        │   ├── volatility-tracker.ts     ← Aprende volatilidade de cada token
        │   └── position-manager.ts       ← Gerencia posições + staircase
        │
-       ├── SUPORTE
-       │   ├── persistence.ts            ← localStorage
-       │   ├── circuit-breaker.ts        ← Parada de emergência
-       │   ├── fee-monetization.ts       ← Taxas
-       │   ├── gas-price-oracle.ts       ← Preço do gás
-       │   └── networks.ts / real-swap-executor.ts ← Config de redes
+        ├── SUPORTE
+        │   ├── persistence.ts            ← localStorage
+        │   ├── circuit-breaker.ts        ← Parada de emergência
+        │   ├── fee-monetization.ts       ← Taxas
+        │   ├── gas-price-oracle.ts       ← Preço do gás
+        │   ├── provao-ranking.ts         ← Sistema de competição (provão, bônus, poder de voto)
+        │   └── networks.ts / real-swap-executor.ts ← Config de redes
        │
        └── AGENTES DE MERCADO (dados)
            ├── coingecko-agent.ts
@@ -125,6 +136,8 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
 │    ├── ⚠️ Máximo de 3 posições simultâneas (MAX_POSITIONS=3)      │
 │    ├── Pregão calcula valor dinâmico: saldo/vagasRestantes        │
 │    │   (check em pregueiro.ts + agentes-do-pregão.ts)           │
+│    ├── Validação dinâmica: retorno esperado = confiança × vol    │
+│    │   └── Só compra se valorFinal >= (0.05 + gas) / (retorno - spread)
 │    ├── Vendas (volátil→stable) nunca são bloqueadas             │
 │    ├── Cria OrdemExecucao com participantes e confiança média  │
 │    └── Dispara callback → corretor                             │
@@ -150,7 +163,9 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
 │    ├── A cada ciclo, verifica posições abertas                 │
 │    ├── Busca preço atual do token                              │
 │    ├── Sobe degraus se lucro aumentou                          │
-│    ├── Se caiu 2 degraus do pico → retorna "close"            │
+│    ├── Se caiu 2 degraus do pico → verifica lucro mínimo      │
+│    │   └── Só fecha se lucro USD > gas + spread + margem      │
+│    │   └── Se lucro insuficiente → segura (evita prejuízo)    │
 │    └── Injeta 3 OKs no Pregão para vender → ciclo recomeça     │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -179,8 +194,13 @@ TRAIL_RULES = [
   { minProfit: 100,  maxProfit: Infinity, trailDrop: 12 }, // garante 88%
 ]
 
-// Venda só se lucro cobrir gas (~$0.50 em Polygon)
-SELL_MIN_PROFIT_USD = 0.50
+// Custo estimado de gas por rede (USD) — usado no staircase e no pregão
+GAS_ESTIMATE_USD = { polygon: 0.10, base: 0.08, arbitrum: 0.15, ethereum: 8.00 }
+SPREAD_ESTIMATE_PCT = 0.005  // 0.5%
+MIN_PROFIT_MARGIN = 0.005    // 0.5%
+
+// Staircase só fecha se lucro > gas + spread + margem (evita fechar no prejuízo)
+// Se o lucro em USD atual for menor que a soma, segura a posição
 
 MAX_POSITION_AGE_MS = 12 * 60 * 60 * 1000
 // 12h — força fechamento SÓ se a posição já viu lucro (peakProfitPercent > 0)
@@ -253,15 +273,26 @@ GAS_COST_ESTIMATE: {
 // - Compra mainnet: aborta se gasCost > 50% do trade
 ```
 
-### 4.5 Pregão (pregão.ts)
+### 4.5 Pregão (pregão.ts + agentes-do-pregão.ts)
 
 ```typescript
-LIMIAR_OK = 3      // Quantos OKs para gerar uma ordem (pregueiros)
+LIMIAR_OK = 2      // Quantos OKs para gerar uma ordem (agentes, antes 3 para pregueiros)
 JANELA_MS = 30000  // 30s — OKs expiram após este tempo
 ORDEM_TIMEOUT_MS = 120000  // 2min — ordem "preparando"/"pronto"/"executando" expira
 
 // Agentes usam Top 3 (accountant ranking): 2 dos Top 3 = ordem
 // Fallback: qualquer 2+ agentes no mesmo par
+
+// Alocação de valor por trade (agentes-do-pregão.ts):
+// amountUsd = (saldoEfetivo * 0.9) / vagas, depois:
+//   Ajuste por volatilidade (volMult < 1.0 reduz o valor)
+
+// Na execução, valida se vale a pena:
+//   retornoEsperado = (confiancaMedia / 100) * (volatilidade24h / 100)
+//   tradeMinimo = (MIN_PROFIT_REAL + gasCost) / max(0.001, retornoEsperado - spreadPct)
+//   Só executa se valorFinal >= tradeMinimo (garante $0.05 de lucro real)
+MIN_PROFIT_REAL = 0.05  // Lucro mínimo real desejado por trade (USD)
+TRADE_SPREAD_PCT = 0.005  // 0.5% de spread estimado
 ```
 
 ### 4.6 Agent Learning (corretor.ts + accountant.ts)
@@ -315,6 +346,7 @@ MIN_BALANCE_THRESHOLD = 0.50  // $0.50 — saldos abaixo disso são ignorados no
 | `arcflow_trade_history` | Histórico de trades (só trades reais 0x) | persistence.ts |
 | `arcflow_trader_state` | Estado do trader | persistence.ts |
 | `arcflow_accountant_reports` | Relatórios de trade + scores dos agentes | accountant.ts |
+| `arcflow_provao` | Estado do sistema de competição (provão, bônus, poder de voto) | provao-ranking.ts |
 
 ### O que é perdido no F5 (volátil):
 
@@ -765,7 +797,7 @@ Zona 3 (baixo): ActiveTrades + AgentGrid — posições ativas e ranking
 ### 17.7 Mensagens Simplificadas (`constants/messages.ts`)
 - "🔍 Robôs analisando oportunidades" em vez de "OKs Ativos no Pregão"
 - "⏳ Aguardando melhor momento" em vez de "Confiança X% < 50% mínimo"
-- "👥 16 robôs ativos" em vez de "Pregueiros (4) + Agentes (12)"
+- "👥 17 robôs ativos" em vez de "Pregueiros (4) + Agentes (13)"
 - "🛡️ Proteção ativada" em vez de "Circuit breaker ativo"
 - "📈 Posição subindo" em vez de "Staircase Level X"
 - "💰 Aguardando saldo" em vez de "Saldo insuficiente"
@@ -850,4 +882,116 @@ O `Memo` contract usa a precompile `CallFrom` da Arc para encaminhar uma chamada
 - Se a call filha reverte, a tx inteira reverte
 - `memoId` = `keccak256(utf8(reference))` via `transactionMemos.generateMemoId()`
 
+---
+
+## 21. SISTEMA DE COMPETIÇÃO — PROVÃO, BÔNUS E PODER DE VOTO
+
+### 21.1 Visão Geral (`lib/provao-ranking.ts`)
+
+Sistema gamificado de competição entre agentes, com três premiações e ciclo de poder de voto:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ PROVÃO DIÁRIO                                                    │
+│ ├── A cada trade, o agente é registrado no ranking do dia        │
+│ ├── Ao virar o dia, o provão é finalizado                        │
+│ ├── Vencedor: agente com melhor score (lucro + winRate)          │
+│ └── Prêmio: 1 ponto de bônus diário (acumula para a semana)      │
+├──────────────────────────────────────────────────────────────────┤
+│ BÔNUS SEMANAL (a cada 7 dias)                                    │
+│ ├── Conta quantos provões cada agente venceu na semana           │
+│ ├── Vencedor: quem tem mais vitórias diárias                     │
+│ └── Prêmio: 1 ponto de bônus semanal (acumula para 4 semanas)    │
+├──────────────────────────────────────────────────────────────────┤
+│ GRANDE PRÊMIO (a cada 4 semanas)                                 │
+│ ├── Conta quantos bônus semanais cada agente acumulou            │
+│ ├── Vencedor: quem tem mais vitórias semanais                    │
+│ └── Prêmio: bônus extra                                          │
+├──────────────────────────────────────────────────────────────────┤
+│ PODER DE VOTO (ciclo de 10 trades)                               │
+│ ├── A cada 10 trades no sistema, o ciclo é finalizado            │
+│ ├── Todos os agentes têm o poder de voto zerado                  │
+│ ├── Novo ciclo começa — todos empatados                          │
+│ ├── Poder = lucro * 0.6 + winRate * 0.4 (dentro do ciclo)       │
+│ └── Garante que agentes atrás nunca desanimem — sempre recomeça  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 21.2 Provão Diário
+
+- **Quando**: O provão do dia começa no primeiro trade do dia e finaliza à meia-noite (quando um novo dia é detectado)
+- **Score do dia**: `profit + (wins / trades) * 10`
+- **Prêmio**: O vencedor ganha 1 ponto no acumulador semanal
+- **UI**: Aba "🏆 Provão" na SalaDeAula mostra o líder do dia, último resultado e corrida semanal
+
+### 21.3 Bônus Semanal
+
+- **Quando**: Após 7 provões (segunda a domingo), o agente com mais vitórias diárias vence
+- **Desempate**: Quem tiver mais vitórias diárias na semana
+- **Prêmio**: O vencedor ganha 1 ponto no acumulador do Grande Prêmio (4 semanas)
+- **UI**: Exibe o placar semanal com vitórias de cada agente
+
+### 21.4 Grande Prêmio (4 Semanas)
+
+- **Quando**: A cada 4 semanas, o agente com mais bônus semanais vence
+- **Prêmio**: Bônus extra + registro no histórico de grandes campeões
+- **UI**: Exibe o campeão e o placar das 4 semanas
+
+### 21.5 Poder de Voto (Ciclo de 10 Trades)
+
+- **Ciclo**: A cada 10 trades no sistema, TODOS os agentes têm o poder de voto zerado
+- **Cálculo**: Dentro de cada ciclo, o poder é:
+  - `power = profitRatio * 0.6 + winRateRatio * 0.4`
+  - `profitRatio = profit / maxProfit do ciclo`
+  - `winRateRatio = winRate / maxWinRate do ciclo`
+  - Resultado: 0-1 (0% a 100%)
+- **Impacto**: O poder de voto pode ser usado para ponderar a confiança dos agentes nas votações (integração futura com `agentes-do-pregão.ts`)
+- **Reset**: A cada 10 trades, todos voltam a 0 — ninguém fica para trás permanentemente
+- **UI**: Aba "🗳️ Poder de Voto" na SalaDeAula mostra barra de progresso do ciclo e ranking de poder atual
+
+### 21.6 Persistência
+
+| Chave | Conteúdo | Módulo |
+|-------|----------|--------|
+| `arcflow_provao` | Estado completo (dailyScores, dailyHistory, weeklyHistory, grandPrizes, cycleState, accumulators) | provao-ranking.ts |
+
+### 21.7 Integração com Accountant
+
+- `accountant.addReport()` → chama `provaoRanking.recordTrade(agentName, profit)`
+- A cada trade: atualiza score diário + ciclo de poder de voto
+- Ao finalizar dia: define vencedor do provão
+- A cada 10 trades: zera poder de voto de todos
+
+### 21.8 UI — Abas da SalaDeAula
+
+A SalaDeAula agora tem 3 abas:
+1. **📊 Ranking** — ranking clássico dos agentes (notas, streaks, níveis)
+2. **🏆 Provão** — competições: provão do dia, corrida semanal, grande prêmio
+3. **🗳️ Poder de Voto** — ciclo de 10 trades, ranking de poder atual, progresso do reset
+
 *Documento gerado em 19/06/2026. Mantenha atualizado conforme novas features.*
+
+---
+
+## 22. CHANGELOG — 19/06/2026
+
+### Pregão — LIMIAR_OK
+- **Fix**: `LIMIAR_OK = 3 → 2` — o sistema migrou de 3 pregueiros para 2 agentes do Top 3, mas o limite nunca foi ajustado. Resultado: 2 OKs chegavam, Pregão esperava o 3º que nunca vinha → NENHUMA ordem passava.
+- **Efeito**: com 2 OKs, a média de confiança é MAIOR (elimina o 3º agente de baixa confiança que diluía a média)
+
+### Staircase
+- **Fix**: `staircaseUpdate` não fecha mais no prejuízo — verifica se `lucroUSD >= gas + spread + margem` antes de fechar
+- **Novas constantes**: `GAS_ESTIMATE_USD` (por rede), `SPREAD_ESTIMATE_PCT` (0.5%), `MIN_PROFIT_MARGIN` (0.5%)
+
+### Pregão — mínimo dinâmico por trade
+- **Novo**: valor mínimo de trade calculado dinamicamente: `(MIN_PROFIT_REAL + gas) / (retornoEsperado - spread)`
+- `retornoEsperado = (confiancaMedia / 100) * (volatilidade24h / 100)`
+- Só executa trade se o valor investido puder gerar **$0.05 de lucro real** após custos
+
+### Testnet Arc — cirBTC
+- **Fix**: cotação sintética agora usa preço real do BTC — `toAmount = amountUsd / btcPrice` em vez de 1:1
+- **Fix**: `getPortfolioTokens` agora inclui `cirBTC` e `mcirBTC` no portfolio da UI
+- **Fix**: `getTokenAddress` estendido para suportar cirBTC/mcirBTC
+
+### Provão
+- **Fix**: `_finalizeDay` usava variável `day` inexistente → corrigido para `this.state.currentDay`

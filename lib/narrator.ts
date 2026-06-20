@@ -20,6 +20,13 @@ class Narrador {
   }
 
   private emit(event: NarratorEvent) {
+    // Deduplica: se a última mensagem é idêntica, só atualiza o timestamp
+    const last = this.history[0]
+    if (last && last.text === event.text && last.type === event.type) {
+      last.timestamp = event.timestamp
+      for (const cb of this.callbacks) cb(last)
+      return
+    }
     this.history.unshift(event)
     if (this.history.length > this.maxHistory) this.history.pop()
     for (const cb of this.callbacks) cb(event)
@@ -68,7 +75,7 @@ class Narrador {
   confiançaBaixa() {
     this.emit({
       icon: "🤔",
-      text: `Agentes sem convicção suficiente para mainnet (abaixo de 50%). Aguardando melhores oportunidades.`,
+      text: `Agentes sem convicção suficiente para mainnet (abaixo de 40%). Aguardando melhores oportunidades.`,
       timestamp: Date.now(),
       type: "info",
     })

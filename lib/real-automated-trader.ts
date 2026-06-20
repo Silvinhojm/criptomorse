@@ -24,6 +24,7 @@ export interface TradeRecord {
   message: string;
   timestamp: number;
   confirmed: boolean;
+  networkKey?: string;
 }
 
 export interface TraderStats {
@@ -146,7 +147,7 @@ class RealAutomatedTrader {
       } else { this.log(`Trade falhou: ${result.message}`); }
       this.totalProfit += profit;
       this.lastAction = `${best.pair.from}->${best.pair.to} $${adjustedTrade.netAmount}`;
-      const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: adjustedTrade.netAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: `${result.message} | fee: $${adjustedTrade.fee.toFixed(4)}`, timestamp, confirmed: result.confirmed };
+      const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: adjustedTrade.netAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: `${result.message} | fee: $${adjustedTrade.fee.toFixed(4)}`, timestamp, confirmed: result.confirmed, networkKey: this.networkKey };
       this.tradeHistory.push(record); this._persist(); this.onTradeCallback?.(record);
       return record;
     }
@@ -157,7 +158,7 @@ class RealAutomatedTrader {
       if (result.success) {
         if (result.toAmount <= 0) {
           this.log(`⚠️ Swap executou mas toAmount = ${result.toAmount} — pulando registro de posição`);
-          return { id, action: "BUY" as const, fromToken: best.pair.from, toToken: best.pair.to, fromAmount: tradeAmount, toAmount: 0, profit: 0, txHash: result.txHash, explorerUrl: result.explorerUrl, message: "toAmount zero", timestamp, confirmed: false };
+          return { id, action: "BUY" as const, fromToken: best.pair.from, toToken: best.pair.to, fromAmount: tradeAmount, toAmount: 0, profit: 0, txHash: result.txHash, explorerUrl: result.explorerUrl, message: "toAmount zero", timestamp, confirmed: false, networkKey: this.networkKey };
         }
         const volatileToken = best.pair.to;
         const paidToken = best.pair.from;
@@ -170,7 +171,7 @@ class RealAutomatedTrader {
       const profit = 0;
       this.totalProfit += profit;
       this.lastAction = `BUY $${tradeAmount} ${best.pair.to} (posicao)`;
-      const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: tradeAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: result.message, timestamp, confirmed: result.confirmed ?? false };
+      const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: tradeAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: result.message, timestamp, confirmed: result.confirmed ?? false, networkKey: this.networkKey };
       this.tradeHistory.push(record); this._persist(); this.onTradeCallback?.(record);
       return record;
     }
@@ -189,7 +190,7 @@ class RealAutomatedTrader {
       }
       this.totalProfit += profit;
       this.lastAction = `CLOSE ${best.pair.from}→${best.pair.to}`;
-      const record: TradeRecord = { id, action: "SELL", fromToken: result.fromToken, toToken: result.toToken, fromAmount: tradeAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: result.message, timestamp, confirmed: result.confirmed ?? false };
+      const record: TradeRecord = { id, action: "SELL", fromToken: result.fromToken, toToken: result.toToken, fromAmount: tradeAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: result.message, timestamp, confirmed: result.confirmed ?? false, networkKey: this.networkKey };
       this.tradeHistory.push(record); this._persist(); this.onTradeCallback?.(record);
       return record;
     }
@@ -216,7 +217,7 @@ class RealAutomatedTrader {
         const targetPrice = await positionManager.fetchTokenPrice(target);
         positionManager.openPosition(this.networkKey, target, stable, result.toAmount, amount, targetPrice);
         this.log(`Posicao ${target} aberta: ${result.toAmount.toFixed(6)} @ $${targetPrice.toFixed(2)}`);
-        const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: amount, toAmount: result.toAmount, profit: 0, txHash: result.txHash, explorerUrl: result.explorerUrl, message: `${target} position @ $${targetPrice.toFixed(2)}`, timestamp, confirmed: result.confirmed ?? false };
+        const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: amount, toAmount: result.toAmount, profit: 0, txHash: result.txHash, explorerUrl: result.explorerUrl, message: `${target} position @ $${targetPrice.toFixed(2)}`, timestamp, confirmed: result.confirmed ?? false, networkKey: this.networkKey };
         this.tradeHistory.push(record); this._persist(); this.onTradeCallback?.(record);
         bought = true;
         break;
@@ -326,6 +327,7 @@ class RealAutomatedTrader {
       message: `HOLD - ${reason}`,
       timestamp,
       confirmed: false,
+      networkKey: this.networkKey,
     };
   }
 
@@ -365,6 +367,7 @@ class RealAutomatedTrader {
       explorerUrl: result.explorerUrl,
       message: `micro: $${result.profit.toFixed(6)} | gas $${result.gasUsed.toFixed(4)}`,
       timestamp, confirmed: result.confirmed,
+      networkKey: this.networkKey,
     };
 
     this.tradeHistory.push(record);

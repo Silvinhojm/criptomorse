@@ -497,6 +497,8 @@ function SwapBridgeModal({
   const getTokenAddress = (network: Network, tokenSymbol: string): string => {
     if (tokenSymbol === "USDC") return network.usdc;
     if (tokenSymbol === "EURC") return network.eurc;
+    if (tokenSymbol === "cirBTC") return "0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF";
+    if (tokenSymbol === "mcirBTC") return "0x8cad4951192853D14f8Cb813695146b5Ae00EA6d";
     return network.usdc;
   };
 
@@ -712,8 +714,8 @@ function ReceiveModal({ account, onClose, network }: { account: string; onClose:
 
 function SectionMatch({ section, children }: { section: string; children: React.ReactNode }) {
   const ctx = useSection()
-  const hidden = ctx.section !== section
-  return <div style={{ display: hidden ? "none" : undefined }}>{children}</div>
+  if (ctx.section !== section) return null
+  return <>{children}</>
 }
 
 // COMPONENTE PRINCIPAL HOME
@@ -744,13 +746,15 @@ export default function Home() {
     const common: { symbol: string; name: string; icon: string; address: string; decimals: number; isNative: boolean }[] = [
       { symbol: currentNetwork.nativeCurrency.symbol, name: currentNetwork.nativeCurrency.name, icon: "🪙", address: "", decimals: currentNetwork.nativeCurrency.decimals, isNative: true },
     ];
-    // Arc: USDC é nativo, EURC é ERC-20
+    // Arc: USDC é nativo, EURC + cirBTC + mcirBTC são ERC-20
     if (currentNetwork.chainId === 5042002) {
       common.push(
         { symbol: "USDC", name: "USD Coin", icon: "💵", address: "", decimals: 6, isNative: true },
         { symbol: "EURC", name: "Euro Coin", icon: "💶", address: currentNetwork.eurc, decimals: 6, isNative: false },
+        { symbol: "cirBTC", name: "Circulating BTC", icon: "₿", address: "0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF", decimals: 8, isNative: false },
+        { symbol: "mcirBTC", name: "Micro Circulating BTC", icon: "₿", address: "0x8cad4951192853D14f8Cb813695146b5Ae00EA6d", decimals: 8, isNative: false },
       );
-      return common; // Arc só tem USDC (nativo) + EURC
+      return common;
     }
     // Demais redes: USDC é ERC-20 real
     common.push(

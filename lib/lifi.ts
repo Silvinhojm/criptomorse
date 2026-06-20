@@ -1,11 +1,16 @@
 // lib/lifi.ts - VERSÃO CORRIGIDA
 // Integração com LI.FI SDK para cross-chain swaps e bridges
 
-import { getRoutes, getQuote, executeRoute, type Route, type RoutesResponse, type LiFiStep } from '@lifi/sdk';
-import { BrowserProvider, type Eip1193Provider } from 'ethers';
+import * as ethers from 'ethers';
+import { getRoutes, getStepTransaction, type Route, type RoutesResponse, type LiFiStep } from '@lifi/sdk';
 import { lifiClient } from './lifi-config';
 // Re-exportar tipos para uso em outros arquivos
 export type { Route, RoutesResponse, LiFiStep };
+
+const ERC20_ABI = [
+  'function allowance(address owner, address spender) view returns (uint256)',
+  'function approve(address spender, uint256 amount) returns (bool)',
+];
 
 // ============================================================
 // TIPOS
@@ -68,6 +73,9 @@ export async function checkLifiRoute({
     if (!fromToken || !toToken) {
       throw new Error('Endereços dos tokens são obrigatórios');
     }
+    if (fromChainId === toChainId && fromToken.toLowerCase() === toToken.toLowerCase()) {
+      throw new Error('Tokens de origem e destino precisam ser diferentes na mesma rede');
+    }
     if (!fromAmount || parseFloat(fromAmount) <= 0) {
       throw new Error('Amount deve ser maior que zero');
     }
@@ -126,6 +134,9 @@ export async function getBestLifiQuote({
   toAddress,
 }: LifiRouteParams): Promise<LifiQuoteResult> {
   try {
+    if (fromChainId === toChainId && fromToken.toLowerCase() === toToken.toLowerCase()) {
+      return { success: false, error: 'Tokens de origem e destino precisam ser diferentes na mesma rede' };
+    }
     console.log(`📊 LI.FI: Buscando melhor bridge para ${fromChainId} → ${toChainId}`);
 
     const routes = await getRoutes(lifiClient, {
@@ -191,46 +202,85 @@ export async function executeLifiRoute(
   }
 ): Promise<LifiExecutionResult> {
   try {
-    if (!route) {
-      throw new Error('Rota não fornecida');
-    }
+    if (!route) throw new Error('Rota não fornecida');
+    if (!route.steps?.length) throw new Error('Rota não possui steps');
 
-    console.log(`🚀 LI.FI: Executando bridge...`);
+    console.log(`🚀 LI.FI: Executando bridge (REST + ethers)...`);
     console.log(`   Steps: ${route.steps.length}`);
-    
-   const executedRoute = await executeRoute(lifiClient, route, {
-      updateRouteHook: (updatedRoute: Route) => {
-        console.log(`LI.FI: Atualização da rota`);
-        if (options?.onUpdate) {
-          options.onUpdate(updatedRoute);
-        }
-      },
-    });
 
-    let txHash = '';
-    if (executedRoute.steps.length > 0) {
-      const lastStep = executedRoute.steps[executedRoute.steps.length - 1];
-      // Acessar o hash da transação de forma segura
-      const execution = lastStep as any;
-      if (execution && execution.execution && execution.execution.process && execution.execution.process.length > 0) {
-        const lastProcess = execution.execution.process[execution.execution.process.length - 1];
-        txHash = lastProcess.txHash || '';
+    const provider = (window as any).ethereum as ethers.Eip1193Provider | undefined;
+    if (!provider) throw new Error('MetaMask não encontrada');
+
+    const browserProvider = new ethers.BrowserProvider(provider);
+    const signer = await browserProvider.getSigner();
+    const fromAddress = await signer.getAddress();
+
+    let lastTxHash = '';
+
+    for (const step of route.steps) {
+      console.log(`   Step: ${step.tool} ${step.action.fromChainId} → ${step.action.toChainId}`);
+
+      // Handle ERC-20 approval if needed (check estimate.approvalAddress)
+      const approvalAddress = step.estimate?.approvalAddress;
+      if (approvalAddress && step.action.fromToken.address) {
+        const tokenAddress = step.action.fromToken.address;
+        const isNative = tokenAddress.toLowerCase() === '0x0000000000000000000000000000000000000000';
+        if (!isNative) {
+          const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
+          const allowance = await tokenContract.allowance(fromAddress, approvalAddress);
+          const amount = BigInt(step.action.fromAmount);
+          if (allowance < amount) {
+            console.log(`   Aprovando ${step.action.fromToken.symbol} → ${approvalAddress}...`);
+            const approveTx = await tokenContract.approve(
+              approvalAddress,
+              options?.infiniteApproval ? ethers.MaxUint256 : amount,
+            );
+            await approveTx.wait();
+            console.log(`   Aprovação confirmada: ${approveTx.hash}`);
+          }
+        }
+      }
+
+      // Get transaction request via SDK REST API
+      const stepWithTx = await getStepTransaction(lifiClient, step as any);
+      const txReq = stepWithTx.transactionRequest;
+      if (!txReq?.data || !txReq?.to) {
+        console.warn(`   Step ${step.tool} sem transactionRequest, pulando`);
+        continue;
+      }
+
+      console.log(`   Enviando transação para ${txReq.to}...`);
+      const tx = await signer.sendTransaction({
+        to: txReq.to,
+        data: txReq.data as `0x${string}`,
+        value: BigInt(txReq.value || '0x0'),
+        chainId: step.action.fromChainId,
+      });
+
+      console.log(`   TX enviada: ${tx.hash}`);
+      lastTxHash = tx.hash;
+
+      const receipt = await tx.wait();
+      if (receipt && receipt.status === 1) {
+        console.log(`   TX confirmada no bloco ${receipt.blockNumber}`);
+      } else {
+        throw new Error(`Transação falhou on-chain`);
       }
     }
 
-    console.log(`✅ LI.FI: Bridge concluída! TxHash: ${txHash}`);
+    console.log(`✅ LI.FI: Bridge concluída! TxHash: ${lastTxHash}`);
 
     return {
       success: true,
-      route: executedRoute,
-      txHash,
+      route,
+      txHash: lastTxHash,
     };
   } catch (err) {
     console.error('❌ LI.FI: Erro ao executar bridge:', err);
-    
+
     let errorMessage = 'Erro ao executar bridge';
     if (err instanceof Error) {
-      if (err.message.includes('user rejected')) {
+      if (err.message.includes('user rejected') || err.message.includes('ACTION_REJECTED')) {
         errorMessage = 'Transação rejeitada pelo usuário';
       } else if (err.message.includes('insufficient')) {
         errorMessage = 'Saldo insuficiente para a transação';
@@ -240,7 +290,7 @@ export async function executeLifiRoute(
         errorMessage = err.message;
       }
     }
-    
+
     return {
       success: false,
       error: errorMessage,

@@ -1,6 +1,8 @@
 "use client"
 import { useState, useEffect } from "react"
 import { accountant } from "@/lib/accountant"
+import { provaoRanking } from "@/lib/provao-ranking"
+import { nanopaymentSystem } from "@/lib/nanopayment-system"
 import { DESIGN_SYSTEM as DS } from "@/constants/design-system"
 
 const COR_DOURADO = "#d4a574"
@@ -53,11 +55,14 @@ function MedalVisual({ nome }: { nome: string }) {
   return <span style={{ fontSize: 16 }}>{medal ?? "📖"}</span>
 }
 
+type Tab = "ranking" | "provao" | "poder";
+
 export function SalaDeAula() {
   const [ranking, setRanking] = useState(accountant.getRanking())
   const [turmaStats, setTurmaStats] = useState(accountant.getStats())
-  const [professorMsg, setProfessorMsg] = useState("📚 Bem-vindos à Sala de Aula! Vamos ver como os agentes estão se saindo hoje...")
-  const [animatingBar, setAnimatingBar] = useState("")
+  const [provStats, setProvStats] = useState(provaoRanking.getStats())
+  const [professorMsg] = useState("📚 Bem-vindos à Sala de Aula! Vamos ver como os agentes estão se saindo hoje...")
+  const [tab, setTab] = useState<Tab>("ranking")
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -65,6 +70,7 @@ export function SalaDeAula() {
       const s = accountant.getStats()
       setRanking([...r])
       setTurmaStats({ ...s })
+      setProvStats({ ...provaoRanking.getStats() })
     }, 3000)
     return () => clearInterval(interval)
   }, [])
@@ -75,13 +81,33 @@ export function SalaDeAula() {
 
   return (
     <div className="rounded-xl p-4" style={{ background: DS.colors.bg.card, border: `1px solid ${DS.colors.bg.border}` }}>
+      {/* Header */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
         <span style={{ fontSize: 24 }}>📚</span>
         <span style={{ fontWeight: "bold", color: DS.colors.text.primary, fontSize: 16 }}>Sala de Aula</span>
-        <span style={{ fontSize: 10, color: DS.colors.text.muted }}>— Ranking dos Agentes</span>
+        <span style={{ fontSize: 10, color: DS.colors.text.muted }}>— Ranking e Competições</span>
       </div>
 
-      {/* Mensagem do Professor com ícone de quadro-negro */}
+      {/* Abas */}
+      <div style={{ display: "flex", gap: 4, marginBottom: 10 }}>
+        {([
+          { key: "ranking" as Tab, label: "📊 Ranking", cor: DS.colors.accent.blue },
+          { key: "provao" as Tab, label: "🏆 Provão", cor: COR_DOURADO },
+          { key: "poder" as Tab, label: "🗳️ Poder de Voto", cor: DS.colors.accent.green },
+        ]).map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)} style={{
+            flex: 1, padding: "6px 8px", fontSize: 10, fontWeight: "bold",
+            background: tab === t.key ? t.cor + "22" : "rgba(255,255,255,0.05)",
+            border: `1px solid ${tab === t.key ? t.cor + "44" : "transparent"}`,
+            borderRadius: 8, color: tab === t.key ? t.cor : DS.colors.text.muted,
+            cursor: "pointer", transition: "all 0.2s",
+          }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Mensagem do Professor */}
       <div style={{
         background: `linear-gradient(135deg, ${DS.colors.accent.blue}15, rgba(212,165,116,0.05))`,
         border: `1px solid ${DS.colors.accent.blue}33`,
@@ -93,7 +119,25 @@ export function SalaDeAula() {
         <span><strong>Professor:</strong> {professorMsg}</span>
       </div>
 
-      {/* Estatísticas da Turma */}
+      {tab === "ranking" && <RankingTab ranking={ranking} turmaStats={turmaStats} mediaTurma={mediaTurma} professorFeedback={professorFeedback} />}
+      {tab === "provao" && <ProvaoTab provStats={provStats} />}
+      {tab === "poder" && <PoderTab provStats={provStats} />}
+    </div>
+  )
+}
+
+// ─── Aba: Ranking ───
+
+function RankingTab({
+  ranking, turmaStats, mediaTurma, professorFeedback,
+}: {
+  ranking: ReturnType<typeof accountant.getRanking>;
+  turmaStats: ReturnType<typeof accountant.getStats>;
+  mediaTurma: number;
+  professorFeedback: (score: number, streak: number, wins: number, losses: number) => string;
+}) {
+  return (
+    <>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6, marginBottom: 12 }}>
         <Quadro label="🎓 Agentes" valor={`${ranking.length}`} />
         <Quadro label="📝 Avaliações" valor={`${turmaStats.totalTrades}`} />
@@ -101,7 +145,6 @@ export function SalaDeAula() {
         <Quadro label="🥇 Primeiro" valor={turmaStats.bestAgent ?? "—"} cor={DS.colors.accent.green} />
       </div>
 
-      {/* Ranking dos Agentes */}
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         {ranking.map((ag, i) => {
           const grade = accountant.getGrade(ag.score)
@@ -129,7 +172,6 @@ export function SalaDeAula() {
                 </span>
               </div>
 
-              {/* Barra de progresso animada */}
               <div style={{ background: "rgba(255,255,255,0.05)", borderRadius: 4, height: 6, marginBottom: 4, overflow: "hidden" }}>
                 <div style={{
                   width: `${barraWidth}%`, height: "100%", borderRadius: 4,
@@ -148,6 +190,9 @@ export function SalaDeAula() {
                 <span style={{ color: ag.streak >= 0 ? DS.colors.accent.green : DS.colors.accent.red }}>
                   {ag.streak >= 0 ? `🔥 +${ag.streak}` : `❄️ ${ag.streak}`}
                 </span>
+                <span style={{ color: COR_DOURADO }}>
+                  💰 ${nanopaymentSystem.getPerformanceEarnings(ag.agentName).toFixed(4)}
+                </span>
                 {proximo && (
                   <span style={{ color: COR_DOURADO, fontSize: 9 }}>
                     🎯 {proximo.nome} em {proximo.pontosFaltando} pts
@@ -155,7 +200,6 @@ export function SalaDeAula() {
                 )}
               </div>
 
-              {/* Feedback do Professor */}
               <div style={{ fontSize: 9, color: DS.colors.text.secondary, marginTop: 3, fontStyle: "italic" }}>
                 📖 {feedback}
               </div>
@@ -169,15 +213,221 @@ export function SalaDeAula() {
           📚 Nenhum agente avaliado ainda. Os votos acumulados na Sala de Aula aparecerão aqui.
         </div>
       )}
+    </>
+  )
+}
+
+// ─── Aba: Provão ───
+
+function ProvaoTab({ provStats }: { provStats: ReturnType<typeof provaoRanking.getStats> }) {
+  const dailyWinner = provStats.dailyWinner;
+  const lastDaily = provStats.lastDailyResult;
+  const weeklyBoard = provStats.weeklyLeaderboard;
+  const lastWeekly = provStats.lastWeeklyBonus;
+  const lastGrand = provStats.lastGrandPrize;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {/* Provão do Dia */}
+      <CardSection titulo="📋 Provão do Dia" cor={COR_DOURADO}>
+        {dailyWinner ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 24 }}>👑</span>
+            <div>
+              <div style={{ fontWeight: "bold", color: DS.colors.text.primary, fontSize: 13 }}>
+                {dailyWinner.agentName}
+              </div>
+              <div style={{ fontSize: 10, color: DS.colors.text.muted }}>
+                Lucro hoje: ${dailyWinner.profit.toFixed(2)} | 🏆 1 bônus diário
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div style={{ fontSize: 11, color: DS.colors.text.muted }}>⏳ Nenhum trade ainda hoje. O provão começa com o primeiro trade do dia!</div>
+        )}
+      </CardSection>
+
+      {/* Último resultado diário */}
+      {lastDaily && (
+        <CardSection titulo={`📅 Resultado: ${lastDaily.date}`} cor={DS.colors.accent.blue}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {lastDaily.winner && (
+              <div style={{ fontSize: 11, color: DS.colors.accent.green, fontWeight: "bold" }}>
+                🥇 Vencedor: {lastDaily.winner}
+              </div>
+            )}
+            {lastDaily.scores.map(s => (
+              <div key={s.agentName} style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: DS.colors.text.secondary }}>
+                <span>{s.agentName}</span>
+                <span>{s.trades} trades | ✅ {s.wins}V | 💰 ${s.profit.toFixed(2)}</span>
+              </div>
+            ))}
+          </div>
+        </CardSection>
+      )}
+
+      {/* Bônus Semanal */}
+      <CardSection titulo="🏆 Corrida Semanal" cor={DS.colors.accent.green}>
+        {weeklyBoard.length > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {weeklyBoard.map((entry, i) => (
+              <div key={entry.agentName} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+                <span style={{ color: DS.colors.text.muted, minWidth: 16 }}>#{i + 1}</span>
+                <span style={{ fontWeight: i === 0 ? "bold" : "normal", color: DS.colors.text.primary }}>{entry.agentName}</span>
+                <span style={{ marginLeft: "auto", color: COR_DOURADO }}>
+                  {entry.wins} {entry.wins === 1 ? "vitória" : "vitórias"} 🏅
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ fontSize: 11, color: DS.colors.text.muted }}>⏳ Nenhuma vitória diária ainda esta semana.</div>
+        )}
+      </CardSection>
+
+      {/* Último bônus semanal */}
+      {lastWeekly && (
+        <CardSection titulo="🎖️ Último Bônus Semanal" cor="#fbbf24">
+          <div style={{ fontSize: 12, fontWeight: "bold", color: COR_DOURADO, marginBottom: 4 }}>
+            🏆 Campeão: {lastWeekly.winner}
+          </div>
+          {lastWeekly.dailyWins.map(dw => (
+            <div key={dw.agentName} style={{ fontSize: 10, color: DS.colors.text.secondary }}>
+              {dw.agentName}: {dw.count} {dw.count === 1 ? "provão" : "provões"} vencidos
+            </div>
+          ))}
+        </CardSection>
+      )}
+
+      {/* Grande Prêmio */}
+      {lastGrand && (
+        <CardSection titulo="💎 Grande Prêmio (4 semanas)" cor={DS.colors.accent.red}>
+          <div style={{ fontSize: 12, fontWeight: "bold", color: COR_DOURADO, marginBottom: 4 }}>
+            👑 Grande Campeão: {lastGrand.winner}
+          </div>
+          {lastGrand.weeklyWins.map(ww => (
+            <div key={ww.agentName} style={{ fontSize: 10, color: DS.colors.text.secondary }}>
+              {ww.agentName}: {ww.count} {ww.count === 1 ? "semana" : "semanas"} vencidas
+            </div>
+          ))}
+          <div style={{ fontSize: 10, color: DS.colors.text.muted, marginTop: 4 }}>
+            Período: {lastGrand.periodStart}
+          </div>
+        </CardSection>
+      )}
+
+      {!lastDaily && !lastWeekly && !lastGrand && !dailyWinner && (
+        <div style={{ textAlign: "center", padding: 20, color: DS.colors.text.muted, fontSize: 11 }}>
+          🏆 Nenhuma competição registrada ainda. Os resultados aparecerão conforme os trades forem feitos.
+        </div>
+      )}
     </div>
   )
 }
+
+// ─── Aba: Poder de Voto ───
+
+function PoderTab({ provStats }: { provStats: ReturnType<typeof provaoRanking.getStats> }) {
+  const votePower = provStats.votePower;
+  const tradesUntilReset = provStats.tradesUntilReset;
+  const cycleTrades = provStats.tradesThisCycle;
+
+  const resetPercent = Math.min(100, (cycleTrades / 10) * 100);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {/* Barra de ciclo */}
+      <CardSection titulo="🔄 Ciclo de Avaliação" cor={DS.colors.accent.blue}>
+        <div style={{ marginBottom: 6 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: DS.colors.text.muted, marginBottom: 4 }}>
+            <span>{cycleTrades} / 10 trades</span>
+            <span>{tradesUntilReset > 0 ? `${tradesUntilReset} trades para reset` : "⚡ Resetando..."}</span>
+          </div>
+          <div style={{ background: "rgba(255,255,255,0.05)", borderRadius: 4, height: 8, overflow: "hidden" }}>
+            <div style={{
+              width: `${resetPercent}%`, height: "100%", borderRadius: 4,
+              background: `linear-gradient(90deg, ${DS.colors.accent.blue}, ${DS.colors.accent.green})`,
+              transition: "width 0.5s ease",
+            }} />
+          </div>
+        </div>
+        <div style={{ fontSize: 9, color: DS.colors.text.muted }}>
+          ⚡ Após 10 trades, o poder de voto de TODOS os agentes é zerado e uma nova avaliação começa.
+        </div>
+      </CardSection>
+
+      {/* Ranking de poder de voto */}
+      <CardSection titulo="🗳️ Poder de Voto (Ciclo Atual)" cor={DS.colors.accent.green}>
+        {votePower.length > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {votePower.map((entry, i) => {
+              const barWidth = Math.max(5, entry.power * 100);
+              return (
+                <div key={entry.agentName} style={{
+                  background: "rgba(0,0,0,0.15)", borderRadius: 8, padding: 6,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                    <span style={{ fontSize: 10, color: DS.colors.text.muted, minWidth: 16 }}>#{i + 1}</span>
+                    <span style={{ fontSize: 12 }}>{AGENTE_ICONES[i % AGENTE_ICONES.length]}</span>
+                    <span style={{ fontWeight: "bold", color: DS.colors.text.primary, fontSize: 11 }}>{entry.agentName}</span>
+                    <span style={{
+                      marginLeft: "auto", fontSize: 11, fontWeight: "bold",
+                      color: entry.power > 0.5 ? DS.colors.accent.green : entry.power > 0.2 ? "#fbbf24" : DS.colors.accent.red,
+                    }}>
+                      {(entry.power * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                  <div style={{ background: "rgba(255,255,255,0.05)", borderRadius: 3, height: 4, overflow: "hidden" }}>
+                    <div style={{
+                      width: `${barWidth}%`, height: "100%", borderRadius: 3,
+                      background: `linear-gradient(90deg, ${DS.colors.accent.blue}, ${DS.colors.accent.green})`,
+                      transition: "width 0.5s ease",
+                    }} />
+                  </div>
+                  <div style={{ fontSize: 8, color: DS.colors.text.muted, marginTop: 2 }}>
+                    📊 {entry.trades} trades | ✅ {entry.wins}V | 📈 {entry.winRate.toFixed(0)}% | 💰 ${entry.profit.toFixed(2)}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <div style={{ textAlign: "center", padding: 12, color: DS.colors.text.muted, fontSize: 11 }}>
+            🗳️ Nenhum trade ainda neste ciclo. O poder de voto será calculado conforme os agentes forem votando.
+          </div>
+        )}
+      </CardSection>
+
+      {/* Como funciona */}
+      <div style={{ fontSize: 9, color: DS.colors.text.muted, padding: "8px 0", lineHeight: 1.5 }}>
+        <strong style={{ color: DS.colors.text.secondary }}>⚙️ Como funciona:</strong><br />
+        A cada 10 trades, o poder de voto de todos os agentes é zerado e uma nova avaliação começa.<br />
+        O peso de cada agente é calculado com base no lucro (60%) e win rate (40%) do ciclo atual.<br />
+        Isso garante que ninguém fique desanimado — sempre dá para recuperar no próximo ciclo!
+      </div>
+    </div>
+  )
+}
+
+// ─── Componentes auxiliares ───
 
 function Quadro({ label, valor, cor }: { label: string; valor: string; cor?: string }) {
   return (
     <div style={{ background: "rgba(255,255,255,0.05)", borderRadius: 8, padding: 8, textAlign: "center" }}>
       <div style={{ fontSize: 9, color: DS.colors.text.muted, marginBottom: 2 }}>{label}</div>
       <div style={{ fontSize: 14, fontWeight: "bold", color: cor ?? DS.colors.text.primary }}>{valor}</div>
+    </div>
+  )
+}
+
+function CardSection({ titulo, cor, children }: { titulo: string; cor: string; children: React.ReactNode }) {
+  return (
+    <div style={{
+      background: "rgba(0,0,0,0.15)", borderRadius: 10, padding: 10,
+      border: `1px solid ${cor}22`,
+    }}>
+      <div style={{ fontSize: 11, fontWeight: "bold", color: cor, marginBottom: 6 }}>{titulo}</div>
+      {children}
     </div>
   )
 }

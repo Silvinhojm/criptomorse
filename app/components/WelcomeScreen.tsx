@@ -34,13 +34,13 @@ export default function WelcomeScreen({ onConnect, connecting }: Props) {
       {/* Nome da plataforma */}
       <h1 className="text-3xl font-bold tracking-tight mb-2"
         style={{ color: DS.colors.text.primary }}>
-        ARCFLOW
+        CriptoMorse
       </h1>
 
       {/* Frase de impacto */}
       <p className="text-base mb-10 text-center max-w-xs"
         style={{ color: DS.colors.text.secondary }}>
-        Seus robôs trabalhando para você 24h
+        Robôs que traduzem velas RSI e Bollinger como código Morse — cada candle é um sinal, cada padrão uma mensagem do mercado
       </p>
 
       {/* Botão Conectar Carteira */}

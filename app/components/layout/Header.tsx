@@ -46,7 +46,7 @@ export default function Header({ onToggleWallet, currentNetworkKey, onNetworkCha
           <div className="flex items-center gap-2">
             <Activity size={20} style={{ color: DS.colors.accent.blue }} />
             <span className="font-bold text-sm tracking-tight" style={{ color: DS.colors.text.primary }}>
-              ARCFLOW
+              CriptoMorse
             </span>
           </div>
           <div className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-medium"

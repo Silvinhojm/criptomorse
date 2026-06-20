@@ -32,7 +32,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
   const [walletBalance, setWalletBalance] = useState(0)
   const [allowedBalance, setAllowedBalance] = useState(() => {
     const v = getPregãoAllowedBalance()
-    return v === Infinity ? 0 : v
+    return v === Infinity ? 15 : v
   })
   const logRef = useRef<HTMLDivElement>(null)
   const cicloRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -344,8 +344,8 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
           </div>
           <div style={{ fontSize: 9, color: "#6b7280", marginTop: 4 }}>
             {allowedBalance > 0
-              ? `Pregão usará até $${allowedBalance.toFixed(2)} USDC por ciclo`
-              : "Pregão usará todo o saldo disponível"}
+                ? `Saldo máximo por sessão: $${allowedBalance.toFixed(2)} USDC`
+                : "♾️ Pregão usará todo o saldo disponível (sem limite)"}
           </div>
         </div>
       </div>

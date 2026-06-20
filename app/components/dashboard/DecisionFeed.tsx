@@ -60,8 +60,10 @@ export default function DecisionFeed() {
 
       <div className="space-y-1.5 max-h-[280px] overflow-y-auto">
         {items.length === 0 ? (
-          <div className="text-[11px] py-4 text-center" style={{ color: DS.colors.text.muted }}>
-            {FRASES.analisando}
+          <div className="text-[11px] py-6 text-center flex flex-col items-center gap-1" style={{ color: DS.colors.text.muted }}>
+            <span className="text-lg">📡</span>
+            <span>Nenhum evento registrado ainda</span>
+            <span className="text-[9px]">Os logs aparecerão aqui conforme os robôs executarem trades</span>
           </div>
         ) : (
           <div className="relative ml-2">

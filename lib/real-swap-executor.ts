@@ -489,9 +489,9 @@ class RealSwapExecutor {
         return this._fail(fromToken, toToken, amountUsd, `Token ${toToken} não configurado na rede ${this.networkKey}`, timestamp);
       }
 
-      const fromDecimals    = this.tokenBalances.get(fromToken)?.decimals ?? 6;
-      const fromTokenAmount = amountUsd / fromPrice;
-      const fromAmountRaw   = toTokenUnits(fromTokenAmount, fromDecimals);
+      const fromDecimals     = this.tokenBalances.get(fromToken)?.decimals ?? 6;
+      const fromTokenAmount  = amountUsd / fromPrice;
+      const fromAmountRaw    = toTokenUnits(fromTokenAmount, fromDecimals);
 
       let quote: QuoteResult | null = null;
       if (net.isTestnet) {
@@ -537,7 +537,9 @@ class RealSwapExecutor {
         if (!result.success) {
           return this._fail(fromToken, toToken, amountUsd, result.error || "Direct swap falhou", timestamp);
         }
-        log(`✅ Swap simulado: ${fromToken}→${toToken} | approve OK`);
+        const synthToPrice = await this._getTokenPrice(toToken);
+        const syntheticToAmount = synthToPrice > 0 ? amountUsd / synthToPrice : amountUsd;
+        log(`✅ Swap simulado: ${fromToken}→${toToken} | approve OK ($${amountUsd} → ${syntheticToAmount.toFixed(8)} ${toToken} @ $${synthToPrice})`);
         return {
           success: true,
           txHash: '',
@@ -545,7 +547,7 @@ class RealSwapExecutor {
           fromToken,
           toToken,
           fromAmount: amountUsd,
-          toAmount: amountUsd,
+          toAmount: syntheticToAmount,
           action: "BUY",
           message: `✅ ${fromToken}→${toToken} (simulado testnet) | approve OK`,
           timestamp,

@@ -121,6 +121,7 @@ export function activatePanic(reason: string): void {
 }
 
 export function resumeFromPanic(): void {
+  if (!state.isPanicActive) return;
   const wasTestnet = state.isTestnet;
   state = { ...initialState };
   if (wasTestnet) setTestnetMode(true);

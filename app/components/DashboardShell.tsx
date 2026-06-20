@@ -32,7 +32,7 @@ const SECTIONS: { key: Section; icon: string; label: string }[] = [
   { key: "trading", icon: "🤖", label: "Auto Trader" },
   { key: "bot", icon: "🏦", label: "Bot Bank" },
   { key: "bridge", icon: "🌉", label: "Bridge" },
-  { key: "payments", icon: "💸", label: "Pagamentos" },
+  { key: "payments", icon: "🏅", label: "Recompensas" },
   { key: "classroom", icon: "📚", label: "Sala de Aula" },
 ]
 

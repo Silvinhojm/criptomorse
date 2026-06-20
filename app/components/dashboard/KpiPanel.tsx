@@ -58,18 +58,10 @@ export default function KpiPanel() {
 
   const profitColor = stats.totalProfit >= 0 ? DS.colors.accent.green : DS.colors.accent.red
   const isAtivo = positions > 0
+  const hasData = stats.completedTrades >= 3
 
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-      {/* Card Saldo USDC */}
-      <MetricCard
-        icon="💵"
-        label="Saldo USDC"
-        value={`$${stats.totalProfit.toFixed(2)}`}
-        color={profitColor}
-        sublabel="Disponível para trades"
-      />
-
       {/* Card Lucro Total */}
       <MetricCard
         icon={stats.totalProfit >= 0 ? "📈" : "📉"}
@@ -80,22 +72,49 @@ export default function KpiPanel() {
         sublabel="Resultado acumulado"
       />
 
-      {/* Card Win Rate com gráfico circular */}
-      <div className="flex items-center gap-3 p-4 rounded-xl transition-all duration-300 hover:-translate-y-0.5 hover:shadow-xl"
-        style={{
-          background: DS.colors.bg.card,
-          border: `1px solid ${DS.colors.bg.border}`,
-        }}>
-        <CircularProgress pct={(stats.winRate * 100)} size={48} />
-        <div>
-          <div className="text-[11px] font-medium" style={{ color: DS.colors.text.muted }}>Win Rate</div>
-          <div className="text-lg font-bold font-mono" style={{ color: DS.colors.accent.green, fontFamily: DS.fonts.mono }}>
-            {(stats.winRate * 100).toFixed(0)}%
+      {/* Card Win Rate ou Status se <3 trades */}
+      {hasData ? (
+        <div className="flex items-center gap-3 p-4 rounded-xl transition-all duration-300 hover:-translate-y-0.5 hover:shadow-xl"
+          style={{
+            background: DS.colors.bg.card,
+            border: `1px solid ${DS.colors.bg.border}`,
+          }}>
+          <CircularProgress pct={stats.winRate} size={48} />
+          <div>
+            <div className="text-[11px] font-medium" style={{ color: DS.colors.text.muted }}>Win Rate</div>
+            <div className="text-lg font-bold font-mono" style={{ color: DS.colors.accent.green, fontFamily: DS.fonts.mono }}>
+              {stats.winRate.toFixed(0)}%
+            </div>
           </div>
         </div>
-      </div>
+      ) : (
+        <div className="flex items-center gap-3 p-4 rounded-xl"
+          style={{
+            background: DS.colors.bg.card,
+            border: `1px solid ${DS.colors.bg.border}`,
+          }}>
+          <div className="p-2 rounded-lg" style={{ background: `${DS.colors.status.medium}15` }}>
+            <span className="text-xl">🔬</span>
+          </div>
+          <div>
+            <div className="text-[11px] font-medium" style={{ color: DS.colors.text.muted }}>Status</div>
+            <div className="text-sm font-bold" style={{ color: DS.colors.status.medium }}>
+              {isAtivo ? "🟢 Ativo" : "🟡 Aguardando"} · {stats.completedTrades} trades
+            </div>
+          </div>
+        </div>
+      )}
 
-      {/* Card Status dos Robôs */}
+      {/* Card Trades */}
+      <MetricCard
+        icon="🔄"
+        label="Trades"
+        value={`${stats.completedTrades}`}
+        color={DS.colors.text.primary}
+        sublabel={`${stats.totalTrades} total · ${stats.completedTrades} concluídos`}
+      />
+
+      {/* Card Status Robôs */}
       <div className="flex items-center gap-3 p-4 rounded-xl transition-all duration-300 hover:-translate-y-0.5 hover:shadow-xl"
         style={{
           background: isAtivo ? "rgba(34,197,94,0.08)" : DS.colors.bg.card,
@@ -112,11 +131,14 @@ export default function KpiPanel() {
             }} />
         </div>
         <div>
-          <div className="text-[11px] font-medium" style={{ color: DS.colors.text.muted }}>Status</div>
+          <div className="text-[11px] font-medium" style={{ color: DS.colors.text.muted }}>Robôs</div>
           <div className="text-base font-bold" style={{
             color: isAtivo ? DS.colors.accent.green : DS.colors.status.medium,
           }}>
-            {isAtivo ? "🟢 Ativo" : "🟡 Aguardando"}
+            {isAtivo ? "🟢 Ativos" : "🟡 Aguardando"}
+          </div>
+          <div className="text-[10px]" style={{ color: DS.colors.text.muted }}>
+            {positions > 0 ? `${positions} posição(ões) aberta(s)` : "Nenhuma posição aberta"}
           </div>
         </div>
       </div>
