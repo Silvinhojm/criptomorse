@@ -17,7 +17,13 @@ type FeedItem = {
 export default function DecisionFeed() {
   const [items, setItems] = useState<FeedItem[]>([])
   const [top3, setTop3] = useState<string[]>([])
+  const [now, setNow] = useState(() => Date.now())
   const endRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 10_000)
+    return () => clearInterval(t)
+  }, [])
 
   useEffect(() => {
     pregão.onLog((msg) => {
@@ -72,7 +78,7 @@ export default function DecisionFeed() {
             {items.map((item) => {
               const style = typeStyle(item.type)
               const Icon = style.icon
-              const timeAgo = Math.floor((Date.now() - item.timestamp) / 1000)
+              const timeAgo = Math.floor((now - item.timestamp) / 1000)
               const timeStr = timeAgo < 60 ? `há ${timeAgo}s` : `há ${Math.floor(timeAgo / 60)}min`
               return (
                 <div key={item.id} className="flex items-start gap-3 p-2 rounded-lg text-[11px] leading-relaxed animate-fadeIn relative"

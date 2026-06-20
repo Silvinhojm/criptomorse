@@ -890,8 +890,38 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         })
       }
     }
+  } else if (!net.isTestnet && STABLES.has(agreedPair.fromToken) && STABLES.has(agreedPair.toToken)) {
+    // Stable-stable em mainnet: verifica se spread cobre gas
+    const gasCost = await gasPriceOracle.getGasCost(redeAtual)
+    const balFrom = realSwap.getBalance(agreedPair.fromToken as TokenSymbol)
+    const valorFinal = Math.min(amountUsd * 0.9, balFrom)
+
+    // Para stable-stable, o retorno esperado é a amplitude do par (proxy do spread real)
+    const wavePair = wavePairs.find(wp => wp.label === agreedPair.pair && wp.network === agreedPair.network)
+    const spreadEsperado = Math.max((wavePair?.amplitude ?? 0.0005), 0.0005) // mínimo 0.05%
+    const expectedReturn = (agreeingAgents.reduce((s: number, v: any) => s + v.confidence, 0) / agreeingAgents.length / 100) * spreadEsperado
+    const spreadPct = 0.005
+    const minViableTrade = (MIN_PROFIT_REAL + gasCost) / Math.max(0.001, expectedReturn - spreadPct)
+
+    if (minViableTrade > 0 && valorFinal < minViableTrade) {
+      pregão.adicionarLog(`⏳ Stable-stable ${agreedPair.pair}: retorno esperado ${(expectedReturn * 100).toFixed(3)}% não cobre gas ($${gasCost.toFixed(4)}) — precisa ~$${minViableTrade.toFixed(2)} de trade`)
+    } else {
+      pregão.adicionarLog(`✅ Stable-stable ${agreedPair.pair} viável: $${valorFinal.toFixed(2)} cobre gas + spread`)
+      pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair} (${agreedPair.fromToken}→${agreedPair.toToken})`)
+      for (const v of agreeingAgents) {
+        pregão.receberOK({
+          pregueiro: `Agente:${v.agentName}`,
+          rede: v.network,
+          par: v.pair,
+          confianca: v.confidence,
+          timestamp: Date.now(),
+          fromToken: v.fromToken,
+          toToken: v.toToken,
+        })
+      }
+    }
   } else {
-    // Testnet ou stable-stable: envia OKs sem verificação de gas
+    // Testnet: envia OKs sem verificação de gas
     pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair} (${agreedPair.fromToken}→${agreedPair.toToken})`)
     for (const v of agreeingAgents) {
       pregão.receberOK({
