@@ -986,9 +986,8 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   } else if (comprandoVolatil && !net.isTestnet) {
     const pairNet = agreedPair.network
     const gasCost = await gasPriceOracle.getGasCost(pairNet)
-    // Saldo aproximado — o corretor faz CCTP bridge se faltar na rede alvo
-    const balFrom = realSwap.getBalance(agreedPair.fromToken as TokenSymbol)
-    const valorFinal = Math.min(amountUsd * 0.9, balFrom)
+    // 🔥 Multi-chain: corretor faz switchNetwork + CCTP bridge se precisar
+    const valorFinal = isMultiChain ? amountUsd * 0.9 : Math.min(amountUsd * 0.9, realSwap.getBalance(agreedPair.fromToken as TokenSymbol))
 
     const volData = volatilityTracker.getVolatility(agreedPair.toToken as TokenSymbol)
     const vol24h = Math.max(volData.vol24h, 0.005)
@@ -1021,8 +1020,8 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   } else if (!net.isTestnet && STABLES.has(agreedPair.fromToken) && STABLES.has(agreedPair.toToken)) {
     const pairNet = agreedPair.network
     const gasCost = await gasPriceOracle.getGasCost(pairNet)
-    const balFrom = realSwap.getBalance(agreedPair.fromToken as TokenSymbol)
-    const valorFinal = Math.min(amountUsd * 0.9, balFrom)
+    // 🔥 Multi-chain: corretor faz switchNetwork + CCTP bridge se precisar
+    const valorFinal = isMultiChain ? amountUsd * 0.9 : Math.min(amountUsd * 0.9, realSwap.getBalance(agreedPair.fromToken as TokenSymbol))
 
     const wavePair = wavePairs.find(wp => wp.label === agreedPair.pair && wp.network === agreedPair.network)
     const spreadEsperado = Math.max((wavePair?.amplitude ?? 0.0005), 0.0005)
@@ -1078,13 +1077,15 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       }
     }
   } else {
-    const balFrom = realSwap.getBalance(agreedPair.fromToken as TokenSymbol)
-    let balFromUsd = balFrom
-    if (!STABLES.has(agreedPair.fromToken)) {
-      const fromPrice = await positionManager.fetchTokenPrice(agreedPair.fromToken as TokenSymbol).catch(() => 1)
-      balFromUsd = balFrom * fromPrice
-    }
-    if (balFromUsd < 0.50) {
+    // 🔥 Multi-chain: corretor faz switchNetwork + CCTP bridge se precisar
+    const balSuficiente = isMultiChain || realSwap.getBalance(agreedPair.fromToken as TokenSymbol) >= 0.50
+    if (!balSuficiente) {
+      const balFrom = realSwap.getBalance(agreedPair.fromToken as TokenSymbol)
+      let balFromUsd = balFrom
+      if (!STABLES.has(agreedPair.fromToken)) {
+        const fromPrice = await positionManager.fetchTokenPrice(agreedPair.fromToken as TokenSymbol).catch(() => 1)
+        balFromUsd = balFrom * fromPrice
+      }
       pregão.adicionarLog(`⏳ Saldo insuficiente de ${agreedPair.fromToken}: $${balFromUsd.toFixed(2)} — ordem bloqueada`)
     } else {
       pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair} (${agreedPair.fromToken}→${agreedPair.toToken})`)

@@ -215,17 +215,20 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     setCicloAtivo(true)
     const net = NETWORKS[redeRef.current as NetworkKey]
     const isTestnet = net?.isTestnet ?? true
+    // 🔥 Testnet (Arc) → single-network | Mainnet → multi-chain scanning
+    const agenteRede = isTestnet ? redeRef.current : "all"
     resumeFromPanic()
     setTestnetMode(isTestnet)
     pregão.limparOrdensTravadas()
     addLog(`🔁 Ciclo dos Pregueiros iniciado na rede ${redeRef.current} (a cada ${cicloIntervalo}s)`)
     addLog(`🔄 Circuit breaker resetado — modo ${isTestnet ? 'testnet' : 'mainnet'}`)
+    addLog(`🌐 Agentes: ${isTestnet ? `single-network (${redeRef.current})` : 'multi-chain (Base + Polygon + Arbitrum)'}`)
 
     try {
       const { executarCicloPregueiros } = await import("@/lib/pregueiro")
       const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")
       await executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`))
-      await executarCicloAgentes("all").catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
+      await executarCicloAgentes(agenteRede).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
     } catch (e) {
       addLog(`❌ Ciclo inicial: ${e instanceof Error ? e.message : e}`)
     }
@@ -238,7 +241,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         const { executarCicloPregueiros } = await import("@/lib/pregueiro")
         const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")
         await executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`))
-        await executarCicloAgentes("all").catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
+        await executarCicloAgentes(agenteRede).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
       } catch (e) {
         addLog(`❌ Ciclo: ${e instanceof Error ? e.message : e}`)
       }
@@ -275,12 +278,15 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
   const rodarUmCiclo = async () => {
     resumeFromPanic()
     pregão.limparOrdensTravadas()
-    addLog(`▶️ Ciclo manual na rede ${redeRef.current}`)
+    const netRede = NETWORKS[redeRef.current as NetworkKey]
+    const isTestRede = netRede?.isTestnet ?? true
+    const agenteRede = isTestRede ? redeRef.current : "all"
+    addLog(`▶️ Ciclo manual na rede ${redeRef.current} (agentes: ${isTestRede ? redeRef.current : 'multi-chain'})`)
     try {
       const { executarCicloPregueiros } = await import("@/lib/pregueiro")
       const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")
       await executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`))
-      await executarCicloAgentes("all").catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
+      await executarCicloAgentes(agenteRede).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
     } catch (e) {
       addLog(`❌ Ciclo manual: ${e instanceof Error ? e.message : e}`)
     }
