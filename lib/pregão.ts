@@ -116,30 +116,33 @@ class Pregão {
     const porPar = this.oks.get(chave)
     if (!porPar) return
 
+    const isGridOrder = signal.pregueiro.startsWith("Grid:")
+    const limiar = isGridOrder ? 1 : this.LIMIAR_OK
+
     const okValidos = Array.from(porPar.entries())
       .flatMap(([nome, sinais]) => {
         const recentes = sinais.filter(s => Date.now() - s.timestamp < this.JANELA_MS)
         return recentes.length > 0 ? [{ nome, sinal: recentes[recentes.length - 1] }] : []
       })
 
-    if (okValidos.length >= this.LIMIAR_OK) {
-      const participantes = okValidos.slice(0, this.LIMIAR_OK)
+    if (okValidos.length >= limiar) {
+      const participantes = okValidos.slice(0, limiar)
       const confiancaMedia = Math.round(participantes.reduce((s, p) => s + p.sinal.confianca, 0) / participantes.length)
 
-      // Confiança mínima em mainnet: 40%
-      if (rede === "polygon" && confiancaMedia < 40) {
+      // Grid orders bypass confidence minimum
+      if (!isGridOrder && rede === "polygon" && confiancaMedia < 40) {
         this.log(`🚫 Confiança ${confiancaMedia}% < 40% mínimo em mainnet — ordem rejeitada`)
         return
       }
 
-      // Múltiplas ordens simultâneas (max 5, mas MAX_POSITIONS=3 no agente limita na prática)
       if (this.getOrdensAtivas().length >= 5) {
         this.log(`⏳ ${this.getOrdensAtivas().length} ordens ativas — aguardando`)
         return
       }
 
+      const origem = isGridOrder ? "📐 Grid" : "🏛️"
       const ordem: OrdemExecucao = {
-        id: `ordem_${Date.now()}_${rede}_${par.replace(/[^a-zA-Z0-9]/g, "_")}`,
+        id: `${isGridOrder ? "grid" : "ordem"}_${Date.now()}_${rede}_${par.replace(/[^a-zA-Z0-9]/g, "_")}`,
         rede,
         par,
         fromToken: participantes[0].sinal.fromToken,
@@ -151,10 +154,9 @@ class Pregão {
       }
 
       this.ordens.push(ordem)
-      this.log(`🏛️ ORDEM GERADA: ${par} na ${rede} (${ordem.pregueiros.join(", ")})`)
+      this.log(`${origem} ORDEM GERADA: ${par} na ${rede} (${ordem.pregueiros.join(", ")})`)
       this.onOrdemCallback?.(ordem)
 
-      // Limpar OKs usados
       for (const p of participantes) {
         porPar.delete(p.nome)
       }

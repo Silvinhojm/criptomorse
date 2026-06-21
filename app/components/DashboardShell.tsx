@@ -10,6 +10,7 @@ import ActiveTrades from "./positions/ActiveTrades"
 import NarratorBot from "./NarratorBot"
 import WelcomeScreen from "./WelcomeScreen"
 import QuantumWavePanel from "./QuantumWavePanel"
+import GridPerformancePanel from "./grid/GridPerformancePanel"
 import { DESIGN_SYSTEM as DS } from "@/constants/design-system"
 import type { NetworkKey } from "@/lib/real-swap-executor"
 import { SectionContext, type Section } from "./SectionContext"
@@ -88,6 +89,9 @@ export default function DashboardShell({ children, account, networkName, isTestn
             </div>
             <div className="mb-6">
               <QuantumWavePanel />
+            </div>
+            <div className="mb-6">
+              <GridPerformancePanel currentNetworkKey={currentNetworkKey} />
             </div>
             <div className="mb-6">
               <AgentGrid />

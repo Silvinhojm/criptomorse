@@ -17,3 +17,5 @@ This version has breaking changes â€” APIs, conventions, and file structure may 
 
 5. **Staircase sempre vende pra USDC** â€” o fechamento automÃ¡tico sempre gera ordem vendendo o token volÃ¡til â†’ USDC, independente de como foi comprado.
 <!-- END:arcflow-rules -->
+
+- Ao verificar estado do sistema, commit alterações no ARCFLOW.md e no código e faça push

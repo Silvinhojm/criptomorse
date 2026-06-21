@@ -983,112 +983,174 @@ A SalaDeAula agora tem 3 abas:
 
 ---
 
-## 22. CHANGELOG — 19/06/2026
+## 26. ESTRATÉGIA — GRID ADAPTATIVO COM ZONA NEUTRA
 
-### Pregão — LIMIAR_OK
-- **Fix**: `LIMIAR_OK = 3 → 2` — o sistema migrou de 3 pregueiros para 2 agentes do Top 3, mas o limite nunca foi ajustado. Resultado: 2 OKs chegavam, Pregão esperava o 3º que nunca vinha → NENHUMA ordem passava.
-- **Efeito**: com 2 OKs, a média de confiança é MAIOR (elimina o 3º agente de baixa confiança que diluía a média)
+### 26.1 Conceito
 
-### Staircase
-- **Fix**: `staircaseUpdate` não fecha mais no prejuízo — verifica se `lucroUSD >= gas + spread + margem` antes de fechar
-- **Novas constantes**: `GAS_ESTIMATE_USD` (por rede), `SPREAD_ESTIMATE_PCT` (0.5%), `MIN_PROFIT_MARGIN` (0.5%)
+O Grid Adaptativo substitui o antigo sistema de grid fixo. Em vez de níveis estáticos ao redor do preço de inicialização, o grid agora **deriva, salta e se reequilibra** conforme o mercado se move.
 
-### Pregão — mínimo dinâmico por trade
-- **Novo**: valor mínimo de trade calculado dinamicamente: `(MIN_PROFIT_REAL + gas) / (retornoEsperado - spread)`
-- `retornoEsperado = (confiancaMedia / 100) * (volatilidade24h / 100)`
-- Só executa trade se o valor investido puder gerar **$0.05 de lucro real** após custos
+```
+Zona Neutra (centro do grid)
+  ├── Preço atual = centro do grid
+  ├── 15 níveis (7-8 de compra abaixo, 7-8 de venda acima)
+  ├── Espaçamento DINÂMICO baseado na volatilidade do token
+  │   (vol < 0.3% → 0.25%, vol < 0.5% → 0.3%, vol < 1% → 0.5%, etc.)
+  └── Cada nível = $5, micro-ganhos na volatilidade
 
-### Testnet Arc — cirBTC
-- **Fix**: cotação sintética agora usa preço real do BTC — `toAmount = amountUsd / btcPrice` em vez de 1:1
-- **Fix**: `getPortfolioTokens` agora inclui `cirBTC` e `mcirBTC` no portfolio da UI
-- **Fix**: `getTokenAddress` estendido para suportar cirBTC/mcirBTC
+Drift (deriva suave)
+  ├── Se preço fica 60%+ do tempo acima do centro → centro SOBE devagar
+  ├── Se preço fica 60%+ do tempo abaixo do centro → centro DESCE devagar
+  └── Velocidade: 12% da distância por ciclo — suave, sem solavancos
 
-### Provão
-- **Fix**: `_finalizeDay` usava variável `day` inexistente → corrigido para `this.state.currentDay`
+Red Line (linha vermelha)
+  ├── Se preço escapa 2.2× além do nível mais externo → RED LINE
+  ├── Grid pula para o preço atual (novo centro)
+  ├── Cria nível "catch-up" na direção do salto
+  └── Cooldown de 3min entre saltos (evita whipsaw)
+
+Auto-Rebalance
+  ├── Quando um nível de COMPRA executa → cria novo nível de VENDA 1.5 espaçamento acima
+  ├── Quando um nível de VENDA executa → cria novo nível de COMPRA 1.5 espaçamento abaixo
+  ├── Grid sempre mantém ~15 níveis ativos
+  └── Posições executadas são preservadas durante re-centerings
+```
+
+### 26.2 Fluxo de Decisão
+
+```
+Grid nível atingido? 
+  ├── Sim → valida saldo + posições → OK direto ao Pregão (pula agentes)
+  │        Pregão aceita com LIMIAR=1 (Grid: prefix)
+  └── Não → agentes votam normalmente
+           ├── Se grid ativo no token → confiança dos agentes REDUZIDA (-30%)
+           ├── Se grid saltou → confiança NORMAL
+           └── Se grid obsoleto → confiança AUMENTADA
+
+Pregão (verificarOrdem):
+  ├── Grid: prefix → LIMIAR=1, pula mínimo de 40% confiança
+  ├── Agente normal → LIMIAR=2, mínimo 40% em mainnet
+  └── Ambos → max 5 ordens ativas simultâneas
+```
+
+### 26.3 Arquivos Alterados
+
+| Arquivo | Mudança |
+|---------|---------|
+| `lib/grid-trading.ts` | Reescrevendo: grid adaptativo (15 níveis, spacing dinâmico, drift, red line, auto-rebalance) |
+| `lib/pregão.ts` | `verificarOrdem` aceita `Grid:` prefix com LIMIAR=1 |
+| `lib/agentes-do-pregão.ts` | Grid envia OKs direto ao Pregão; grid awareness reduz confiança de agentes |
 
 ---
 
-## 23. CHANGELOG — 20/06/2026
+## 26. ESTRATÉGIA — GRID ADAPTATIVO COM ZONA NEUTRA
 
-### Gas Oracle — `_fetchNativePrice` unpack `.prices` wrapper
-- **Fix**: Gas oracle `_fetchNativePrice` acessava `data[coinId]` mas o `/api/price` retorna `{ prices, change24h }`. Resultado: `data["matic-network"]` era `undefined`, retornando POL=$1.00 (fallback fixo) em vez do preço real (~$0.078).
-- **Efeito**: gas estimado caía de $0.005 para $0.14, bloqueando todos os trades da Polygon. Fix corrige o unpack: agora lê `(data.prices ?? data)[coinId]`.
+### 26.1 Conceito
 
-### Corretor — só conta perda real se TX foi enviada
-- **Fix**: `corretor.ts` `recordTradeResult(-valorTrade * 0.1)` era chamado para **qualquer** falha do executor, inclusive pré-execução (saldo insuficiente, mínimo $5 não atingido). Isso inflava o circuit breaker com perdas fantasmas de $0.19, ativando pânico após 5 tentativas de $1.95.
-- **Novo**: só registra perda se `resultado.txHash` existir (TX enviada on-chain). Falhas pré-execução não contam como perda real.
+O Grid Adaptativo substitui o antigo sistema de grid fixo. Em vez de níveis estáticos ao redor do preço de inicialização, o grid agora **deriva, salta e se reequilibra** conforme o mercado se move.
 
-### Escriturário — check de $5 mínimo para voláteis em mainnet
-- **Novo**: Escriturário agora valida se `valorTrade >= 5.00` para operações stable→volatile em mainnet, ANTES de chamar o Corretor. Evita ciclos de falha: pregueiros geram ordem de $1.95 → escriturário barra antes do executor.
-- **Nota**: o executor (`real-swap-executor.ts:634`) já tinha este check (linha 634), mas o escriturário rodava antes e passava ordens inválidas para o corretor → que registrava perda fictícia.
+```
+Zona Neutra (centro do grid)
+  ├── Preço atual = centro do grid
+  ├── 15 níveis (7-8 de compra abaixo, 7-8 de venda acima)
+  ├── Espaçamento DINÂMICO baseado na volatilidade do token
+  │   (vol < 0.3% → 0.25%, vol < 0.5% → 0.3%, vol < 1% → 0.5%, etc.)
+  └── Cada nível = $5, micro-ganhos na volatilidade
 
-### Fallback de preços CoinGecko atualizado
-- **Fix**: `matic-network` fallback de $0.35 → $0.078 (preço real do POL pós-queda). Evita superestimar gas quando API falha.
+Drift (deriva suave)
+  ├── Se preço fica 60%+ do tempo acima do centro → centro SOBE devagar
+  ├── Se preço fica 60%+ do tempo abaixo do centro → centro DESCE devagar
+  └── Velocidade: 12% da distância por ciclo — suave, sem solavancos
+
+Red Line (linha vermelha)
+  ├── Se preço escapa 2.2× além do nível mais externo → RED LINE
+  ├── Grid pula para o preço atual (novo centro)
+  ├── Cria nível "catch-up" na direção do salto
+  └── Cooldown de 3min entre saltos (evita whipsaw)
+
+Auto-Rebalance
+  ├── Quando um nível de COMPRA executa → cria novo nível de VENDA 1.5 espaçamento acima
+  ├── Quando um nível de VENDA executa → cria novo nível de COMPRA 1.5 espaçamento abaixo
+  ├── Grid sempre mantém ~15 níveis ativos
+  └── Posições executadas são preservadas durante re-centerings
+```
+
+### 26.2 Fluxo de Decisão
+
+```
+Grid nível atingido? 
+  ├── Sim → valida saldo + posições → OK direto ao Pregão (pula agentes)
+  │        Pregão aceita com LIMIAR=1 (Grid: prefix)
+  └── Não → agentes votam normalmente
+           ├── Se grid ativo no token → confiança dos agentes REDUZIDA (-30%)
+           ├── Se grid saltou → confiança NORMAL
+           └── Se grid obsoleto → confiança AUMENTADA
+
+Pregão (verificarOrdem):
+  ├── Grid: prefix → LIMIAR=1, pula mínimo de 40% confiança
+  ├── Agente normal → LIMIAR=2, mínimo 40% em mainnet
+  └── Ambos → max 5 ordens ativas simultâneas
+```
+
+### 26.3 Arquivos Alterados
+
+| Arquivo | Mudança |
+|---------|---------|
+| `lib/grid-trading.ts` | Reescrevendo: grid adaptativo (15 níveis, spacing dinâmico, drift, red line, auto-rebalance) |
+| `lib/pregão.ts` | `verificarOrdem` aceita `Grid:` prefix com LIMIAR=1 |
+| `lib/agentes-do-pregão.ts` | Grid envia OKs direto ao Pregão; grid awareness reduz confiança de agentes |
+
+---
+
+## 27. CHANGELOG — 21/06/2026
+
+### Grid/GridRef removidos do ranking competitivo
+- **Problema**: Grid e GridRef são bots de grid trading (operacionais), mas seus votos eram registrados em `historicoVotos` e avaliados em `avaliarVotosPassados`, acumulando scores no accountant. Com scores altos (~76 pts), viravam Top 3 — mas sem votos ativos (grid sem níveis gatilhados), o Top 3 ficava com 0 votos válidos, travando o sistema em fallback com agentes de baixa confiança.
+- **Fix**: 
+  - `lib/accountant.ts`: novo método `removeAgent()` para limpar reports + scores de um agente específico
+  - `lib/agentes-do-pregão.ts`: no início de cada ciclo, Grid/GridRef são removidos do accountant e do `historicoVotos`
+  - `lib/agentes-do-pregão.ts`: registro de votos ignora Grid/GridRef (não entram no aprendizado)
+  - `lib/agentes-do-pregão.ts`: Top 3 filtra Grid/GridRef do ranking antes de selecionar
+
+### Arc Testnet — balance check antes de gerar ordens
+- **Problema**: O else block (linha 968) tratava testnet sem validação — USDC→EURC era executado mesmo com saldo USDC=0, gerando loop infinito de ordens expiradas.
+- **Fix**: `lib/agentes-do-pregão.ts`: adicionado balance check com `realSwap.getBalance()` no else block. Se saldo < $0.50, a ordem é bloqueada com log explicativo.
+
+### Grid Adaptativo — nova estratégia
+- **Novo**: `lib/grid-trading.ts` reescrito com grid adaptativo:
+  - 15 níveis em vez de 3
+  - Espaçamento dinâmico baseado na volatilidade do token (VolTracker)
+  - Drift suave: centro do grid deriva conforme o preço (12% da distância por ciclo)
+  - Red Line: se preço escapa 2.2× o nível externo, grid pula para o novo preço
+  - Auto-rebalance: nível executado cria complemento no lado oposto
+- **Novo**: `lib/pregão.ts`: `verificarOrdem` aceita `Grid:` prefix com LIMIAR=1 (grid não precisa de 2 OKs)
+- **Novo**: `lib/agentes-do-pregão.ts`: grid envia OKs direto ao Pregão, pula pipeline de agentes; grid awareness reduz confiança de agentes em tokens com grid ativo
+
+### Integração Onda Quântica → Grid
+- **Novo**: `grid-trading.ts` recebe `setWaveData(wavePairs, network)` — a onda quântica informa o grid sobre momentum
+- **Novo**: quando momentum > 0.5 (onda ↑), grid cria níveis extras de VENDA para capturar alta
+- **Novo**: quando momentum < -0.5 (onda ↓), grid cria níveis extras de COMPRA para capturar baixa
+- **Novo**: `agentes-do-pregão.ts` chama `gridTrader.setWaveData()` após `broadcastIntent()`
+
+### Grid Performance Panel (UI)
+- **Novo**: `app/components/grid/GridPerformancePanel.tsx` — painel visível no dashboard
+- Exibe: total de trades do grid, lucro bruto, custos (gas+spread), lucro líquido
+- Barra de win rate, média por trade, lista dos últimos 10 trades
+- Atualiza a cada 5s automaticamente
+
+### Micro-Lucro Garantido
+- **Novo**: `spacingMinimoLucrativo(amount, gasCost, spreadPct)` calcula o espaçamento mínimo para cada nível ter `lucro líquido ≥ $0.001` após custos
+- **Novo**: grid aplica `Math.max(getSpacing(vol), spacingMinimoLucrativo(...))` em init() e recenter()
+- Cada nível do grid garante: `grossEst - gasEst - spreadEst ≥ $0.001`
+
+### Fluxo Sincronizado (sem conflitos)
+- **Dedup grid sell**: grid não envia venda se já há ordem de venda ativa no pregão para o mesmo token
+- **Dedup agent sell**: agente não envia venda se grid já está vendendo
+- **Grid buy**: verifica max positions (mesmo cálculo do pipeline de agentes)
+- **Grid sell**: verifica se posição existe e se não há venda pendente
 
 ### Estado atual
-- **Preço POL**: ~$0.078 (real CoinGecko), gas oracle agora lê corretamente
-- **Gas estimado Polygon**: ~$0.005 (com POL real a $0.078, 280 gwei, 500k gas units)
-- **Circuit breaker**: não dispara mais por trades que nunca executaram
-- **Staircase WMATIC**: ~~segurando posição sem lucro há horas~~ **RESOLVIDO**: stale force close após 30min
-- **Próximo passo sugerido**: ~~Staircase vender WMATIC stagnado~~ **RESOLVIDO**
-
----
-
-## 24. CHANGELOG — 20/06/2026 (segunda leva)
-
-### getPairsForAnalysis — filtro por rede obrigatório
-- **Fix**: `getPairsForAnalysis(network)` agora filtra o ranking (`getTopPairs`) para manter apenas pares que existem na rede solicitada. Removeu o `getAllPairs()` fallback que retornava pares de qualquer rede, causando análise de pares Arc durante ciclos da Polygon.
-- **Efeito**: cada rede só enxerga seus próprios pares. `executarCicloAgentes('polygon')` nunca mais analisa `USDC→EURC` ou `cirBTC→USDC`.
-
-### MAX_POSITIONS fixo (10) → dinâmico por capital
-- **Antes**: `MAX_POSITIONS = 10` fixo. `amountUsd = (saldo * 0.9) / 9 vagas = $0.52` → nunca passava `minViableTrade` de ~$4.23. Nenhum trade executava.
-- **Agora**: `MIN_TRADE_SIZE = $5`. `maxPositions = max(1, floor(saldoEfetivo * 0.9 / 5))`. Amount por trade capped em `MIN_TRADE_SIZE * 1.2 = $6`.
-- **Com $5.20**: 1 posição, trade de $4.68 — valor viável.
-- Arquivos alterados: `lib/agentes-do-pregão.ts` (removeu `MAX_POSITIONS`, adicionou `MIN_TRADE_SIZE`, allocation agora usa `min($6.00, saldo/vagas)`)
-
-### Testnet não afeta ranking dos agentes
-- **Fix**: `corretor.ts` agora pula `accountant.addReport()` em testnet quando o profit é apenas a fee simulada (≤ $0.02). Antes, cada swap simulado registrava -$0.015 de perda, destruindo streaks dos agentes.
-- **Efeito**: ArbitrageHunter estava com -34 streak e Liquidator com -22 streak. Agora streaks só mudam com trades reais na mainnet.
-- Arquivo: `lib/corretor.ts` (linha 100-125, guard `isTestnetSwap`)
-
-### Stale force close — posição sem lucro após 30min
-- **Fix**: `position-manager.ts` adicionou `STALE_FORCE_CLOSE_MS = 30min`. Posição que nunca lucrou após 30min é fechada para liberar vaga.
-- **Antes**: `STALE_NO_PROFIT_MS = 4h` segurava posição sem lucro por 4h bloqueando novos trades.
-- **Efeito**: WMATIC parado em $0.078 vai fechar após 30min, liberando slot para novo trade.
-- Arquivo: `lib/position-manager.ts` (linha 32, nova regra antes do stale existente)
-
-### Streak catastrófico — recuperação automática
-- **Fix**: `agentes-do-pregão.ts` agora recupera streaks < -15 para -3 em todo ciclo. Impede que agentes com streaks destruídos por bugs/testnet fiquem congelados para sempre.
-- **Efeito**: MarketMaker com -108 streak, ArbitrageHunter com -34, Liquidator com -22 voltam a ter confiança mínima para votar.
-- Arquivo: `lib/agentes-do-pregão.ts` (antes do emergency mode, streak reset automático)
-
----
-
-## 25. CHANGELOG — 20/06/2026 (terceira leva)
-
-### Sell loop — proteção absoluta contra venda no prejuízo
-- **Fix**: `agentes-do-pregão.ts:919` adicionou `if (profitPercent <= 0) { continue }` no sell loop. Nunca gera ordem de venda volátil→stable se a posição está no zero ou negativo.
-- **Fix**: quando agentes votam WETH→USDC e a posição WETH está no prejuízo, o OK é bloqueado com `⏳ posição WETH no prejuízo (X%) — só Staircase pode fechar`
-- **Exceção**: apenas Staircase (stop loss -15% ou stale force close 30min) pode fechar posição no prejuízo
-- **Min meaningful profit**: 1% de pico mínimo para desarmar proteção. Picos de 0.01% não liberam venda.
-- Arquivo: `lib/agentes-do-pregão.ts` (linhas 896-920, ~935, ~979-984)
-
-### Grid stale reinit — grid reinicia quando preço foge do range
-- **Problema**: grid era inicializado uma vez (ex: WETH=$20) com níveis COMPRA a $19.70/$19.40/$19.10 e VENDA a $20.30/$20.60/$20.90. WETH subiu para $1700. Todos os 3 sell executaram imediatamente, buys ficaram pending para sempre. Grid nunca mais gerava trades.
-- **Solução**: `isGridStale()` + `cleanStaleGrids()` detecta quando:
-  - Todos buy pending + todos sell executed → preço subiu além do grid
-  - Todos sell pending + todos buy executed → preço caiu além do grid
-  - Todos 6 levels executados → ciclo completo
-- **Reinit**: grid é deletado e recriado no próximo ciclo com preço atual via `init()`. Roda no início de `init()` e no `checkLevels()` como safety net.
-- Arquivo: `lib/grid-trading.ts` (métodos novos `isGridStale`, `cleanStaleGrids`)
-
-### Break-even label — 0% não é prejuízo
-- **Fix**: logs mostravam `(0.0%) no prejuízo` quando profitPercent era exatamente 0. Agora mostra `break-even (0.0%)`. Apenas valores negativos (< 0%) exibem "no prejuízo".
-- Arquivo: `lib/agentes-do-pregão.ts` (linhas ~936, ~982)
-
-### Estado atual
-- **Polygon Mainnet**: balance $22.27, 1 posição WETH aberta (break-even), maxPositions=4. Trades bloqueados por baixa volatilidade (minViableTrade $60.86 >> $6/trade).
-- **Arc Testnet**: USDC→EURC executando a cada 10s sem afetar ranking (fee $0.015 pulada no accountant).
-- **Grid fix**: grid WETH foi reinicializado com preço atual (~$1700). Níveis frescos: COMPRA a ~$1674.50/$1649.00/$1623.50, VENDA a ~$1725.50/$1751.00/$1776.50.
-- **Lucro acumulado**: +$18.77 (já recuperou as perdas de $19 das 4 compras WETH anteriores aos fixes).
+- **Polygon Mainnet**: 1 posição WETH break-even (0.0%) — grid adaptativo pode capturar micro-oscilações. Com Grid/GridRef fora do Top 3, agentes reais assumem.
+- **Arc Testnet**: grid adaptativo com 15 níveis por token, spacing mínimo lucrativo garantido.
+- **Grid Performance**: painel visível no dashboard mostrando lucro líquido real de cada micro-trade.
+- **Lucro acumulado**: +$18.77
 

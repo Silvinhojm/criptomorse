@@ -233,6 +233,14 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
 
   await avaliarVotosPassados(redeAtual)
 
+  // Remove agentes operacionais (Grid, GridRef) do ranking competitivo
+  for (const nome of ["Grid", "GridRef"]) {
+    accountant.removeAgent(nome)
+    for (let i = historicoVotos.length - 1; i >= 0; i--) {
+      if (historicoVotos[i].agentName === nome) historicoVotos.splice(i, 1)
+    }
+  }
+
   let maxPositions = 10
 
   // Inicializa grid trading para a rede atual
@@ -272,6 +280,9 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
 
   const wave = await quantumWaveTrader.broadcastIntent(amountUsd)
   const wavePairs = wave.pairs.filter(p => p.network === redeAtual)
+
+  // Alimenta o grid com dados da onda quântica
+  gridTrader.setWaveData(wavePairs, redeAtual)
 
   const allVotes: AgentPairVote[] = []
 
@@ -600,32 +611,77 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     }
   }
 
-  // ── Grid Trading: votos baseados em níveis de preço ──
+  // ── Grid Trading: níveis vão direto ao Pregão ──
   const gridResult = await gridTrader.checkLevels(redeAtual)
   for (const gv of gridResult.votes) {
     const gridConfidence = gv.direction === "buy" ? 80 : 85
-    allVotes.push({
-      agentName: "Grid",
-      pair: gv.pairLabel,
+
+    const balFrom = realSwap.getBalance(gv.pairFrom as TokenSymbol)
+    let balFromUsd = balFrom
+    if (!STABLES.has(gv.pairFrom)) {
+      const fromPrice = await positionManager.fetchTokenPrice(gv.pairFrom as TokenSymbol).catch(() => 1)
+      balFromUsd = balFrom * fromPrice
+    }
+    if (balFromUsd < 0.50) {
+      pregão.adicionarLog(`⏳ Grid ${gv.direction === "buy" ? "COMPRA" : "VENDA"} ${gv.pairLabel}: saldo insuficiente de ${gv.pairFrom} ($${balFromUsd.toFixed(2)})`)
+      continue
+    }
+
+    if (gv.direction === "sell") {
+      const temPos = positionManager.getOpenPositions()
+        .some(p => p.boughtToken === gv.token && p.networkKey === redeAtual && p.status === "open")
+      if (!temPos) {
+        pregão.adicionarLog(`⏳ Grid VENDA ${gv.pairLabel}: sem posição de ${gv.token} — pulando`)
+        continue
+      }
+      const jaVendendo = pregão.getOrdensAtivas()
+        .some(o => o.fromToken === gv.token && o.rede === redeAtual && o.status !== "concluido" && o.status !== "falhou")
+      if (jaVendendo) {
+        pregão.adicionarLog(`⏳ Grid VENDA ${gv.pairLabel}: já há ordem de venda ativa para ${gv.token} — pulando`)
+        continue
+      }
+    }
+
+    if (gv.direction === "buy") {
+      const posAbertas = positionManager.getOpenPositions().filter(p => p.networkKey === redeAtual && p.status === "open").length
+      const maiorStable = Math.max(
+        realSwap.getBalance("USDC"),
+        realSwap.getBalance("USDT"),
+        realSwap.getBalance("DAI"),
+      )
+      const maxPos = Math.max(1, Math.floor((maiorStable * 0.9) / 5))
+      if (posAbertas >= maxPos) {
+        pregão.adicionarLog(`⏳ Grid COMPRA ${gv.pairLabel}: ${posAbertas}/${maxPos} posições — pulando`)
+        continue
+      }
+    }
+
+    const dirLabel = gv.direction === "buy" ? "🟢 COMPRA" : "🔴 VENDA"
+    pregão.adicionarLog(`📐 Grid ${dirLabel} ${gv.pairLabel} @ $${gv.triggerPrice.toFixed(4)} (${gridConfidence}%)`)
+    pregão.receberOK({
+      pregueiro: `Grid:${gv.direction === "buy" ? "Compra" : "Venda"}`,
+      rede: redeAtual,
+      par: gv.pairLabel,
+      confianca: gridConfidence,
+      timestamp: Date.now(),
       fromToken: gv.pairFrom,
       toToken: gv.pairTo,
-      network: redeAtual,
-      confidence: gridConfidence,
-      action: gv.direction === "buy" ? "buy" : "sell",
-      reason: gv.direction === "buy"
-        ? `📊 Grid COMPRA ${gv.pairLabel} @ $${gv.triggerPrice.toFixed(4)}`
-        : `📊 Grid VENDA ${gv.pairLabel} @ $${gv.triggerPrice.toFixed(4)}`,
     })
-    allVotes.push({
-      agentName: "GridRef",
-      pair: gv.pairLabel,
-      fromToken: gv.pairFrom,
-      toToken: gv.pairTo,
-      network: redeAtual,
-      confidence: gridConfidence,
-      action: gv.direction === "buy" ? "buy" : "sell",
-      reason: `📊 Grid ${gv.direction === "buy" ? "confirma" : "confirma"} ${gv.pairLabel}`,
-    })
+  }
+
+  // Grid awareness: se o grid está ativo num token, agentes reduzem confiança (grid cuida dos micro-movimentos)
+  const tokensComGrid = gridTrader.getActiveTokens(redeAtual)
+  for (const v of allVotes) {
+    const tokenVol = v.action === "buy" ? v.toToken : v.fromToken
+    if (!tokensComGrid.includes(tokenVol as TokenSymbol)) continue
+    const saude = gridTrader.getGridHealth(tokenVol as TokenSymbol, redeAtual)
+    if (saude === "active") {
+      const orig = v.confidence
+      v.confidence = Math.round(v.confidence * 0.7)
+      pregão.adicionarLog(`🧠 Grid ativo em ${tokenVol} — ${v.agentName} reduz confiança ${orig}% → ${v.confidence}%`)
+    } else if (saude === "jumped") {
+      pregão.adicionarLog(`🧠 Grid ${tokenVol} saltou — ${v.agentName} mantém confiança ${v.confidence}%`)
+    }
   }
 
   // ── Fallback ──
@@ -670,6 +726,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
 
   // Registra votos para aprendizado
   for (const v of votes) {
+    if (v.agentName === "Grid" || v.agentName === "GridRef") continue
     const tokenVolatil = v.action === "buy" ? v.toToken : v.fromToken
     if (STABLES.has(tokenVolatil)) continue
     const precoVoto = await positionManager.fetchTokenPrice(tokenVolatil as TokenSymbol).catch(() => 0)
@@ -786,7 +843,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     pregão.adicionarLog(`🗳️ ${v.agentName} → ${v.pair} (${v.confidence}%)`)
   }
 
-  const ranking = accountant.getRanking()
+  const ranking = accountant.getRanking().filter(s => s.agentName !== "Grid" && s.agentName !== "GridRef")
   const top3Nomes = new Set(ranking.slice(0, 3).map(s => s.agentName))
   const topVotes = votes.filter(v => top3Nomes.has(v.agentName) && v.confidence > 0)
 
@@ -957,13 +1014,24 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       }
     }
   } else {
-    pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair} (${agreedPair.fromToken}→${agreedPair.toToken})`)
-    for (const v of agreeingAgents) {
-      pregão.receberOK({
-        pregueiro: `Agente:${v.agentName}`,
-        rede: v.network, par: v.pair, confianca: v.confidence, timestamp: Date.now(),
-        fromToken: v.fromToken, toToken: v.toToken,
-      })
+    // Balance check para qualquer rede (especialmente testnet)
+    const balFrom = realSwap.getBalance(agreedPair.fromToken as TokenSymbol)
+    let balFromUsd = balFrom
+    if (!STABLES.has(agreedPair.fromToken)) {
+      const fromPrice = await positionManager.fetchTokenPrice(agreedPair.fromToken as TokenSymbol).catch(() => 1)
+      balFromUsd = balFrom * fromPrice
+    }
+    if (balFromUsd < 0.50) {
+      pregão.adicionarLog(`⏳ Saldo insuficiente de ${agreedPair.fromToken}: $${balFromUsd.toFixed(2)} — ordem bloqueada`)
+    } else {
+      pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair} (${agreedPair.fromToken}→${agreedPair.toToken})`)
+      for (const v of agreeingAgents) {
+        pregão.receberOK({
+          pregueiro: `Agente:${v.agentName}`,
+          rede: v.network, par: v.pair, confianca: v.confidence, timestamp: Date.now(),
+          fromToken: v.fromToken, toToken: v.toToken,
+        })
+      }
     }
   }
 
@@ -1022,9 +1090,16 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     const vendedores = uniqueAgents.size >= 2
       ? [...uniqueAgents].slice(0, 2)
       : ["Realizador", "ProfitTaker"]
+    // Dedup: verifica se grid já está vendendo este token
+    const jaVendendoGrid = pregão.getOrdensAtivas()
+      .some(o => o.fromToken === pos.boughtToken && o.rede === redeAtual && o.pregueiros.some(p => p.startsWith("Grid:")))
+    if (jaVendendoGrid) {
+      pregão.adicionarLog(`⏳ ${pos.boughtToken}: grid já está vendendo — agente aguarda`)
+      continue
+    }
+
     pregão.adicionarLog(`💰 Realizando lucro: ${pos.boughtToken} (${profitPercent.toFixed(1)}% → conf ${sellConfidence}%)`)
 
-    // Grid rebalance: vendeu com lucro → cria novo nível de compra
     gridTrader.onPositionClosed(pos.boughtToken as TokenSymbol, profitPercent, redeAtual)
 
     for (const nome of vendedores) {

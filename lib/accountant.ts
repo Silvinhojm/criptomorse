@@ -279,6 +279,13 @@ class Accountant {
     };
   }
 
+  removeAgent(agentName: string) {
+    this.reports = this.reports.filter(r => r.agentName !== agentName);
+    this.agentScores.delete(agentName);
+    this.initPool();
+    this._save();
+  }
+
   resetScores() {
     this.reports = [];
     this.agentScores.clear();
