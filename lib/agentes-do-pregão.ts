@@ -917,13 +917,21 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   for (const pos of posicoesAbertas) {
     const currentPrice = await positionManager.fetchTokenPrice(pos.boughtToken)
     const profitPercent = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100
+
+    // NUNCA vende no prejuízo — proteção absoluta
+    if (profitPercent <= 0) {
+      pregão.adicionarLog(`⏳ ${pos.boughtToken}: ${profitPercent.toFixed(1)}% no prejuízo — segurando (staircase decide fechamento)`)
+      continue
+    }
+
     const confMult = volatilityTracker.getConfidenceMultiplier(pos.boughtToken)
     const sellConfidence = Math.min(90, Math.round((30 + Math.max(0, profitPercent) * 4) * confMult))
     if (sellConfidence < 35) continue
 
     const STOP_LOSS = -15
-    if (profitPercent > STOP_LOSS && (pos.peakProfitPercent ?? 0) <= 0) {
-      pregão.adicionarLog(`⏳ ${pos.boughtToken}: ${profitPercent.toFixed(1)}% sem nunca ter lucrado — Staircase segura (hold)`)
+    const MIN_MEANINGFUL_PROFIT = 1 // 1% — micro-picos não desarmam proteção
+    if (profitPercent > STOP_LOSS && (pos.peakProfitPercent ?? 0) < MIN_MEANINGFUL_PROFIT) {
+      pregão.adicionarLog(`⏳ ${pos.boughtToken}: ${profitPercent.toFixed(1)}% (pico ${(pos.peakProfitPercent ?? 0).toFixed(2)}%) sem lucro significativo — Staircase segura (hold)`)
       continue
     }
 
