@@ -157,6 +157,30 @@ export const AGENTE_CORES = [
   "#f59e0b", "#10b981", "#06b6d4",
 ]
 
+// Cada robô com seus pares específicos por rede (Synthesis = meta, analisa tudo)
+export const AGENTE_PARES: Record<string, string[]> = {
+  "Quantum":         ["USDC→WETH", "WETH→USDC", "WMATIC→USDC", "USDC→WMATIC", "cirBTC→USDC", "USDC→cirBTC"],
+  "Technical":       ["WMATIC→USDC", "USDC→WMATIC", "ARB→USDC", "USDC→ARB", "EURC→USDC", "USDC→EURC", "DAI→USDC", "USDC→DAI"],
+  "TrendFollower":   ["WETH→USDC", "USDC→WETH", "WETH→WBTC", "WBTC→WETH"],
+  "MeanReversion":   ["WMATIC→USDC", "USDC→DAI", "DAI→USDC", "WETH→WBTC", "WBTC→WETH"],
+  "QuantumTrader":   ["USDC→WETH", "WETH→USDC", "USDC→WBTC", "WBTC→USDC"],
+  "ArbitrageHunter": ["USDC→EURC", "EURC→USDC", "USDC→USDT", "USDT→USDC", "DAI→USDC", "USDC→DAI"],
+  "MarketMaker":     ["USDC→EURC", "EURC→USDC", "USDC→USDT", "USDT→USDC", "USDC→WMATIC", "WMATIC→USDC"],
+  "BTCTrader":       ["USDC→WETH", "WETH→USDC", "USDC→WBTC", "WBTC→USDC", "WETH→WBTC", "WBTC→WETH"],
+  "Liquidator":      ["WETH→USDC", "USDC→WETH", "WMATIC→USDC", "USDC→WMATIC"],
+  "MomentumTrader":  ["WETH→WBTC", "WBTC→WETH", "WETH→USDC", "USDC→WETH"],
+  "NVIDIAgent":      ["USDC→WMATIC", "WMATIC→USDC", "USDC→WETH", "WETH→USDC"],
+  "Synthesis":       [], // vazio = meta: analisa qualquer par
+  "Morse":           ["cirBTC→USDC", "USDC→cirBTC", "mcirBTC→USDC", "USDC→mcirBTC", "EURC→cirBTC", "cirBTC→EURC", "EURC→mcirBTC", "mcirBTC→EURC"],
+}
+
+function agentAssigned(agentName: string, pairLabel: string): boolean {
+  const pairs = AGENTE_PARES[agentName]
+  if (!pairs) return false
+  if (pairs.length === 0) return true // Synthesis: assigned to all
+  return pairs.includes(pairLabel)
+}
+
 async function getTokenPrice(token: TokenSymbol): Promise<number> {
   const coinIds: Record<string, string> = {
     WETH: "ethereum", WMATIC: "matic-network", ARB: "arbitrum",
@@ -295,7 +319,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   const volatileParaRede = [...tokensParaColetar].filter(t => !STABLES.has(t))
   await positionManager.reconcileBalances(redeAtual, volatileParaRede)
 
-  // 🔥 Para cada par prioritário, TODOS os agentes analisam o MESMO par
+  // 🔥 Para cada par prioritário, só os robôs designados analisam
   for (const pairLabel of pairsToAnalyze) {
     const pair = pairs.find(p => p.label === pairLabel)
     if (!pair) continue
@@ -303,11 +327,14 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     const wavePair = wavePairs.find(wp => wp.label === pairLabel)
     if (!wavePair) continue
 
-    pregão.adicionarLog(`🔍 Analisando ${pairLabel} com todos os agentes...`)
+    const assigned = AGENTES_NOMES
+      .filter(a => agentAssigned(a.nome, pairLabel))
+      .map(a => a.nome)
+    pregão.adicionarLog(`🔍 Analisando ${pairLabel} — ${assigned.join(", ")}`)
     const votesForPair: AgentPairVote[] = []
 
     // ── QuantumAgent ──
-    try {
+    if (agentAssigned("Quantum", pairLabel)) try {
       const result = await quantumAgent.evaluatePair(wavePair)
       if (result && result.confidence >= 30) {
         votesForPair.push({
@@ -326,7 +353,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     }
 
     // ── TechnicalAgent ──
-    try {
+    if (agentAssigned("Technical", pairLabel)) try {
       const mockPrices = [1.0, 1.001, 0.999, 1.002, 1.0 + wavePair.momentum * 10]
       const indicators = technicalAgent.calculateIndicators(mockPrices)
       const rsi = indicators.rsi
@@ -351,7 +378,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     }
 
     // ── TrendFollower ──
-    if (Math.abs(wavePair.momentum) > 0.02) {
+    if (agentAssigned("TrendFollower", pairLabel) && Math.abs(wavePair.momentum) > 0.02) {
       votesForPair.push({
         agentName: "TrendFollower",
         pair: pairLabel,
@@ -365,7 +392,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     }
 
     // ── MeanReversion ──
-    if (wavePair.amplitude > 0.03) {
+    if (agentAssigned("MeanReversion", pairLabel) && wavePair.amplitude > 0.03) {
       votesForPair.push({
         agentName: "MeanReversion",
         pair: pairLabel,
@@ -380,7 +407,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
 
     // ── ArbitrageHunter (stable-stable) ──
     const isStableStable = STABLES.has(pair.from) && STABLES.has(pair.to)
-    if (isStableStable) {
+    if (agentAssigned("ArbitrageHunter", pairLabel) && isStableStable) {
       const fromPrice = await getTokenPrice(pair.from)
       const toPrice = await getTokenPrice(pair.to)
       const spread = Math.abs((toPrice - fromPrice) / fromPrice * 100)
@@ -399,7 +426,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     }
 
     // ── MarketMaker ──
-    if (!isStableStable) {
+    if (agentAssigned("MarketMaker", pairLabel) && !isStableStable) {
       const fromPrice = await getTokenPrice(pair.from)
       const toPrice = await getTokenPrice(pair.to)
       const spread = Math.abs((toPrice - fromPrice) / fromPrice * 100)
@@ -420,7 +447,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     // ── BTCTrader ──
     const isBtcEth = pair.from === "WBTC" || pair.to === "WBTC" ||
                      pair.from === "WETH" || pair.to === "WETH"
-    if (isBtcEth) {
+    if (agentAssigned("BTCTrader", pairLabel) && isBtcEth) {
       const fromPrice = await getTokenPrice(pair.from)
       const toPrice = await getTokenPrice(pair.to)
       const spread = Math.abs((toPrice - fromPrice) / fromPrice * 100)
@@ -439,7 +466,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     }
 
     // ── Liquidator ──
-    if (wavePair.liquidity > 0.1) {
+    if (agentAssigned("Liquidator", pairLabel) && wavePair.liquidity > 0.1) {
       votesForPair.push({
         agentName: "Liquidator",
         pair: pairLabel,
@@ -454,7 +481,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
 
     // ── MomentumTrader ──
     const momentumScore = Math.abs(wavePair.momentum) * wavePair.volatility
-    if (momentumScore > 0.005) {
+    if (agentAssigned("MomentumTrader", pairLabel) && momentumScore > 0.005) {
       votesForPair.push({
         agentName: "MomentumTrader",
         pair: pairLabel,
@@ -468,7 +495,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     }
 
     // ── NVIDIAgent ──
-    if (wavePair.probability > 10) {
+    if (agentAssigned("NVIDIAgent", pairLabel) && wavePair.probability > 10) {
       votesForPair.push({
         agentName: "NVIDIAgent",
         pair: pairLabel,
@@ -481,12 +508,10 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       })
     }
 
-    // ── SynthesisAgent ──
-    try {
-      // Análise sintética baseada nos dados disponíveis
+    // ── SynthesisAgent (meta: analisa qualquer par) ──
+    if (agentAssigned("Synthesis", pairLabel)) try {
       const indicators: { name: string; signal: "buy" | "sell"; weight: number }[] = []
       
-      // Momentum
       if (Math.abs(wavePair.momentum) > 0.02) {
         indicators.push({
           name: "Momentum",
@@ -495,7 +520,6 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         })
       }
       
-      // Amplitude
       if (wavePair.amplitude > 0.03) {
         indicators.push({
           name: "Amplitude",
@@ -504,7 +528,6 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         })
       }
       
-      // Volatilidade
       if (wavePair.volatility > 0.4) {
         indicators.push({
           name: "Volatilidade",
@@ -513,7 +536,6 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         })
       }
       
-      // Liquidez
       if (wavePair.liquidity > 0.3) {
         indicators.push({
           name: "Liquidez",
@@ -523,7 +545,6 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       }
       
       if (indicators.length >= 2) {
-        // Conta sinais com pesos
         const buyWeight = indicators.filter(i => i.signal === "buy").reduce((s, i) => s + i.weight, 0)
         const sellWeight = indicators.filter(i => i.signal === "sell").reduce((s, i) => s + i.weight, 0)
         const totalWeight = buyWeight + sellWeight
@@ -554,44 +575,46 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     }
 
     // ── Morse ──
-    const metrics: { nome: string; alinhado: boolean; direcao: "buy" | "sell"; peso: number }[] = []
+    if (agentAssigned("Morse", pairLabel)) {
+      const metrics: { nome: string; alinhado: boolean; direcao: "buy" | "sell"; peso: number }[] = []
 
-    const momSignal = wavePair.momentum > 0.02 ? "buy" : wavePair.momentum < -0.02 ? "sell" : null
-    if (momSignal) {
-      metrics.push({ nome: "Momentum", alinhado: true, direcao: momSignal, peso: Math.abs(wavePair.momentum) })
-    }
+      const momSignal = wavePair.momentum > 0.02 ? "buy" : wavePair.momentum < -0.02 ? "sell" : null
+      if (momSignal) {
+        metrics.push({ nome: "Momentum", alinhado: true, direcao: momSignal, peso: Math.abs(wavePair.momentum) })
+      }
 
-    const volSignal = wavePair.volatility > 0.6 ? (wavePair.momentum > 0 ? "buy" : "sell") : null
-    if (volSignal) {
-      metrics.push({ nome: "Bollinger", alinhado: true, direcao: volSignal, peso: wavePair.volatility })
-    }
+      const volSignal = wavePair.volatility > 0.6 ? (wavePair.momentum > 0 ? "buy" : "sell") : null
+      if (volSignal) {
+        metrics.push({ nome: "Bollinger", alinhado: true, direcao: volSignal, peso: wavePair.volatility })
+      }
 
-    const ampSignal = wavePair.amplitude > 0.03 ? (wavePair.momentum > 0 ? "buy" : "sell") : null
-    if (ampSignal) {
-      metrics.push({ nome: "Amplitude", alinhado: true, direcao: ampSignal, peso: wavePair.amplitude })
-    }
+      const ampSignal = wavePair.amplitude > 0.03 ? (wavePair.momentum > 0 ? "buy" : "sell") : null
+      if (ampSignal) {
+        metrics.push({ nome: "Amplitude", alinhado: true, direcao: ampSignal, peso: wavePair.amplitude })
+      }
 
-    if (wavePair.probability > 10) {
-      metrics.push({ nome: "Confiabilidade", alinhado: true, direcao: wavePair.momentum > 0 ? "buy" : "sell", peso: wavePair.probability / 100 })
-    }
+      if (wavePair.probability > 10) {
+        metrics.push({ nome: "Confiabilidade", alinhado: true, direcao: wavePair.momentum > 0 ? "buy" : "sell", peso: wavePair.probability / 100 })
+      }
 
-    if (metrics.length >= 2) {
-      const direcoes = new Set(metrics.map(m => m.direcao))
-      if (direcoes.size === 1) {
-        const direcaoUnica = [...direcoes][0]
-        const pesoTotal = metrics.reduce((s, m) => s + m.peso, 0) / metrics.length
-        const confianca = Math.min(90, Math.round(30 + pesoTotal * 60))
-        const metrs = metrics.map(m => m.nome).join(" · ")
-        votesForPair.push({
-          agentName: "Morse",
-          pair: pairLabel,
-          fromToken: wavePair.fromToken,
-          toToken: wavePair.toToken,
-          network: redeAtual,
-          confidence: confianca,
-          action: direcaoUnica,
-          reason: `📻 ${metrs} → ${direcaoUnica === "buy" ? "⬆ COMPRA" : "⬇ VENDA"} (${metrics.length}/${metrics.length} alinhadas)`,
-        })
+      if (metrics.length >= 2) {
+        const direcoes = new Set(metrics.map(m => m.direcao))
+        if (direcoes.size === 1) {
+          const direcaoUnica = [...direcoes][0]
+          const pesoTotal = metrics.reduce((s, m) => s + m.peso, 0) / metrics.length
+          const confianca = Math.min(90, Math.round(30 + pesoTotal * 60))
+          const metrs = metrics.map(m => m.nome).join(" · ")
+          votesForPair.push({
+            agentName: "Morse",
+            pair: pairLabel,
+            fromToken: wavePair.fromToken,
+            toToken: wavePair.toToken,
+            network: redeAtual,
+            confidence: confianca,
+            action: direcaoUnica,
+            reason: `📻 ${metrs} → ${direcaoUnica === "buy" ? "⬆ COMPRA" : "⬇ VENDA"} (${metrics.length}/${metrics.length} alinhadas)`,
+          })
+        }
       }
     }
 

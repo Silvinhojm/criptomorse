@@ -1148,9 +1148,17 @@ Pregão (verificarOrdem):
 - **Grid buy**: verifica max positions (mesmo cálculo do pipeline de agentes)
 - **Grid sell**: verifica se posição existe e se não há venda pendente
 
+### Agentes Especializados por Par
+- **Novo**: `agentes-do-pregão.ts` — cada robô agora analisa **apenas seus pares designados** no mapeamento `AGENTE_PARES`
+- **Novo**: `agentAssigned(agentName, pairLabel)` — filtra quais agentes votam em cada par
+- Synthesis é meta-agente designado a **todos os pares** (`[]` = ilimitado)
+- Log atualizado: `"🔍 Analisando USDC→WETH — Quantum, Technical, TrendFollower..."`
+- Cada par tem de 2 a 7 especialistas dedicados (antes eram todos os 13 agentes em todo par)
+
 ### Estado atual
 - **Polygon Mainnet**: 1 posição WETH break-even (0.0%) — grid adaptativo pode capturar micro-oscilações. Com Grid/GridRef fora do Top 3, agentes reais assumem.
 - **Arc Testnet**: grid adaptativo com 15 níveis por token, spacing mínimo lucrativo garantido.
 - **Grid Performance**: painel visível no dashboard mostrando lucro líquido real de cada micro-trade.
+- **Agentes**: cada robô focado em seus pares específicos, Synthesis como meta para qualquer par.
 - **Lucro acumulado**: +$18.77
 
