@@ -337,9 +337,18 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     pairsToAnalyze = multiPairs.map(p => ({ net: p.net, label: p.label }))
   } else {
     if (isMultiChain) {
+      const VOLATEIS = new Set(["WETH", "WBTC", "WMATIC", "ARB", "cirBTC", "mcirBTC"])
       pairsToAnalyze = multiPairs
         .filter(p => p.net !== "ethereum") // ignora Ethereum (gas caro para micro-trades)
+        .filter(p => [...VOLATEIS].some(v => p.label.includes(v))) // só voláteis
         .map(p => ({ net: p.net, label: p.label }))
+      if (pairsToAnalyze.length === 0) {
+        // Fallback: todos os pares (exceto ETH) se não houver voláteis
+        pairsToAnalyze = multiPairs
+          .filter(p => p.net !== "ethereum")
+          .map(p => ({ net: p.net, label: p.label }))
+        pregão.adicionarLog(`⚠️ Nenhum par volátil disponível em multi-chain — usando todos`)
+      }
     } else {
       const pairsFromProf = pairProfitability.getPairsForAnalysis(redeAtual)
       if (redeAtual !== "ethereum") {
