@@ -1006,7 +1006,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     const spreadPct = 0.005
     const minViableTrade = (getMinProfitReal(pairNet) + gasCost) / Math.max(0.001, expectedReturn - spreadPct)
 
-    if (minViableTrade > 0 && valorFinal < minViableTrade) {
+    if (minViableTrade > 0 && valorFinal < minViableTrade && valorFinal >= 5) {
       pregão.adicionarLog(`⏳ Mercado pouco volátil — trade de $${valorFinal.toFixed(2)} não cobre custos (precisa ~$${minViableTrade.toFixed(2)}). Retorno esperado ${(expectedReturn * 100).toFixed(2)}% com ${(vol24h * 100).toFixed(1)}% vol`)
     } else {
       pregão.adicionarLog(`✅ Trade viável em ${pairNet}: retorno esperado ${(expectedReturn * 100).toFixed(2)}% cobre gas + spread + $${getMinProfitReal(pairNet).toFixed(2)}`)
