@@ -893,17 +893,43 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         })
       }
     }
+  } else if (!STABLES.has(agreedPair.fromToken) && STABLES.has(agreedPair.toToken)) {
+    // Venda volátil→stable: verifica se já temos posição aberta e se está no lucro
+    const posVenda = positionManager.getOpenPositions()
+      .find(p => p.boughtToken === agreedPair.fromToken && p.networkKey === redeAtual && p.status === "open")
+    if (posVenda) {
+      const currentPrice = await positionManager.fetchTokenPrice(posVenda.boughtToken as TokenSymbol)
+      const profitPercent = ((currentPrice - posVenda.entryPrice) / posVenda.entryPrice) * 100
+      if (profitPercent <= 0) {
+        pregão.adicionarLog(`⏳ ${agreedPair.pair}: posição ${agreedPair.fromToken} no prejuízo (${profitPercent.toFixed(1)}%) — só Staircase pode fechar`)
+      } else {
+        pregão.adicionarLog(`💰 Venda lucrativa: ${agreedPair.pair} (${profitPercent.toFixed(1)}%)`)
+        for (const v of agreeingAgents) {
+          pregão.receberOK({
+            pregueiro: `Agente:${v.agentName}`,
+            rede: v.network, par: v.pair, confianca: v.confidence, timestamp: Date.now(),
+            fromToken: v.fromToken, toToken: v.toToken,
+          })
+        }
+      }
+    } else {
+      // Venda sem posição aberta (ex: vender token que está na wallet mas não como posição)
+      pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair}`)
+      for (const v of agreeingAgents) {
+        pregão.receberOK({
+          pregueiro: `Agente:${v.agentName}`,
+          rede: v.network, par: v.pair, confianca: v.confidence, timestamp: Date.now(),
+          fromToken: v.fromToken, toToken: v.toToken,
+        })
+      }
+    }
   } else {
     pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair} (${agreedPair.fromToken}→${agreedPair.toToken})`)
     for (const v of agreeingAgents) {
       pregão.receberOK({
         pregueiro: `Agente:${v.agentName}`,
-        rede: v.network,
-        par: v.pair,
-        confianca: v.confidence,
-        timestamp: Date.now(),
-        fromToken: v.fromToken,
-        toToken: v.toToken,
+        rede: v.network, par: v.pair, confianca: v.confidence, timestamp: Date.now(),
+        fromToken: v.fromToken, toToken: v.toToken,
       })
     }
   }
