@@ -94,6 +94,13 @@ class Escriturário {
       return
     }
 
+    // Mainnet: stable→volatile precisa de pelo menos $5
+    if (!isTestnet && isFromStable && !isStable(ordem.toToken as TokenSymbol) && valorTrade < 5.0) {
+      this.log(`❌ Trade volátil mínimo é $5.00 (tinha $${valorTrade.toFixed(2)}) na ${ordem.rede}`)
+      pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+      return
+    }
+
     this.log(`💰 Valor preparado: $${valorTrade.toFixed(2)} ${fromToken} → ${ordem.toToken}`)
     this.log(`🔗 Encaminhando para o Corretor executar...`)
 

@@ -1,13 +1,10 @@
 // lib/position-manager.ts
-// Gerenciamento de posicoes com trailing stop dinâmico
-// Garante 50-100% do lucro conforme cresce, fechando com trailing stop progressivo
-//
-// Staircase (escada de lucro): sobe degrau por degrau, fecha se cair 2 degraus do pico.
-// Ex: lucro sobe 3%→5%→8%, se cair de 8% para 5% (2 degraus) → fecha garantindo ~5%.
+// Gerenciamento de posicoes com fechamento inteligente
+// Regra: após 1 minuto, se lucro >= $0.05 → fecha (lucro verdadeiro pós-gas+spread)
+// Nunca fecha no prejuízo — segura até ter lucro mínimo ou stop loss
 
-import { realSwap, isStable, type SwapResult, type NetworkKey, type TokenSymbol } from "./real-swap-executor";
+import { realSwap, isStable, type NetworkKey, type TokenSymbol } from "./real-swap-executor";
 import { pregão } from "./pregão";
-import { saveTradeHistory, loadTradeHistory } from "./persistence";
 
 export interface OpenPosition {
   id: string;
@@ -27,68 +24,17 @@ export interface OpenPosition {
   closeTimestamp?: number;
   profitUsd?: number;
   profitPercent?: number;
-  staircaseLevel?: number;
 }
 
-// Idade maxima da posicao (12h) — forca fechamento para liberar capital
 const MAX_POSITION_AGE_MS = 12 * 60 * 60 * 1000;
 const POSITIONS_STORAGE_KEY = "arcflow_open_positions";
-
-// Degraus da escada de lucro (%)
-// A cada novo degrau atingido, o lucro mínimo garantido sobe.
-// Se cair 2 degraus abaixo do pico, a posição fecha automaticamente.
-const PROFIT_LEVELS = [0, 4, 7, 10, 14, 18, 24, 32, 42, 55, 70, 90, 115];
-
-// Stop loss máximo — se o lucro cair abaixo disto, fecha imediatamente
 const MAX_LOSS_PERCENT = -15;
-
-// Custo estimado de gas por rede (USD)
-const GAS_ESTIMATE_USD: Record<string, number> = {
-  polygon: 0.10,
-  base: 0.08,
-  arbitrum: 0.15,
-  ethereum: 8.00,
-};
-// Spread estimado (% do valor do trade)
-const SPREAD_ESTIMATE_PCT = 0.005; // 0.5%
-// Margem de lucro mínima adicional (%)
-const MIN_PROFIT_MARGIN = 0.005; // 0.5%
-
-
-// Tempo máximo sem nenhum lucro — se a posição nunca passou de 0% após N horas, fecha
 const STALE_NO_PROFIT_MS = 4 * 60 * 60 * 1000;
 
-function getLevelIndex(profitPercent: number, levels?: number[]): number {
-  const list = levels ?? PROFIT_LEVELS;
-  for (let i = list.length - 1; i >= 0; i--) {
-    if (profitPercent >= list[i]) return i;
-  }
-  return 0;
-}
-
-// Trail levels: as regras de fechamento ficam mais rigidas conforme o lucro cresce
-// "quanto maior o lucro, menor a porcentagem de fechamento"
-const TRAIL_RULES = [
-  { minProfit: 0,    maxProfit: 4,    trailDrop: 70  }, // lucro < 4%: caiu 70% do pico → fecha (garante 30%)
-  { minProfit: 4,    maxProfit: 7,    trailDrop: 55  },
-  { minProfit: 7,    maxProfit: 12,   trailDrop: 45  }, // 55% do lucro garantido
-  { minProfit: 12,   maxProfit: 18,   trailDrop: 40  },
-  { minProfit: 18,   maxProfit: 26,   trailDrop: 35  },
-  { minProfit: 26,   maxProfit: 38,   trailDrop: 30  },
-  { minProfit: 38,   maxProfit: 52,   trailDrop: 25  }, // 75% do lucro garantido
-  { minProfit: 52,   maxProfit: 72,   trailDrop: 22  },
-  { minProfit: 72,   maxProfit: 100,  trailDrop: 18  }, // 82% do lucro garantido
-  { minProfit: 100,  maxProfit: Infinity, trailDrop: 12 }, // 88% do lucro garantido
-];
-
-function getTrailDrop(peakProfitPercent: number): number {
-  for (const rule of TRAIL_RULES) {
-    if (peakProfitPercent >= rule.minProfit && peakProfitPercent < rule.maxProfit) {
-      return rule.trailDrop;
-    }
-  }
-  return 50;
-}
+// Tempo mínimo antes de considerar fechamento com lucro
+const MIN_PROFIT_HOLD_MS = 60 * 1000; // 1 minuto
+// Lucro mínimo real desejado (já descontado gas + spread na abertura)
+const MIN_PROFIT_USD = 0.05;
 
 class PositionManager {
   private positions: Map<string, OpenPosition> = new Map();
@@ -132,7 +78,6 @@ class PositionManager {
       currentPrice: entryPrice,
       currentProfitPercent: 0,
       status: "open",
-      staircaseLevel: 0,
     };
     this.positions.set(id, pos);
     this.savePositions();
@@ -155,8 +100,7 @@ class PositionManager {
     return pos;
   }
 
-  // Atualizar preco de uma posicao, retorna acao recomendada
-  updatePrice(id: string, currentPrice: number): "hold" | "close" {
+  staircaseUpdate(id: string, currentPrice: number, _dropSteps?: number, _levels?: number[]): "hold" | "close" {
     const pos = this.positions.get(id);
     if (!pos || pos.status !== "open") return "hold";
 
@@ -171,109 +115,31 @@ class PositionManager {
       pos.peakProfitPercent = profitPercent;
     }
 
-    // Stop loss: se perda > MAX_LOSS_PERCENT, fecha
-    if (profitPercent < MAX_LOSS_PERCENT) {
-      console.log(`🛑 Stop loss acionado: ${pos.boughtToken} perda de ${profitPercent.toFixed(2)}% (limite: ${MAX_LOSS_PERCENT}%)`);
-      return "close";
-    }
-
-    // Stale close: se nunca teve lucro após N horas, espera mais (só fecha se já lucrou)
-    if (age > STALE_NO_PROFIT_MS && pos.peakProfitPercent <= 0) {
-      console.log(`⏰ Posicao estagnada sem lucro ha ${(age / 3600000).toFixed(1)}h — segurando (${pos.boughtToken})`);
-      return "hold";
-    }
-
-    // Forcar fechamento se posicao estiver muito antiga (só se já viu lucro)
-    if (age > MAX_POSITION_AGE_MS && pos.peakProfitPercent > 0) {
-      console.log(`⌛ Posicao expirada ha ${(age / 3600000).toFixed(1)}h, forcando fechamento (${pos.boughtToken})`);
-      return "close";
-    }
-
-    const trailDrop = getTrailDrop(pos.peakProfitPercent);
-    const stopPrice = pos.highestPrice * (1 - trailDrop / 100);
-    const stopProfitPercent = ((stopPrice - pos.entryPrice) / pos.entryPrice) * 100;
-
-    const lockedProfit = pos.peakProfitPercent * (1 - trailDrop / 100);
-
-    if (profitPercent <= stopProfitPercent && pos.peakProfitPercent > 2) {
-      console.log(`Trailing stop acionado: pico ${pos.peakProfitPercent.toFixed(2)}%, drop ${trailDrop}%, fechando em ${profitPercent.toFixed(2)}% (garantido ${lockedProfit.toFixed(2)}%)`);
-      return "close";
-    }
-
-    if (pos.peakProfitPercent > 2) {
-      console.log(`Posicao ${pos.boughtToken}: ${profitPercent.toFixed(2)}% (pico: ${pos.peakProfitPercent.toFixed(2)}%, stop: ${stopProfitPercent.toFixed(2)}%, garantido: ${lockedProfit.toFixed(2)}%)`);
-    }
-
-    return "hold";
-  }
-
-  // Staircase (escada de lucro): sobe degraus, fecha se cair N degraus do pico
-  // Aceita níveis dinâmicos (do volatility tracker) ou usa o padrão PROFIT_LEVELS
-  staircaseUpdate(id: string, currentPrice: number, dropSteps: number = 2, levels?: number[]): "hold" | "close" {
-    const pos = this.positions.get(id);
-    if (!pos || pos.status !== "open") return "hold";
-
-    const profitLevels = levels ?? PROFIT_LEVELS;
-    const age = Date.now() - pos.entryTimestamp;
-
-    pos.currentPrice = currentPrice;
-    const profitPercent = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
-    pos.currentProfitPercent = profitPercent;
-
-    if (currentPrice > pos.highestPrice) {
-      pos.highestPrice = currentPrice;
-      pos.peakProfitPercent = profitPercent;
-    }
-
-    // Stop loss: se perda > MAX_LOSS_PERCENT, fecha
-    if (profitPercent < MAX_LOSS_PERCENT) {
-      console.log(`🛑 Staircase stop loss: ${pos.boughtToken} perda de ${profitPercent.toFixed(2)}% (limite: ${MAX_LOSS_PERCENT}%)`);
-      return "close";
-    }
-
-    // Stale close: se nunca teve lucro após N horas, espera mais (só fecha se já lucrou)
-    if (age > STALE_NO_PROFIT_MS && pos.peakProfitPercent <= 0) {
-      console.log(`⏰ Staircase stale: ${pos.boughtToken} sem lucro ha ${(age / 3600000).toFixed(1)}h — segurando (nunca lucrou)`);
-      return "hold";
-    }
-
-    // Forcar fechamento se posicao estiver muito antiga (só se já viu lucro)
-    if (age > MAX_POSITION_AGE_MS && pos.peakProfitPercent > 0) {
-      console.log(`⌛ Staircase expirada: ${pos.boughtToken} aberta ha ${(age / 3600000).toFixed(1)}h, forcando fechamento`);
-      return "close";
-    }
-
-    // Custo mínimo para valer a pena fechar: gas + spread + margem de lucro
-    const tradeValueUsd = currentPrice * pos.amountBought;
-    const gasCost = GAS_ESTIMATE_USD[pos.networkKey] ?? 0.10;
-    const spreadCost = tradeValueUsd * SPREAD_ESTIMATE_PCT;
-    const profitMarginUsd = tradeValueUsd * MIN_PROFIT_MARGIN;
-    const minProfitUsd = gasCost + spreadCost + profitMarginUsd;
     const currentProfitUsd = (currentPrice - pos.entryPrice) * pos.amountBought;
 
-    const currentLevel = getLevelIndex(profitPercent, profitLevels);
-    const peakLevel = pos.staircaseLevel ?? 0;
-
-    if (currentLevel > peakLevel) {
-      pos.staircaseLevel = currentLevel;
-      const nivelNome = profitLevels[currentLevel] >= 100 ? "🚀" : "📈";
-      console.log(`${nivelNome} Staircase ${pos.boughtToken}: subiu para nível ${currentLevel} (${profitLevels[currentLevel]}%${currentLevel >= profitLevels.length - 1 ? " — TETO!" : ""})`);
-    }
-
-    if (currentLevel <= peakLevel - dropSteps && peakLevel > 0) {
-      // Só fecha se o lucro cobrir gas + spread + margem mínima
-      if (currentProfitUsd < minProfitUsd) {
-        console.log(`⏳ Staircase ${pos.boughtToken}: lucro $${currentProfitUsd.toFixed(2)} insuficiente (precisa ~$${minProfitUsd.toFixed(2)} = gas $${gasCost.toFixed(2)} + spread $${spreadCost.toFixed(2)} + margem $${profitMarginUsd.toFixed(2)}), segurando`);
-        return "hold";
-      }
-      const locked = profitLevels[Math.max(0, peakLevel - dropSteps + 1)];
-      console.log(`🔒 Staircase fechou ${pos.boughtToken}: pico ${profitLevels[peakLevel]}%, caiu ${dropSteps} degraus → ${profitPercent.toFixed(2)}% (nível ${currentLevel}), lucro garantido ~${locked}%`);
-      this.onStaircaseCloseCallback?.(pos);
+    // Stop loss: se perda > MAX_LOSS_PERCENT, fecha imediatamente
+    if (profitPercent < MAX_LOSS_PERCENT) {
+      pregão.adicionarLog(`🛑 Stop loss: ${pos.boughtToken} perdeu ${profitPercent.toFixed(2)}% (limite ${MAX_LOSS_PERCENT}%) — fechando`);
       return "close";
     }
 
-    if (peakLevel > 0) {
-      console.log(`📊 Staircase ${pos.boughtToken}: ${profitPercent.toFixed(2)}% (nível ${currentLevel}, pico ${peakLevel}=${profitLevels[peakLevel]}%, fecha ≤${profitLevels[Math.max(0, peakLevel - dropSteps)]}%)`);
+    // Stale: nunca lucrou após N horas — segura, espera o mercado virar
+    if (age > STALE_NO_PROFIT_MS && pos.peakProfitPercent <= 0) {
+      pregão.adicionarLog(`⏰ ${pos.boughtToken}: ${(age / 3600000).toFixed(1)}h sem lucro — segurando (mercado pode virar)`);
+      return "hold";
+    }
+
+    // Expirada: 12h+ e já viu lucro — força fechamento
+    if (age > MAX_POSITION_AGE_MS && pos.peakProfitPercent > 0) {
+      pregão.adicionarLog(`⌛ ${pos.boughtToken}: expirou ${(age / 3600000).toFixed(1)}h — forçando fechamento com lucro`);
+      return "close";
+    }
+
+    // Se passou 1 minuto E lucro >= $0.05 → fecha com lucro verdadeiro
+    if (age >= MIN_PROFIT_HOLD_MS && currentProfitUsd >= MIN_PROFIT_USD) {
+      pregão.adicionarLog(`✅ ${pos.boughtToken}: $${currentProfitUsd.toFixed(2)} de lucro em ${Math.round(age / 1000)}s — fechando (mínimo $${MIN_PROFIT_USD.toFixed(2)})`);
+      this.onStaircaseCloseCallback?.(pos);
+      return "close";
     }
 
     return "hold";

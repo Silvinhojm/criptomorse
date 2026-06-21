@@ -37,9 +37,12 @@ class Narrador {
   }
 
   ordemGerada(par: string, confianca: number, agentes: string[]) {
+    const temAgente = agentes.some(a => a.startsWith("Agente:"))
+    const label = temAgente ? "agentes" : "analistas"
+    const nomes = agentes.map(a => a.replace("Agente:", ""))
     this.emit({
       icon: "📦",
-      text: `Ordem gerada: ${par} com ${confianca}% de confiança pelos agentes ${agentes.join(", ")}.`,
+      text: `Ordem gerada: ${par} com ${confianca}% de confiança pelos ${label} ${nomes.join(", ")}.`,
       timestamp: Date.now(),
       type: "info",
     })

@@ -106,61 +106,63 @@ export type NetworkKey = keyof typeof NETWORKS;
 export type TokenSymbol = string;
 
 // ─── Pares de trading disponíveis por rede ───────────────────────────────────
+// CORREÇÃO: labels agora refletem o token real (WETH, WMATIC, WBTC)
+// antes usavam nomes curtos (ETH, MATIC, BTC) que não batiam com fromToken/toToken
 export const TRADING_PAIRS: Record<NetworkKey, Array<{ from: TokenSymbol; to: TokenSymbol; label: string }>> = {
   arc: [
-    { from: "USDC", to: "EURC", label: "USDC→EURC" },
-    { from: "EURC", to: "USDC", label: "EURC→USDC" },
-    { from: "USDC", to: "cirBTC", label: "USDC→cirBTC" },
-    { from: "cirBTC", to: "USDC", label: "cirBTC→USDC" },
-    { from: "EURC", to: "cirBTC", label: "EURC→cirBTC" },
-    { from: "cirBTC", to: "EURC", label: "cirBTC→EURC" },
-    { from: "USDC", to: "mcirBTC", label: "USDC→mcirBTC" },
-    { from: "mcirBTC", to: "USDC", label: "mcirBTC→USDC" },
-    { from: "EURC", to: "mcirBTC", label: "EURC→mcirBTC" },
-    { from: "mcirBTC", to: "EURC", label: "mcirBTC→EURC" },
+    { from: "USDC",    to: "EURC",    label: "USDC→EURC" },
+    { from: "EURC",    to: "USDC",    label: "EURC→USDC" },
+    { from: "USDC",    to: "cirBTC",  label: "USDC→cirBTC" },
+    { from: "cirBTC",  to: "USDC",    label: "cirBTC→USDC" },
+    { from: "EURC",    to: "cirBTC",  label: "EURC→cirBTC" },
+    { from: "cirBTC",  to: "EURC",    label: "cirBTC→EURC" },
+    { from: "USDC",    to: "mcirBTC", label: "USDC→mcirBTC" },
+    { from: "mcirBTC", to: "USDC",    label: "mcirBTC→USDC" },
+    { from: "EURC",    to: "mcirBTC", label: "EURC→mcirBTC" },
+    { from: "mcirBTC", to: "EURC",    label: "mcirBTC→EURC" },
   ],
   base: [
-    { from: "USDC", to: "EURC",  label: "USDC→EURC" },
-    { from: "USDC", to: "WETH",  label: "USDC→ETH" },
-    { from: "WETH", to: "USDC",  label: "ETH→USDC" },
-    { from: "USDC", to: "WBTC",  label: "USDC→BTC" },
-    { from: "WBTC", to: "USDC",  label: "BTC→USDC" },
-    { from: "WETH", to: "WBTC",  label: "ETH→BTC" },
-    { from: "WBTC", to: "WETH",  label: "BTC→ETH" },
-    { from: "EURC", to: "USDC",  label: "EURC→USDC" },
-    { from: "DAI",  to: "USDC",  label: "DAI→USDC" },
+    { from: "USDC", to: "EURC", label: "USDC→EURC" },
+    { from: "USDC", to: "WETH", label: "USDC→WETH" },  // era "USDC→ETH"
+    { from: "WETH", to: "USDC", label: "WETH→USDC" },  // era "ETH→USDC"
+    { from: "USDC", to: "WBTC", label: "USDC→WBTC" },  // era "USDC→BTC"
+    { from: "WBTC", to: "USDC", label: "WBTC→USDC" },  // era "BTC→USDC"
+    { from: "WETH", to: "WBTC", label: "WETH→WBTC" },  // era "ETH→BTC"
+    { from: "WBTC", to: "WETH", label: "WBTC→WETH" },  // era "BTC→ETH"
+    { from: "EURC", to: "USDC", label: "EURC→USDC" },
+    { from: "DAI",  to: "USDC", label: "DAI→USDC" },
   ],
   polygon: [
     { from: "USDC",   to: "USDT",   label: "USDC→USDT" },
     { from: "USDT",   to: "USDC",   label: "USDT→USDC" },
-    { from: "USDC",   to: "WMATIC", label: "USDC→MATIC" },
-    { from: "WMATIC", to: "USDC",   label: "MATIC→USDC" },
-    { from: "USDC",   to: "WETH",   label: "USDC→ETH" },
-    { from: "WETH",   to: "USDC",   label: "ETH→USDC" },
+    { from: "USDC",   to: "WMATIC", label: "USDC→WMATIC" },  // era "USDC→MATIC"
+    { from: "WMATIC", to: "USDC",   label: "WMATIC→USDC" },  // era "MATIC→USDC"
+    { from: "USDC",   to: "WETH",   label: "USDC→WETH" },    // era "USDC→ETH"
+    { from: "WETH",   to: "USDC",   label: "WETH→USDC" },    // era "ETH→USDC"
     { from: "USDC",   to: "DAI",    label: "USDC→DAI" },
     { from: "DAI",    to: "USDC",   label: "DAI→USDC" },
   ],
   ethereum: [
-    { from: "USDC", to: "WETH",  label: "USDC→ETH" },
-    { from: "WETH", to: "USDC",  label: "ETH→USDC" },
-    { from: "USDC", to: "WBTC",  label: "USDC→BTC" },
-    { from: "WBTC", to: "USDC",  label: "BTC→USDC" },
-    { from: "WETH", to: "WBTC",  label: "ETH→BTC" },
-    { from: "WBTC", to: "WETH",  label: "BTC→ETH" },
-    { from: "USDC", to: "DAI",   label: "USDC→DAI" },
-    { from: "DAI",  to: "USDC",  label: "DAI→USDC" },
-    { from: "USDC", to: "EURC",  label: "USDC→EURC" },
+    { from: "USDC", to: "WETH", label: "USDC→WETH" },  // era "USDC→ETH"
+    { from: "WETH", to: "USDC", label: "WETH→USDC" },  // era "ETH→USDC"
+    { from: "USDC", to: "WBTC", label: "USDC→WBTC" },  // era "USDC→BTC"
+    { from: "WBTC", to: "USDC", label: "WBTC→USDC" },  // era "BTC→USDC"
+    { from: "WETH", to: "WBTC", label: "WETH→WBTC" },  // era "ETH→BTC"
+    { from: "WBTC", to: "WETH", label: "WBTC→WETH" },  // era "BTC→ETH"
+    { from: "USDC", to: "DAI",  label: "USDC→DAI" },
+    { from: "DAI",  to: "USDC", label: "DAI→USDC" },
+    { from: "USDC", to: "EURC", label: "USDC→EURC" },
   ],
   arbitrum: [
-    { from: "USDC", to: "WETH",  label: "USDC→ETH" },
-    { from: "WETH", to: "USDC",  label: "ETH→USDC" },
-    { from: "USDC", to: "WBTC",  label: "USDC→BTC" },
-    { from: "WBTC", to: "USDC",  label: "BTC→USDC" },
-    { from: "WETH", to: "WBTC",  label: "ETH→BTC" },
-    { from: "WBTC", to: "WETH",  label: "BTC→ETH" },
-    { from: "USDC", to: "ARB",   label: "USDC→ARB" },
-    { from: "ARB",  to: "USDC",  label: "ARB→USDC" },
-    { from: "USDC", to: "USDT",  label: "USDC→USDT" },
+    { from: "USDC", to: "WETH", label: "USDC→WETH" },  // era "USDC→ETH"
+    { from: "WETH", to: "USDC", label: "WETH→USDC" },  // era "ETH→USDC"
+    { from: "USDC", to: "WBTC", label: "USDC→WBTC" },  // era "USDC→BTC"
+    { from: "WBTC", to: "USDC", label: "WBTC→USDC" },  // era "BTC→USDC"
+    { from: "WETH", to: "WBTC", label: "WETH→WBTC" },  // era "ETH→BTC"
+    { from: "WBTC", to: "WETH", label: "WBTC→WETH" },  // era "BTC→ETH"
+    { from: "USDC", to: "ARB",  label: "USDC→ARB" },
+    { from: "ARB",  to: "USDC", label: "ARB→USDC" },
+    { from: "USDC", to: "USDT", label: "USDC→USDT" },
   ],
 };
 
@@ -224,6 +226,8 @@ const COIN_IDS: Record<string, string> = {
   USDC: "usd-coin", USDT: "tether", DAI: "dai", EURC: "eurc",
   ARB: "arbitrum", SOL: "solana",
   cirBTC: "bitcoin", mcirBTC: "bitcoin",
+  // Tokens nativos (usados por _fetchNativePrice)
+  ETH: "ethereum", POL: "matic-network", ARC: "usd-coin",
 };
 
 class RealSwapExecutor {
@@ -232,6 +236,8 @@ class RealSwapExecutor {
   private networkKey: NetworkKey = "arc";
   private userAddress: string = "";
   private tokenBalances: Map<TokenSymbol, TokenBalance> = new Map();
+  private nativeBalanceWei: bigint = 0n;
+  private nativeBalanceLastUpdated: number = 0;
   private priceCache: Map<TokenSymbol, { price: number; timestamp: number }> = new Map();
   private quoteCache: Map<string, { quote: QuoteResult | null; timestamp: number }> = new Map();
 
@@ -252,6 +258,7 @@ class RealSwapExecutor {
       const res = await fetch(`/api/price?ids=${coinId}`);
       if (!res.ok) return this.priceCache.get(token)?.price ?? 1.0;
       const body = await res.json();
+      // FIX: /api/price retorna { prices: {...}, change24h: {...} }
       const data = body.prices ?? body;
       const price = data[coinId] || 1.0;
       if (price > 0) {
@@ -300,7 +307,6 @@ class RealSwapExecutor {
   }
 
   // Inicializar com um signer externo (ex: BrowserProvider do MetaMask)
-  // Usa a wallet conectada para assinar, mantendo o provider RPC para leitura
   async initializeWithSigner(
     userAddress: string,
     networkKey: NetworkKey,
@@ -322,12 +328,11 @@ class RealSwapExecutor {
     }
   }
 
-  // Trocar de rede sem perder o signer — usado ao alternar entre redes na UI
+  // Trocar de rede sem perder o signer
   async switchNetwork(networkKey: NetworkKey): Promise<void> {
     this.networkKey = networkKey;
     const net = NETWORKS[networkKey];
     this.provider = new ethers.JsonRpcProvider(net.rpcUrl);
-    // Reconectar signer (Wallet) ao novo provider
     if (this.signer && typeof (this.signer as any).connect === "function") {
       this.signer = (this.signer as ethers.Wallet).connect(this.provider);
     }
@@ -376,10 +381,45 @@ class RealSwapExecutor {
     return Array.from(this.tokenBalances.values());
   }
 
+  async refreshNativeBalance(): Promise<number> {
+    if (!this.provider || !this.userAddress) return 0;
+    try {
+      this.nativeBalanceWei = await this.provider.getBalance(this.userAddress);
+      this.nativeBalanceLastUpdated = Date.now();
+      const net = NETWORKS[this.networkKey];
+      const formatted = parseFloat(ethers.formatEther(this.nativeBalanceWei));
+      const nativePrice = await this._fetchNativePrice(net.nativeSymbol);
+      return formatted * nativePrice;
+    } catch {
+      return 0;
+    }
+  }
+
+  getNativeBalanceUSD(): number {
+    return 0;
+  }
+
+  // FIX: unpack { prices: {...} } igual ao gas-price-oracle.ts
+  // Antes: data[coinId] → undefined → fallback 1.0 → POL valia $1 → $83 USD
+  // Agora: (data.prices ?? data)[coinId] → preço real → $0.078 → $6.47 USD
+  private async _fetchNativePrice(nativeSymbol: string): Promise<number> {
+    const coinId = COIN_IDS[nativeSymbol] || nativeSymbol.toLowerCase();
+    if (!coinId) return 1.0;
+    try {
+      const res = await fetch(`/api/price?ids=${coinId}`);
+      if (!res.ok) return 1.0;
+      const body = await res.json();
+      // FIX: /api/price retorna { prices: {...}, change24h: {...} }
+      const prices = body.prices ?? body;
+      const price = prices[coinId] ?? 1.0;
+      return price > 0 ? price : 1.0;
+    } catch {
+      return 1.0;
+    }
+  }
+
   // Encontrar o melhor par para trade (maior retorno esperado)
-  // Usa quotes sintéticas para comparação (rápido, sem LI.FI).
   async findBestPair(amountUsd: number): Promise<BestPairResult | null> {
-    const log = (msg: string) => console.log(msg);
     const pairs = TRADING_PAIRS[this.networkKey];
     const net = NETWORKS[this.networkKey];
     const results: BestPairResult[] = [];
@@ -403,7 +443,6 @@ class RealSwapExecutor {
         const fromTokenAmount = actualAmount / fromPrice;
         const fromAmountRaw   = toTokenUnits(fromTokenAmount, fromDecimals);
 
-        // Quotes sintéticas para comparar pares (rápido, sem LI.FI)
         const quote = generateSyntheticQuote(fromTokenAddr, toTokenAddr, fromAmountRaw, this.userAddress, net.chainId);
         if (!quote) continue;
 
@@ -433,7 +472,6 @@ class RealSwapExecutor {
       gasPriceOracle.getGasCost(this.networkKey),
     ]);
 
-    // Filtrar: voláteis sempre passam, stable-stable só se lucrativos
     const isTestnet = NETWORKS[this.networkKey].isTestnet;
     const profitable = results.filter(r => {
       if (!isStable(r.pair.to)) return true;
@@ -443,7 +481,6 @@ class RealSwapExecutor {
 
     if (profitable.length === 0) return null;
 
-    // Ordenar por lucro (voláteis com expectedProfit 0 ficam no final)
     profitable.sort((a, b) => b.expectedProfit - a.expectedProfit);
     return profitable[0];
   }
@@ -464,12 +501,10 @@ class RealSwapExecutor {
       return this._fail(fromToken, toToken, amountUsd, "Signer não inicializado (necessário private key)", timestamp);
     }
 
-    // Circuit breaker: bloquear se modo pânico ativo
     if (getCircuitBreakerState().isPanicActive) {
       return this._fail(fromToken, toToken, amountUsd, "Circuit breaker bloqueou trade (modo pânico ativo)", timestamp);
     }
 
-    // Refresh saldos on-chain antes de decidir (cache pode estar podre)
     await this.refreshAllBalances();
     const fromBalance     = this.getBalance(fromToken);
     const fromPrice       = await this._getTokenPrice(fromToken);
@@ -478,9 +513,19 @@ class RealSwapExecutor {
       return this._fail(fromToken, toToken, amountUsd, `Saldo insuficiente de ${fromToken}: $${fromBalanceUsd.toFixed(4)} (${fromBalance.toFixed(6)} ${fromToken})`, timestamp);
     }
 
+    const nativeBalanceUsd = await this.refreshNativeBalance();
+    const gasCost = await gasPriceOracle.getGasCost(this.networkKey);
+    const isTestnet = NETWORKS[this.networkKey].isTestnet;
+    const gasReserve = gasCost * 5;
+    if (!isTestnet && nativeBalanceUsd < gasReserve) {
+      return this._fail(fromToken, toToken, amountUsd,
+        `Sem ${net.nativeSymbol} para gas: tem $${nativeBalanceUsd.toFixed(4)} (precisa ~$${gasReserve.toFixed(4)})`,
+        timestamp);
+    }
+
     try {
-      const fromTokenAddr   = (net.tokens as any)[fromToken];
-      const toTokenAddr     = (net.tokens as any)[toToken];
+      const fromTokenAddr = (net.tokens as any)[fromToken];
+      const toTokenAddr   = (net.tokens as any)[toToken];
 
       if (!fromTokenAddr) {
         return this._fail(fromToken, toToken, amountUsd, `Token ${fromToken} não configurado na rede ${this.networkKey}`, timestamp);
@@ -489,9 +534,9 @@ class RealSwapExecutor {
         return this._fail(fromToken, toToken, amountUsd, `Token ${toToken} não configurado na rede ${this.networkKey}`, timestamp);
       }
 
-      const fromDecimals     = this.tokenBalances.get(fromToken)?.decimals ?? 6;
-      const fromTokenAmount  = amountUsd / fromPrice;
-      const fromAmountRaw    = toTokenUnits(fromTokenAmount, fromDecimals);
+      const fromDecimals    = this.tokenBalances.get(fromToken)?.decimals ?? 6;
+      const fromTokenAmount = amountUsd / fromPrice;
+      const fromAmountRaw   = toTokenUnits(fromTokenAmount, fromDecimals);
 
       let quote: QuoteResult | null = null;
       if (net.isTestnet) {
@@ -519,7 +564,6 @@ class RealSwapExecutor {
         return this._fail(fromToken, toToken, amountUsd, motivo, timestamp);
       }
 
-      // Synthetic quote: testnet sem DEX — faz approve + simula
       if (quote.tool === 'synthetic-direct') {
         if (!net.isTestnet) {
           return this._fail(fromToken, toToken, amountUsd, "LI.FI indisponível — trade adiado", timestamp);
@@ -560,8 +604,8 @@ class RealSwapExecutor {
         return this._fail(fromToken, toToken, amountUsd, "Rota LI.FI sem dados de transação", timestamp);
       }
 
-      const toDecimals   = this.tokenBalances.get(toToken)?.decimals ?? 6;
-      const toEstimate   = parseFloat(quote.toAmount ?? "0") / Math.pow(10, toDecimals);
+      const toDecimals = this.tokenBalances.get(toToken)?.decimals ?? 6;
+      const toEstimate = parseFloat(quote.toAmount ?? "0") / Math.pow(10, toDecimals);
       log(`✅ Rota via ${quote.tool} | Estimativa: ${toEstimate.toFixed(6)} ${toToken}`);
       if (toEstimate <= 0) {
         if (net.isTestnet) {
@@ -571,29 +615,28 @@ class RealSwapExecutor {
         }
       }
 
-      // Registrar saldo pré-swap para calcular valor real recebido on-chain
       const preSwapBalance = this.getBalance(toToken);
 
-      // Verificar lucro mínimo (deduzindo gas real)
       let estimatedProfit = 0;
-      const gasCost = await gasPriceOracle.getGasCost(this.networkKey);
+      const gasCostEstimated = await gasPriceOracle.getGasCost(this.networkKey);
       if (isStable(toToken)) {
         estimatedProfit = toEstimate - amountUsd;
       }
-      const netProfit = estimatedProfit - gasCost;
+      const netProfit = estimatedProfit - gasCostEstimated;
       const minProfit = await getMinProfitThreshold(this.networkKey);
-      const isTestnet = NETWORKS[this.networkKey].isTestnet;
-      if (!isTestnet && estimatedProfit < minProfit && isStable(toToken)) {
-        log(`⏸️ Lucro estimado $${estimatedProfit.toFixed(4)} - gas $${gasCost.toFixed(3)} = $${netProfit.toFixed(4)} (min: $${minProfit})`);
+      if (!isTestnet && isStable(toToken) && estimatedProfit < minProfit) {
+        log(`⏸️ Lucro estimado $${estimatedProfit.toFixed(4)} - gas $${gasCostEstimated.toFixed(3)} = $${netProfit.toFixed(4)} (min: $${minProfit})`);
         return this._fail(fromToken, toToken, amountUsd, `Lucro líquido não atinge mínimo: $${netProfit.toFixed(4)}`, timestamp);
       }
+      if (!isTestnet && !isStable(toToken) && amountUsd < 5) {
+        log(`⏸️ Trade volátil $${amountUsd.toFixed(2)} abaixo do mínimo $5.00`);
+        return this._fail(fromToken, toToken, amountUsd, `Trade mínimo para voláteis é $5.00 (tentativa: $${amountUsd.toFixed(2)})`, timestamp);
+      }
 
-      // Determinar direção da ação
-      const isBuyingVolatile = !isStable(toToken) && isStable(fromToken);
+      const isBuyingVolatile  = !isStable(toToken) && isStable(fromToken);
       const isSellingForStable = isStable(toToken) && !isStable(fromToken);
       const action: "BUY" | "SELL" | "HOLD" = isBuyingVolatile ? "BUY" : isSellingForStable ? "SELL" : "BUY";
 
-      // Aprovar token se necessário
       const tx = quote.transactionRequest;
       const tokenContract = new ethers.Contract(fromTokenAddr, ERC20_ABI, this.signer);
       const allowance: bigint = await tokenContract.allowance(this.userAddress, tx.to);
@@ -605,7 +648,6 @@ class RealSwapExecutor {
         log(`✅ Aprovação confirmada!`);
       }
 
-      // Enviar transação
       log(`📝 Enviando transação na ${net.name}...`);
       const arcFeeParams = net.chainId === 5042002 ? getArcFeeParams() : {};
       const txResponse = await this.signer.sendTransaction({
@@ -629,7 +671,6 @@ class RealSwapExecutor {
       log(`✅ Confirmado no bloco ${receipt.blockNumber}!`);
       log(`🔗 ${explorerUrl}`);
 
-      // Atualizar saldos após trade e ler valor REAL recebido on-chain
       await this.refreshAllBalances();
       const postSwapBalance = this.getBalance(toToken);
       const actualToAmount  = Math.max(0, postSwapBalance - preSwapBalance);
@@ -638,47 +679,38 @@ class RealSwapExecutor {
 
       log(`📊 On-chain: ${actualToAmount.toFixed(6)} ${toToken} ($${toAmountUsd.toFixed(4)}) — saldo anterior: ${preSwapBalance.toFixed(6)} → atual: ${postSwapBalance.toFixed(6)}`);
 
-      // Calcular lucro real pós-trade (deduzindo gas real)
       let profit = 0;
       const postGas = await gasPriceOracle.getGasCost(this.networkKey);
       if (isStable(toToken)) {
-        // Venda de volátil OU stable-stable: profit = USDC recebido - investido - gas
         profit = actualToAmount - amountUsd - postGas;
       }
-      // Para compra de volátil (stable→volátil): profit = 0 (posição aberta, lucro só no fechamento)
 
       log(`💵 Lucro líquido real (pós-gas): $${profit.toFixed(4)}`);
 
-      // Registrar resultado no circuit breaker
       const { isPanicActive } = recordTradeResult(profit);
       if (isPanicActive) {
         log(`🚨 Circuit breaker ativado!`);
       }
 
-      // Post-trade memo on-chain (apenas Arc, se memoRef fornecido)
-      let memoTxHash: string | undefined
-      if (
-        memoRef &&
-        this.networkKey === "arc" &&
-        this.signer
-      ) {
+      let memoTxHash: string | undefined;
+      if (memoRef && this.networkKey === "arc" && this.signer) {
         try {
-          const tradeMemoId = transactionMemos.generateMemoId(`swap:${memoRef}`)
+          const tradeMemoId   = transactionMemos.generateMemoId(`swap:${memoRef}`);
           const tradeMemoData = transactionMemos.encodeMemoData({
             ref: memoRef,
             pair: `${fromToken}/${toToken}`,
             amount: String(amountUsd),
             profit: String(profit),
             txHash: txResponse.hash,
-          })
+          });
           memoTxHash = await arcMemo.sendUSDCWithMemo(
             this.signer,
             this.userAddress,
             0,
             tradeMemoId,
             tradeMemoData
-          )
-          log(`📝 Memo on-chain: ${memoTxHash.slice(0, 10)}...`)
+          );
+          log(`📝 Memo on-chain: ${memoTxHash.slice(0, 10)}...`);
         } catch {
           // memo falhou — não interrompe o trade
         }

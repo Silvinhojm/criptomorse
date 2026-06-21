@@ -4,7 +4,7 @@ import { pregão, type OrdemExecucao, type CashBoxState } from "@/lib/pregão"
 import { escriturário } from "@/lib/escriturario"
 import { corretor } from "@/lib/corretor"
 import { PREGUEIROS } from "@/lib/pregueiro"
-import { NETWORKS, realSwap } from "@/lib/real-swap-executor"
+import { NETWORKS, realSwap, isStable } from "@/lib/real-swap-executor"
 import type { NetworkKey } from "@/lib/real-swap-executor"
 import { caixa } from "@/lib/caixa"
 import { resumeFromPanic, setTestnetMode } from "@/lib/circuit-breaker"
@@ -14,6 +14,13 @@ import { narrador } from "@/lib/narrator"
 
 const COR_PREGÃO = "#d4a574"
 const COR_FUNDO = "#0f172a"
+
+function tempoRelativo(ts: number): string {
+  const diff = Date.now() - ts
+  if (diff < 60000) return `há ${Math.floor(diff / 1000)}s`
+  if (diff < 3600000) return `há ${Math.floor(diff / 60000)}min`
+  return `há ${Math.floor(diff / 3600000)}h`
+}
 
 interface PregãoDashboardProps {
   rede: string
@@ -30,6 +37,8 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
   const [caixaDepositando, setCaixaDepositando] = useState(false)
   const [depositAmount, setDepositAmount] = useState("10")
   const [walletBalance, setWalletBalance] = useState(0)
+  const [nativeBalance, setNativeBalance] = useState(0)
+  const [nativeSymbol, setNativeSymbol] = useState("")
   const [allowedBalance, setAllowedBalance] = useState(() => {
     const v = getPregãoAllowedBalance()
     return v === Infinity ? 15 : v
@@ -44,10 +53,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
 
   const addLog = useCallback((msg: string) => {
     setLogs(prev => [...prev.slice(-99), `[${new Date().toLocaleTimeString()}] ${msg}`])
-    if (msg.includes("🏛️ ORDEM GERADA")) {
-      const m = msg.match(/ORDEM GERADA: (\S+) na/)
-      if (m) narrador.ordemGerada(m[1], 0, [])
-    } else if (msg.includes("✅ ORDEM CONCLUÍDA")) {
+    if (msg.includes("✅ ORDEM CONCLUÍDA")) {
       const m = msg.match(/ORDEM CONCLUÍDA: (\S+) \|.*Lucro: \$([-\d.]+)/)
       if (m) narrador.ordemExecutada(m[1], parseFloat(m[2]))
     } else if (msg.includes("🚫 Confiança")) {
@@ -72,11 +78,16 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     escriturário.onLog(addLog)
     corretor.onLog(addLog)
 
-    pregão.onOrdem((ordem) => {
+    pregão.onOrdem(async (ordem) => {
       setOrdens([...pregão.getTodasOrdens()])
       setStatus(pregão.getStatus())
       if (ordem.status === "preparando") {
-        escriturário.prepararOrdem(ordem)
+        narrador.ordemGerada(ordem.par, ordem.confiancaMedia, ordem.pregueiros)
+        try {
+          await escriturário.prepararOrdem(ordem)
+        } catch (e) {
+          addLog(`❌ Erro ao preparar ordem: ${e instanceof Error ? e.message : e}`)
+        }
       }
     })
 
@@ -115,24 +126,27 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     if (!netConf) return
 
     // Trocar a rede no executor e buscar saldos reais on-chain
-    realSwap.switchNetwork(rede as NetworkKey).then(() => {
+    realSwap.switchNetwork(rede as NetworkKey).then(async () => {
       const walletUsdc = realSwap.getBalance("USDC")
       const eurcBal = realSwap.getBalance("EURC")
       setWalletBalance(walletUsdc)
+      setNativeSymbol(netConf.nativeSymbol)
+      const nativeUsd = await realSwap.refreshNativeBalance()
+      setNativeBalance(nativeUsd)
       if (walletUsdc > 0) {
         setDepositAmount(Math.floor(walletUsdc).toString())
       }
-      addLog(`👛 Saldo na wallet: $${walletUsdc.toFixed(2)} USDC | €${eurcBal.toFixed(2)} EURC`)
+      addLog(`👛 Saldo na wallet: $${walletUsdc.toFixed(2)} USDC | €${eurcBal.toFixed(2)} EURC | ⛽ $${nativeUsd.toFixed(3)} ${netConf.nativeSymbol}`)
     })
 
-    const tokens = (netConf as any).tokens || {}
-    const saldos: Record<string, number> = {}
-    for (const sym of Object.keys(tokens)) {
-      saldos[sym] = 0
-    }
-    pregão.registrarCashBox(0, { [rede]: saldos })
+    const walletUsdc_ = realSwap.getBalance("USDC")
+    const walletEurc = realSwap.getBalance("EURC")
+    const walletUsdt = realSwap.getBalance("USDT")
+    const walletDai  = realSwap.getBalance("DAI")
+    const saldosReais: Record<string, number> = { USDC: walletUsdc_, EURC: walletEurc, USDT: walletUsdt, DAI: walletDai }
+    pregão.registrarCashBox(walletUsdc_, { [rede]: saldosReais })
     setCashBox(pregão.getCashBox())
-    addLog(`🔗 Caixa Livre configurada para ${netConf.name} — contratos: ${Object.keys(tokens).join(", ")}`)
+    addLog(`💼 Saldos registrados: $${walletUsdc_.toFixed(2)} USDC, €${walletEurc.toFixed(2)} EURC`)
 
     if (balanceTimerRef.current) clearInterval(balanceTimerRef.current)
     balanceTimerRef.current = setInterval(async () => {
@@ -141,6 +155,14 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       setWalletBalance(usdc)
       if (usdc > 0) setDepositAmount(Math.floor(usdc).toString())
       setOpenPositions(positionManager.getOpenPositions().length)
+      const nativeUsd = await realSwap.refreshNativeBalance()
+      setNativeBalance(nativeUsd)
+      if (nativeUsd < 0.05 && nativeUsd > 0 && !netConf.isTestnet) {
+        narrador.gasAlto(netConf.name, nativeUsd)
+      }
+      if (nativeUsd < 0.01 && !netConf.isTestnet) {
+        narrador.saldoBaixo(`${netConf.name} (${netConf.nativeSymbol})`)
+      }
     }, 8000)
 
     initCaixa()
@@ -202,10 +224,8 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     try {
       const { executarCicloPregueiros } = await import("@/lib/pregueiro")
       const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")
-      await Promise.all([
-        executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`)),
-        executarCicloAgentes(redeRef.current).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`)),
-      ])
+      await executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`))
+      await executarCicloAgentes(redeRef.current).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
     } catch (e) {
       addLog(`❌ Ciclo inicial: ${e instanceof Error ? e.message : e}`)
     }
@@ -217,10 +237,8 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       try {
         const { executarCicloPregueiros } = await import("@/lib/pregueiro")
         const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")
-        await Promise.all([
-          executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`)),
-          executarCicloAgentes(redeRef.current).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`)),
-        ])
+        await executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`))
+        await executarCicloAgentes(redeRef.current).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
       } catch (e) {
         addLog(`❌ Ciclo: ${e instanceof Error ? e.message : e}`)
       }
@@ -261,10 +279,8 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     try {
       const { executarCicloPregueiros } = await import("@/lib/pregueiro")
       const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")
-      await Promise.all([
-        executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`)),
-        executarCicloAgentes(redeRef.current).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`)),
-      ])
+      await executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`))
+      await executarCicloAgentes(redeRef.current).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
     } catch (e) {
       addLog(`❌ Ciclo manual: ${e instanceof Error ? e.message : e}`)
     }
@@ -292,26 +308,42 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 12 }}>
         <div style={{ background: "rgba(255,255,255,0.05)", borderRadius: 8, padding: 8, textAlign: "center" }}>
-          <div style={{ fontSize: 9, color: "#94a3b8" }}>Ordens Ativas</div>
-          <div style={{ fontSize: 22, fontWeight: "bold", color: "#fbbf24" }}>{status.ordensAtivas}</div>
+          <div style={{ fontSize: 9, color: "#94a3b8" }}>📊 Sugestões Aceitas</div>
+          <div style={{ fontSize: 22, fontWeight: "bold", color: "#f97316" }}>{ordens.filter(o => o.status === "executando").length}</div>
         </div>
         <div style={{ background: "rgba(255,255,255,0.05)", borderRadius: 8, padding: 8, textAlign: "center" }}>
-          <div style={{ fontSize: 9, color: "#94a3b8" }}>Concluídas</div>
-          <div style={{ fontSize: 22, fontWeight: "bold", color: "#22c55e" }}>{status.ordensConcluidas}</div>
+          <div style={{ fontSize: 9, color: "#94a3b8" }}>✅ Executadas</div>
+          <div style={{ fontSize: 22, fontWeight: "bold", color: "#22c55e" }}>{ordens.filter(o => o.status === "concluido" && o.resultado).length}</div>
         </div>
         <div style={{ background: "rgba(255,255,255,0.05)", borderRadius: 8, padding: 8, textAlign: "center" }}>
-          <div style={{ fontSize: 9, color: "#94a3b8" }}>OKs Pendentes</div>
-          <div style={{ fontSize: 22, fontWeight: "bold", color: COR_PREGÃO }}>{status.oksPendentes}</div>
+          <div style={{ fontSize: 9, color: "#94a3b8" }}>💰 Lucro Acumulado</div>
+          <div style={{ fontSize: 22, fontWeight: "bold", color: "#22c55e" }}>
+            ${ordens.filter(o => o.status === "concluido" && o.resultado).reduce((s, o) => s + (o.resultado?.profit ?? 0), 0).toFixed(2)}
+          </div>
         </div>
       </div>
 
       <div style={{ background: "rgba(0,0,0,0.3)", borderRadius: 8, padding: 8, marginBottom: 12 }}>
         <div style={{ fontSize: 9, color: "#94a3b8", marginBottom: 4 }}>💰 SALDO DA WALLET</div>
-        <div style={{ fontSize: 18, color: "#22c55e", fontWeight: "bold" }}>
-          ${walletBalance.toFixed(2)} USDC
-        </div>
-        <div style={{ fontSize: 9, color: "#6b7280", marginTop: 2 }}>
-          {NETWORKS[rede as NetworkKey]?.name || rede}
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 18, color: "#22c55e", fontWeight: "bold" }}>
+              ${walletBalance.toFixed(2)} USDC
+            </div>
+            <div style={{ fontSize: 9, color: "#6b7280", marginTop: 2 }}>
+              {NETWORKS[rede as NetworkKey]?.name || rede}
+            </div>
+          </div>
+          {nativeSymbol && (
+            <div style={{ textAlign: "right", marginLeft: "auto" }}>
+              <div style={{ fontSize: 10, color: nativeBalance < 0.05 ? "#ef4444" : "#94a3b8" }}>
+                ⛽ {nativeBalance < 0.001 ? "<$0.001" : `$${nativeBalance.toFixed(3)}`} {nativeSymbol}
+              </div>
+              <div style={{ fontSize: 8, color: nativeBalance < 0.05 ? "#ef4444" : "#6b7280", marginTop: 1 }}>
+                {nativeBalance < 0.05 ? "⚠️ Precisa recarregar gas" : "Gas disponível"}
+              </div>
+            </div>
+          )}
         </div>
         <div style={{ marginTop: 8, borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: 8 }}>
           <div style={{ fontSize: 9, color: "#d4a574", marginBottom: 4 }}>💳 SALDO PERMITIDO P/ TRADE</div>
@@ -431,7 +463,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <span style={{ color: ok.total >= 3 ? "#22c55e" : COR_PREGÃO, fontWeight: "bold" }}>
-                  {ok.total}/3 OK
+                  {ok.total} OK{ok.total !== 1 ? "s" : ""}
                 </span>
                 <span style={{ color: "#6b7280", fontSize: 9 }}>
                   {ok.pregueiros.join(", ")}
@@ -442,44 +474,52 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         </div>
       )}
 
-      {ordens.length > 0 && (
+      {ordens.filter(o => o.status === "executando" || o.status === "concluido").length > 0 && (
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 11, color: COR_PREGÃO, marginBottom: 6, display: "flex", alignItems: "center", gap: 4 }}>
-            <span>📜</span> Ordens de Execução
+            <span>📜</span> Trades Executados
           </div>
-          {ordens.slice(-10).reverse().map((ordem, i) => (
-            <div key={`${ordem.id}_${i}`} style={{
-              padding: "6px 8px", marginBottom: 3,
-              background: "rgba(0,0,0,0.2)", borderRadius: 6, fontSize: 10
-            }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div>
-                  <span style={{ color: "#fff", fontWeight: "bold" }}>{ordem.par}</span>
-                  <span style={{ color: "#6b7280", marginLeft: 6 }}>{ordem.rede}</span>
-                </div>
-                <span style={{
-                  padding: "1px 6px", borderRadius: 8, fontSize: 9,
-                  background: `${corStatus(ordem.status)}22`,
-                  color: corStatus(ordem.status)
-                }}>
-                  {ordem.status}
-                </span>
+          {ordens.filter(o => o.status === "executando" || o.status === "concluido").slice(-10).reverse().map((ordem, i) => {
+            const fechandoPosicao = !isStable(ordem.fromToken) && isStable(ordem.toToken)
+            return (
+              <div key={`${ordem.id}_${i}`} style={{
+                padding: "6px 8px", marginBottom: 3,
+                background: ordem.status === "executando" ? "rgba(249,115,22,0.1)" : "rgba(0,0,0,0.2)",
+                borderRadius: 6, fontSize: 10
+              }}>
+                {ordem.status === "executando" ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ color: "#f97316" }}>▶️</span>
+                    <span style={{ color: "#fff", fontWeight: "bold" }}>{ordem.par}</span>
+                    <span style={{ color: "#f97316", fontSize: 9 }}>Sugestão aceita</span>
+                    <span style={{ color: "#6b7280", fontSize: 9, marginLeft: "auto" }}>{tempoRelativo(ordem.timestamp)}</span>
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div>
+                        <span style={{ color: "#fff", fontWeight: "bold" }}>{ordem.par}</span>
+                        <span style={{ color: "#6b7280", marginLeft: 6 }}>{ordem.rede}</span>
+                      </div>
+                    </div>
+                    {ordem.resultado && (
+                      <div style={{ color: ordem.resultado.profit >= 0 ? "#22c55e" : "#ef4444", fontSize: 10, marginTop: 2, fontWeight: "bold" }}>
+                        {fechandoPosicao
+                          ? `🔒 Fechamento · Lucro: $${ordem.resultado.profit.toFixed(4)}`
+                          : `💰 ${ordem.resultado.fromAmount.toFixed(2)} executado · Lucro: $${ordem.resultado.profit.toFixed(4)}`}
+                        <span style={{ color: "#6b7280", marginLeft: 8, fontWeight: "normal" }}>{tempoRelativo(ordem.timestamp)}</span>
+                        {ordem.resultado.txHash && (
+                          <span style={{ color: "#3b82f6", marginLeft: 6, fontWeight: "normal" }}>
+                            TX: {ordem.resultado.txHash.slice(0, 8)}...
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
-              <div style={{ color: "#6b7280", fontSize: 9, marginTop: 2 }}>
-                {ordem.pregueiros.join(", ")} · {ordem.confiancaMedia}%
-              </div>
-              {ordem.resultado && (
-                <div style={{ color: ordem.resultado.profit >= 0 ? "#22c55e" : "#ef4444", fontSize: 9, marginTop: 2 }}>
-                  ${ordem.resultado.fromAmount.toFixed(2)} → {ordem.resultado.toAmount.toFixed(6)} · Lucro: ${ordem.resultado.profit.toFixed(4)}
-                  {ordem.resultado.txHash && (
-                    <span style={{ color: "#3b82f6", marginLeft: 6 }}>
-                      TX: {ordem.resultado.txHash.slice(0, 8)}...
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
 

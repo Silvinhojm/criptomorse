@@ -1,4 +1,5 @@
 import { realSwap, NETWORKS, type NetworkKey, type TokenSymbol } from "./real-swap-executor"
+import { pairProfitability } from "./pair-profitability"
 import { pregão, type OrdemExecucao } from "./pregão"
 import { blockIfPanicked, recordTradeResult } from "./circuit-breaker"
 import { positionManager } from "./position-manager"
@@ -133,6 +134,8 @@ class Corretor {
           this.log(`🏅 Pool de recompensa: 10% do lucro = $${rewardPool.toFixed(4)} — $${rewardPerAgent.toFixed(4)} para cada um dos ${agentesQueVotaram.length} agentes`)
         }
 
+        pairProfitability.recordTrade(ordem.par, profit, profit > 0)
+
         const { isPanicActive } = recordTradeResult(profit)
         if (isPanicActive) {
           this.log(`🚨 Circuit breaker ativado após trade!`)
@@ -154,7 +157,9 @@ class Corretor {
       } else {
         this.log(`❌ Falha na execução: ${resultado.message}`)
         pregão.atualizarOrdem(ordem.id, { status: "falhou" })
-        recordTradeResult(-valorTrade * 0.1)
+        if (resultado.txHash) { // só conta perda real se TX foi enviada on-chain
+          recordTradeResult(-valorTrade * 0.1)
+        }
       }
     } catch (err: any) {
       this.log(`❌ Erro na execução: ${err.message}`)

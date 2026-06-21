@@ -8,12 +8,12 @@ import { NETWORKS as NETWORKS_STATIC, type NetworkKey } from "./real-swap-execut
 const GAS_COST_ESTIMATE: Record<string, number> = {
   arc: 0.006,
   base: 0.05,
-  polygon: 0.08,
+  polygon: 0.005,
   ethereum: 1.50,
   arbitrum: 0.03,
 };
 
-const GAS_UNITS_SWAP = 280000;
+const GAS_UNITS_SWAP = 500000;
 
 const STABLECOIN_SYMBOLS = new Set(["USDC", "USDT", "DAI", "EURC", "ARC"]);
 
@@ -47,7 +47,8 @@ class GasPriceOracle {
       const res = await fetch(`/api/price?ids=${coinId}`);
       if (!res.ok) return this.nativePriceCache.get(nativeSymbol)?.price ?? 1.0;
       const data = await res.json();
-      const price = data[coinId] ?? 1.0;
+      const _prices = data.prices ?? data;
+      const price = _prices[coinId] ?? 1.0;
       if (price > 0) {
         this.nativePriceCache.set(nativeSymbol, { price, timestamp: Date.now() });
       }

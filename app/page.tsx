@@ -1,13 +1,12 @@
 ﻿"use client";
 import DashboardShell from "@/app/components/DashboardShell"
 import { useSection } from "@/app/components/SectionContext"
-import { PanicButton } from "@/app/components/PanicButton";
 import { RealAutomatedTrader } from "./components/RealAutomatedTrader";
 import { PregãoDashboard } from "./components/PregãoDashboard";
 import { SalaDeAula } from "./components/SalaDeAula";
 import { NETWORKS } from "@/lib/real-swap-executor";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { ethers } from "ethers";
 import { Toaster, toast } from "react-hot-toast";
 
@@ -26,35 +25,6 @@ import newsAgent from "../lib/news-agent";
 
 
 import { jobMarketplace, type JobData } from "../lib/job-marketplace";
-
-// APIs com fallback
-let coingeckoAgent: any;
-let coinmarketcapAgent: any;
-let sosovalueAgent: any;
-
-try {
-  const gecko = require('../lib/coingecko-agent');
-  const cmc = require('../lib/coinmarketcap-agent');
-  const soso = require('../lib/sosovalue-agent');
-  coingeckoAgent = gecko.coingeckoAgent;
-  coinmarketcapAgent = cmc.coinmarketcapAgent;
-  sosovalueAgent = soso.sosovalueAgent;
-} catch (e) {
-  console.warn('APIs de mercado não disponíveis, usando mocks');
-  coingeckoAgent = {
-    getPrice: async () => 65000,
-    getVolumeAnalysis: async () => ({ signal: 'normal', volumeVsMarketCap: 0 }),
-    getMarketTrend: async () => 'neutral',
-  };
-  coinmarketcapAgent = {
-    getPrice: async () => 65000,
-    getGlobalMetrics: async () => ({ total_market_cap: 0, btc_dominance: 50 }),
-    getFearAndGreed: async () => ({ value: 50, classification: 'Neutral' }),
-  };
-  sosovalueAgent = {
-    analyzeBearOpportunity: () => ({ opportunity: 'none', confidence: 0 }),
-  };
-}
 
 declare global {
   interface Window { ethereum?: any; }
@@ -152,124 +122,6 @@ const ERC20_ABI = [
   "function decimals() view returns (uint8)",
   "function approve(address spender, uint256 amount) returns (bool)"
 ];
-
-// ============================================================
-// COMPONENTE: NETWORK SWITCHER
-// ============================================================
-
-function NetworkSwitcher({ 
-  currentNetwork, 
-  onSwitch, 
-  isConnected 
-}: { 
-  currentNetwork: Network; 
-  onSwitch: (network: Network) => void;
-  isConnected: boolean;
-}) {
-  const networks = [ARC_TESTNET, BASE_MAINNET, POLYGON_MAINNET, ETHEREUM_MAINNET];
-  const [showWarning, setShowWarning] = useState(false);
-  const [pendingNetwork, setPendingNetwork] = useState<Network | null>(null);
-
-  const handleSwitch = async (network: Network) => {
-    if (!network.isTestnet && isConnected) {
-      setPendingNetwork(network);
-      setShowWarning(true);
-      return;
-    }
-    await performSwitch(network);
-  };
-
-  const performSwitch = async (network: Network) => {
-    try {
-      if (window.ethereum) {
-        await window.ethereum.request({
-          method: "wallet_switchEthereumChain",
-          params: [{ chainId: network.chainIdHex }],
-        });
-      }
-    } catch (err: any) {
-      if (err.code === 4902) {
-        await window.ethereum.request({
-          method: "wallet_addEthereumChain",
-          params: [{
-            chainId: network.chainIdHex,
-            chainName: network.name,
-            rpcUrls: [network.rpc],
-            nativeCurrency: network.nativeCurrency,
-            blockExplorerUrls: [network.explorer],
-          }],
-        });
-      }
-    }
-    onSwitch(network);
-    setShowWarning(false);
-    setPendingNetwork(null);
-  };
-
-  return (
-    <>
-      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-        {networks.map((net) => (
-          <button
-            key={net.chainId}
-            onClick={() => handleSwitch(net)}
-            style={{
-              padding: '4px 10px',
-              borderRadius: 8,
-              fontSize: 11,
-              background: currentNetwork.chainId === net.chainId 
-                ? net.isTestnet ? ORANGE : GREEN 
-                : 'rgba(255,255,255,0.15)',
-              color: '#fff',
-              border: 'none',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 4
-            }}
-          >
-            <span>{net.icon}</span> {net.shortName}
-            {net.isTestnet && <span style={{ fontSize: 8 }}>🧪</span>}
-          </button>
-        ))}
-      </div>
-
-      {showWarning && pendingNetwork && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 300 }}>
-          <div style={{ background: "#fff", borderRadius: 20, padding: 28, width: 400, maxWidth: "90%", textAlign: "center" }}>
-            <div style={{ fontSize: 48, marginBottom: 16 }}>⚠️</div>
-            <h3 style={{ color: "#dc2626", marginBottom: 12 }}>Atenção! Dinheiro Real</h3>
-            <p style={{ color: "#374151", marginBottom: 16 }}>
-              Você está trocando para <strong>{pendingNetwork.name}</strong>, que opera com <strong style={{ color: RED }}>DINHEIRO REAL</strong>.
-              {pendingNetwork.isTestnet === false && (
-                <>
-                  <br /><br />
-                  ✅ Certifique-se que tem {pendingNetwork.nativeCurrency.symbol} para gas<br />
-                  ✅ Transações são irreversíveis<br />
-                  ✅ Comece com valores pequenos
-                </>
-              )}
-            </p>
-            <div style={{ display: "flex", gap: 12 }}>
-              <button 
-                onClick={() => performSwitch(pendingNetwork)}
-                style={{ flex: 1, background: pendingNetwork.isTestnet ? ORANGE : RED, color: "#fff", padding: 12, borderRadius: 12, border: "none", cursor: "pointer", fontWeight: 600 }}
-              >
-                Sim, quero trocar
-              </button>
-              <button 
-                onClick={() => setShowWarning(false)}
-                style={{ flex: 1, background: "#e5e7eb", color: "#374151", padding: 12, borderRadius: 12, border: "none", cursor: "pointer" }}
-              >
-                Cancelar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
 
 // ============================================================
 // COMPONENTE: JOBS PANEL (ERC-8183)

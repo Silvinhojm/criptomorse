@@ -89,20 +89,38 @@ class VolumePregueiro {
     } catch {}
   }
 
+  // FIX: Volume vota em apenas UM par por ciclo — o melhor par volátil disponível
+  // Antes: votava em todos os pares, gerando ruído
+  // Agora: só vota se volume alto E escolhe o par com maior potencial
+  analisarMelhorPar(pares: Array<{ from: string; to: string; par: string }>): PregueiroDecisao | null {
+    const { ratio, momentum } = this.dadoMercado
+
+    if (ratio <= 5 || momentum <= 0) return null
+
+    // Prefere pares voláteis (stable→volatil) quando volume alto
+    const volateis = pares.filter(p => isStable(p.from) && !isStable(p.to))
+    if (volateis.length === 0) return null
+
+    const best = volateis[0]
+    const conf = Math.min(80, 45 + ratio * 3)
+    return {
+      gostou: true,
+      par: best.par,
+      fromToken: best.from,
+      toToken: best.to,
+      confianca: Math.round(conf),
+      motivo: `Volume alto (${ratio.toFixed(1)}% cap) — ${best.to}`
+    }
+  }
+
+  // Mantido para compatibilidade mas não usado no ciclo principal
   analisar(_par: string, from: string, to: string): PregueiroDecisao {
     const { ratio, momentum } = this.dadoMercado
     const par = `${from}→${to}`
-
     if (ratio > 5 && momentum > 0) {
       const conf = Math.min(80, 45 + ratio * 3)
       return { gostou: true, par, fromToken: from, toToken: to, confianca: Math.round(conf), motivo: `Volume alto (${ratio.toFixed(1)}% cap)` }
     }
-
-    if (ratio > 8) {
-      const conf = Math.min(70, 40 + ratio * 2)
-      return { gostou: true, par, fromToken: from, toToken: to, confianca: Math.round(conf), motivo: `Volume muito alto (${ratio.toFixed(1)}%)` }
-    }
-
     return { gostou: false, par, fromToken: from, toToken: to, confianca: 0, motivo: `Volume normal (${ratio.toFixed(1)}%)` }
   }
 }
@@ -117,7 +135,6 @@ class SentimentoPregueiro {
   }
 
   private fearGreed = 50
-  private ultimoSentimento: "positive" | "negative" | "neutral" = "neutral"
 
   async atualizarSentimento() {
     try {
@@ -127,23 +144,66 @@ class SentimentoPregueiro {
     } catch {}
   }
 
+  // FIX: Sentimento agora tem DIREÇÃO clara — vota em apenas um par com direção definida
+  // Antes: votava em compra E venda para o mesmo token simultaneamente
+  // Agora: F&G > 65 → só compra volátil | F&G < 35 → só vende volátil
+  analisarMelhorPar(pares: Array<{ from: string; to: string; par: string }>): PregueiroDecisao | null {
+    const fg = this.fearGreed
+
+    // Mercado otimista (ganância) → compra o melhor token volátil disponível
+    if (fg > 65) {
+      const candidatos = pares.filter(p => isStable(p.from) && !isStable(p.to))
+      if (candidatos.length === 0) return null
+      const best = candidatos[0]
+      const conf = Math.min(75, 40 + (fg - 50) * 1.5)
+      return {
+        gostou: true,
+        par: best.par,
+        fromToken: best.from,
+        toToken: best.to,
+        confianca: Math.round(conf),
+        motivo: `Mercado otimista — comprando ${best.to} (F&G: ${fg})`
+      }
+    }
+
+    // Medo extremo → vende volátil para stable (proteção)
+    if (fg < 25) {
+      const candidatos = pares.filter(p => !isStable(p.from) && isStable(p.to))
+      if (candidatos.length === 0) return null
+      const best = candidatos[0]
+      const conf = Math.min(80, 50 + (50 - fg) * 1.2)
+      return {
+        gostou: true,
+        par: best.par,
+        fromToken: best.from,
+        toToken: best.to,
+        confianca: Math.round(conf),
+        motivo: `Medo extremo — vendendo ${best.from} (F&G: ${fg})`
+      }
+    }
+
+    // Medo moderado → compra volátil (oportunidade de entrada)
+    if (fg < 35) {
+      const candidatos = pares.filter(p => isStable(p.from) && !isStable(p.to))
+      if (candidatos.length === 0) return null
+      const best = candidatos[0]
+      return {
+        gostou: true,
+        par: best.par,
+        fromToken: best.from,
+        toToken: best.to,
+        confianca: 55,
+        motivo: `Oportunidade de compra — mercado com medo (F&G: ${fg})`
+      }
+    }
+
+    // Sentimento neutro → sem voto
+    return null
+  }
+
+  // Mantido para compatibilidade
   analisar(_par: string, from: string, to: string): PregueiroDecisao {
     const par = `${from}→${to}`
-
-    if (this.fearGreed > 65 && isStable(from)) {
-      const conf = Math.min(75, 40 + (this.fearGreed - 50) * 1.5)
-      return { gostou: true, par, fromToken: from, toToken: to, confianca: Math.round(conf), motivo: `Mercado otimista (F&G: ${this.fearGreed})` }
-    }
-
-    if (this.fearGreed < 25 && !isStable(from) && isStable(to)) {
-      const conf = Math.min(80, 50 + (50 - this.fearGreed) * 1.2)
-      return { gostou: true, par, fromToken: from, toToken: to, confianca: Math.round(conf), motivo: `Medo no mercado — fugindo pra stable (F&G: ${this.fearGreed})` }
-    }
-
-    if (this.fearGreed < 35 && isStable(from)) {
-      return { gostou: true, par, fromToken: from, toToken: to, confianca: 55, motivo: `Mercado com medo — oportunidade de compra (F&G: ${this.fearGreed})` }
-    }
-
     return { gostou: false, par, fromToken: from, toToken: to, confianca: 0, motivo: `Sentimento neutro (F&G: ${this.fearGreed})` }
   }
 }
@@ -154,25 +214,46 @@ class TáticoPregueiro {
     apelido: "Pregueiro Tático",
     cor: "#fbbf24",
     icone: "⚡",
-    redes: ["arc", "base"]
+    redes: ["arc", "base", "polygon"]
   }
 
   private ciclos = 0
 
-  analisar(par: string, from: string, to: string, precoAtual?: number): PregueiroDecisao {
+  // FIX: Tático agora escolhe UM par por ciclo (rotação cíclica)
+  // Antes: votava em todos os pares estável→volátil sempre
+  // Agora: rotaciona entre pares por ciclo para diversificar
+  analisarMelhorPar(pares: Array<{ from: string; to: string; par: string }>): PregueiroDecisao | null {
     this.ciclos++
 
+    const volateis = pares.filter(p => isStable(p.from) && !isStable(p.to))
+    if (volateis.length === 0) return null
+
+    // Rotaciona entre os pares voláteis a cada ciclo
+    const idx = (this.ciclos - 1) % volateis.length
+    const escolhido = volateis[idx]
+
+    const confianca = this.ciclos % 3 === 0 ? 65 : 45
+    const motivo = this.ciclos % 3 === 0
+      ? `${escolhido.to} — entrada agressiva (ciclo ${this.ciclos})`
+      : `${escolhido.to} — rotação de portfólio (ciclo ${this.ciclos})`
+
+    return {
+      gostou: true,
+      par: escolhido.par,
+      fromToken: escolhido.from,
+      toToken: escolhido.to,
+      confianca,
+      motivo
+    }
+  }
+
+  // Mantido para compatibilidade
+  analisar(par: string, from: string, to: string, precoAtual?: number): PregueiroDecisao {
+    this.ciclos++
     if (isStable(from) && !isStable(to)) {
-      if (this.ciclos % 3 === 0) {
-        return { gostou: true, par, fromToken: from, toToken: to, confianca: 65, motivo: `${to} volátil — entrada agressiva (ciclo ${this.ciclos})` }
-      }
-      return { gostou: true, par, fromToken: from, toToken: to, confianca: 45, motivo: `${to} — rotação de portfólio` }
+      const confianca = this.ciclos % 3 === 0 ? 65 : 45
+      return { gostou: true, par, fromToken: from, toToken: to, confianca, motivo: `${to} — rotação` }
     }
-
-    if (isStable(from) && isStable(to) && precoAtual && precoAtual > 0) {
-      return { gostou: true, par, fromToken: from, toToken: to, confianca: 50, motivo: `Swap stable-stable (preço: ${precoAtual})` }
-    }
-
     return { gostou: false, par, fromToken: from, toToken: to, confianca: 0, motivo: "Sem sinal tático" }
   }
 }
@@ -219,54 +300,111 @@ export async function executarCicloPregueiros(rede?: string) {
   }
   volatilityTracker.collectPrices([...tokensParaColetar]).catch(() => {})
 
-  for (const pregueiro of PREGUEIROS) {
-    for (const redeAtual of redesParaEscalar) {
-      if (!pregueiro.config.redes.includes(redeAtual)) continue
+  for (const redeAtual of redesParaEscalar) {
+    if (!TRADING_PAIRS[redeAtual as NetworkKey]) continue
+    const pairs = TRADING_PAIRS[redeAtual as NetworkKey]
 
-      const pairs = TRADING_PAIRS[redeAtual as NetworkKey]
-      if (!pairs) continue
+    // Verifica vagas antes de processar compras
+    const posAbertas = positionManager.getOpenPositions().length
+    const MAX_POSICOES = 10
+    const temVaga = posAbertas < MAX_POSICOES
+
+    // Monta lista de pares para análise
+    const listaPares = pairs.map(p => ({
+      from: p.from,
+      to: p.to,
+      par: gerarParLabel(p.from, p.to)
+    }))
+
+    // ── Tendência: analisa todos os pares e vota no melhor ──
+    if (tendenciaPregueiro.config.redes.includes(redeAtual as NetworkKey)) {
+      let melhorTendencia: { decisao: PregueiroDecisao; score: number } | null = null
 
       for (const pair of pairs) {
         const par = gerarParLabel(pair.from, pair.to)
-        let decisao: PregueiroDecisao
-
-        if (pregueiro instanceof TendênciaPregueiro) {
-          const stats = await pairPriceFeed.getPairStats(pair.from, pair.to, isStable)
-          decisao = pregueiro.analisar(par, pair.from, pair.to, stats.relativePrice)
-        } else if (pregueiro instanceof TáticoPregueiro) {
-          decisao = pregueiro.analisar(par, pair.from, pair.to)
-        } else if (pregueiro instanceof VolumePregueiro) {
-          decisao = pregueiro.analisar(par, pair.from, pair.to)
-        } else if (pregueiro instanceof SentimentoPregueiro) {
-          decisao = pregueiro.analisar(par, pair.from, pair.to)
-        } else {
-          continue
-        }
+        const stats = await pairPriceFeed.getPairStats(pair.from, pair.to, isStable)
+        const decisao = tendenciaPregueiro.analisar(par, pair.from, pair.to, stats.relativePrice)
 
         if (decisao.gostou) {
-          const signal: OkSignal = {
-            pregueiro: pregueiro.config.nome,
-            rede: redeAtual,
-            par: decisao.par,
-            confianca: decisao.confianca,
-            timestamp: Date.now(),
-            fromToken: decisao.fromToken,
-            toToken: decisao.toToken
+          const comprandoVolatil = isStable(pair.from) && !isStable(pair.to)
+          // Não vota em compra se sem vaga
+          if (comprandoVolatil && !temVaga) continue
+
+          const score = decisao.confianca
+          if (!melhorTendencia || score > melhorTendencia.score) {
+            melhorTendencia = { decisao, score }
           }
-          // Máximo de 3 posições simultâneas
-          const comprandoVolatil = isStable(decisao.fromToken) && !isStable(decisao.toToken)
-          const MAX_POSICOES = 3
-          if (comprandoVolatil && positionManager.getOpenPositions().length >= MAX_POSICOES) {
-            console.log(`⏳ ${pregueiro.config.nome} — ${MAX_POSICOES} posições atingidas, aguardando vaga`)
-            continue
-          }
-          pregão.receberOK(signal)
         }
+      }
+
+      // Envia OK apenas para o melhor par
+      if (melhorTendencia) {
+        pregão.receberOK({
+          pregueiro: tendenciaPregueiro.config.nome,
+          rede: redeAtual,
+          par: melhorTendencia.decisao.par,
+          confianca: melhorTendencia.decisao.confianca,
+          timestamp: Date.now(),
+          fromToken: melhorTendencia.decisao.fromToken,
+          toToken: melhorTendencia.decisao.toToken
+        })
+      }
+    }
+
+    // ── Volume: vota em apenas 1 par se volume alto ──
+    if (volumePregueiro.config.redes.includes(redeAtual as NetworkKey) && temVaga) {
+      const decisaoVolume = volumePregueiro.analisarMelhorPar(listaPares)
+      if (decisaoVolume) {
+        pregão.receberOK({
+          pregueiro: volumePregueiro.config.nome,
+          rede: redeAtual,
+          par: decisaoVolume.par,
+          confianca: decisaoVolume.confianca,
+          timestamp: Date.now(),
+          fromToken: decisaoVolume.fromToken,
+          toToken: decisaoVolume.toToken
+        })
+      }
+    }
+
+    // ── Sentimento: vota em 1 par com direção clara ──
+    if (sentimentoPregueiro.config.redes.includes(redeAtual as NetworkKey)) {
+      const decisaoSentimento = sentimentoPregueiro.analisarMelhorPar(listaPares)
+      if (decisaoSentimento) {
+        const comprandoVolatil = isStable(decisaoSentimento.fromToken) && !isStable(decisaoSentimento.toToken)
+        // Só bloqueia compra se sem vaga; venda sempre passa
+        if (!comprandoVolatil || temVaga) {
+          pregão.receberOK({
+            pregueiro: sentimentoPregueiro.config.nome,
+            rede: redeAtual,
+            par: decisaoSentimento.par,
+            confianca: decisaoSentimento.confianca,
+            timestamp: Date.now(),
+            fromToken: decisaoSentimento.fromToken,
+            toToken: decisaoSentimento.toToken
+          })
+        }
+      }
+    }
+
+    // ── Tático: rotaciona entre pares por ciclo ──
+    if (taticoPregueiro.config.redes.includes(redeAtual as NetworkKey) && temVaga) {
+      const decisaoTatico = taticoPregueiro.analisarMelhorPar(listaPares)
+      if (decisaoTatico) {
+        pregão.receberOK({
+          pregueiro: taticoPregueiro.config.nome,
+          rede: redeAtual,
+          par: decisaoTatico.par,
+          confianca: decisaoTatico.confianca,
+          timestamp: Date.now(),
+          fromToken: decisaoTatico.fromToken,
+          toToken: decisaoTatico.toToken
+        })
       }
     }
   }
 
-  // 🔄 Reconcilia saldos on-chain: cria posições órfãs para tokens não rastreados
+  // 🔄 Reconcilia saldos on-chain
   for (const redeAtual of redesParaEscalar) {
     const pairs = TRADING_PAIRS[redeAtual]
     if (!pairs) continue
@@ -275,11 +413,10 @@ export async function executarCicloPregueiros(rede?: string) {
     await positionManager.reconcileBalances(redeAtual, volatileTokens)
   }
 
-  // ─── Staircase: verifica posições abertas e fecha se cair 2 degraus ───
+  // ─── Staircase ───
   await verificarStaircaseFechamento(redesParaEscalar)
 }
 
-// Verifica posições abertas de cada rede e aciona fechamento via staircase
 async function verificarStaircaseFechamento(redes: NetworkKey[]) {
   staircaseCloseSent.clear()
   const posicoes = positionManager.getOpenPositions()
@@ -287,26 +424,14 @@ async function verificarStaircaseFechamento(redes: NetworkKey[]) {
 
   for (const pos of posicoes) {
     const currentPrice = await positionManager.fetchTokenPrice(pos.boughtToken)
-
-    // Níveis dinâmicos baseados na volatilidade real do token
-    const levels = volatilityTracker.suggestLevels(pos.boughtToken)
-    const acao = positionManager.staircaseUpdate(pos.id, currentPrice, 2, levels)
-
-    if (levels[0] === 0 && levels[1] !== 3) {
-      const perfil = volatilityTracker.getProfile(pos.boughtToken)
-      console.log(`🧠 VolTracker: ${perfil}`)
-    }
+    const acao = positionManager.staircaseUpdate(pos.id, currentPrice)
 
     if (acao === "close") {
-      // Debounce: evita OKs duplicados no mesmo ciclo
       if (staircaseCloseSent.has(pos.id)) continue
       staircaseCloseSent.add(pos.id)
 
-      // Marca como fechada imediatamente para evitar acumulação
-      // Se o swap falhar, o reconcile recria a posição com o saldo residual
       positionManager.closePosition(pos.id, currentPrice)
 
-      // Vende sempre pra USDC (mais líquido, saldo unificado)
       const stableDestino = "USDC"
       const par = gerarParLabel(pos.boughtToken, stableDestino)
       const confianca = 90

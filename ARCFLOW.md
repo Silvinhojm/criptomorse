@@ -133,8 +133,8 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
 │ 3. PREGÃO (pregão.ts)                                          │
 │    ├── Agentes: Top 3 agents decidem (2+ no mesmo par → ORDEM)│
 │    ├── Pregueiros: 3+ OKs para o mesmo par → gera ORDEM       │
-│    ├── ⚠️ Máximo de 3 posições simultâneas (MAX_POSITIONS=3)      │
-│    ├── Pregão calcula valor dinâmico: saldo/vagasRestantes        │
+│    ├── ⚠️ Posições dinâmicas: max = floor(saldo * 0.9 / $5)        │
+│    ├── Pregão calcula valor dinâmico: min($6, saldo/vagas)        │
 │    │   (check em pregueiro.ts + agentes-do-pregão.ts)           │
 │    ├── Validação dinâmica: retorno esperado = confiança × vol    │
 │    │   └── Só compra se valorFinal >= (0.05 + gas) / (retorno - spread)
@@ -258,10 +258,12 @@ dropSteps = 2
 GAS_COST_ESTIMATE: {
   arc:      0.006,  // ~$0.006 por tx na Arc Testnet
   base:     0.05,
-  polygon:  0.08,
+  polygon:  0.005,  // POL ~$0.078, 52 gwei, 500k gas → $0.005
   ethereum: 1.50,
   arbitrum: 0.03,
 }
+
+GAS_UNITS_SWAP = 500000  // 280k → 500k para swaps complexos LI.FI (jun/2026)
 
 // Gas real da RPC (gas-price-oracle.ts):
 // getGasCost(network) → provider.getFeeData() → gwei → USD
@@ -284,14 +286,17 @@ ORDEM_TIMEOUT_MS = 120000  // 2min — ordem "preparando"/"pronto"/"executando" 
 // Fallback: qualquer 2+ agentes no mesmo par
 
 // Alocação de valor por trade (agentes-do-pregão.ts):
-// amountUsd = (saldoEfetivo * 0.9) / vagas, depois:
-//   Ajuste por volatilidade (volMult < 1.0 reduz o valor)
+// maxPositions = max(1, floor((saldoEfetivo * 0.9) / MIN_TRADE_SIZE))
+// amountUsd = min(MIN_TRADE_SIZE * 1.2, (saldoEfetivo * 0.9) / vagas)
+//   where vagas = max(1, maxPositions - posAbertas)
+//   Depois: ajuste por volatilidade (volMult < 1.0 reduz o valor)
 
 // Na execução, valida se vale a pena:
 //   retornoEsperado = (confiancaMedia / 100) * (volatilidade24h / 100)
 //   tradeMinimo = (MIN_PROFIT_REAL + gasCost) / max(0.001, retornoEsperado - spreadPct)
 //   Só executa se valorFinal >= tradeMinimo (garante $0.05 de lucro real)
 MIN_PROFIT_REAL = 0.05  // Lucro mínimo real desejado por trade (USD)
+MIN_TRADE_SIZE = 5      // $ mínimo por trade para cobrir gas + spread + $0.05 lucro
 TRADE_SPREAD_PCT = 0.005  // 0.5% de spread estimado
 ```
 
@@ -644,11 +649,11 @@ Se for adicionar um novo token, atualizar em **todos** os lugares:
 
 ### Regra: "Só compra volátil se caixa livre"
 - Antes: Pregão/Pregueiros/Agentes não enviavam OKs de compra (stable→volátil) enquanto houvesse **qualquer** posição aberta
-- Agora: permite até **3 posições simultâneas** (MAX_POSITIONS = 3)
-- Valor por trade é calculado dinamicamente: `(saldoStable * 0.9) / vagasRestantes`
-- O `Valor por trade` da UI vira teto máximo — Pregão decide o valor real
+- Agora: posições dinâmicas baseadas no capital: `maxPositions = max(1, floor(saldoEfetivo * 0.9 / 5))`
+- Com $5.20 → 1 posição; com $50 → 10 posições
+- Valor por trade: `min($6, (saldoStable * 0.9) / vagasRestantes)`
 - Vendas (volátil→stable) continuam livres para fechar posição com lucro
-- Garante diversificação: múltiplas oportunidades sem precisar fechar uma pra abrir outra
+- Garante que cada trade tenha $ suficiente para cobrir gas + spread + $0.05 lucro
 
 ### Problema: "LI.FI rota fly com estimate 0"
 - Mainnet: `toEstimate <= 0` aborta com `_fail` — não envia TX que vai reverter
@@ -694,12 +699,13 @@ Se for adicionar um novo token, atualizar em **todos** os lugares:
 - `console.error` → `console.warn` no lifi-executor.ts
 - Rate limit é comportamento esperado, não erro
 
-### Feature: "🔄 Múltiplas posições simultâneas (até 3)"
-- Substitui o antigo bloqueio "uma posição por vez"
-- MAX_POSITIONS = 3 em agentes-do-pregão.ts e pregueiro.ts
-- Pregão divide saldo disponível pelas vagas restantes
-- Ex: $18 com 2 posições abertas → $18 * 0.9 / 1 vaga = $16.20 para o próximo trade
-- Ex: $18 com 0 posições → $18 * 0.9 / 3 vagas = $5.40 por trade (até 3 trades)
+### Feature: "🔄 Posições dinâmicas por capital"
+- Substitui o antigo MAX_POSITIONS fixo (3/10)
+- Agora: `maxPositions = max(1, floor(saldoEfetivo * 0.9 / MIN_TRADE_SIZE))` com `MIN_TRADE_SIZE = $5`
+- amountUsd por trade: `min(MIN_TRADE_SIZE * 1.2, (saldoEfetivo * 0.9) / vagasRestantes)` ≈ $6 max
+- Ex: $5.20 → 1 posição, trade de $4.68
+- Ex: $50 → 9 posições, trade de ~$5.00 cada
+- Pregueiro.ts mantém MAX_POSICOES = 10 como upper bound para não bloquear votações
 - Rotation implícita: posição estagnada pode ser fechada via Staircase para liberar vaga
 
 ### Fix: "💰 Preço de entrada real (não $1.00)"
@@ -995,3 +1001,44 @@ A SalaDeAula agora tem 3 abas:
 
 ### Provão
 - **Fix**: `_finalizeDay` usava variável `day` inexistente → corrigido para `this.state.currentDay`
+
+---
+
+## 23. CHANGELOG — 20/06/2026
+
+### Gas Oracle — `_fetchNativePrice` unpack `.prices` wrapper
+- **Fix**: Gas oracle `_fetchNativePrice` acessava `data[coinId]` mas o `/api/price` retorna `{ prices, change24h }`. Resultado: `data["matic-network"]` era `undefined`, retornando POL=$1.00 (fallback fixo) em vez do preço real (~$0.078).
+- **Efeito**: gas estimado caía de $0.005 para $0.14, bloqueando todos os trades da Polygon. Fix corrige o unpack: agora lê `(data.prices ?? data)[coinId]`.
+
+### Corretor — só conta perda real se TX foi enviada
+- **Fix**: `corretor.ts` `recordTradeResult(-valorTrade * 0.1)` era chamado para **qualquer** falha do executor, inclusive pré-execução (saldo insuficiente, mínimo $5 não atingido). Isso inflava o circuit breaker com perdas fantasmas de $0.19, ativando pânico após 5 tentativas de $1.95.
+- **Novo**: só registra perda se `resultado.txHash` existir (TX enviada on-chain). Falhas pré-execução não contam como perda real.
+
+### Escriturário — check de $5 mínimo para voláteis em mainnet
+- **Novo**: Escriturário agora valida se `valorTrade >= 5.00` para operações stable→volatile em mainnet, ANTES de chamar o Corretor. Evita ciclos de falha: pregueiros geram ordem de $1.95 → escriturário barra antes do executor.
+- **Nota**: o executor (`real-swap-executor.ts:634`) já tinha este check (linha 634), mas o escriturário rodava antes e passava ordens inválidas para o corretor → que registrava perda fictícia.
+
+### Fallback de preços CoinGecko atualizado
+- **Fix**: `matic-network` fallback de $0.35 → $0.078 (preço real do POL pós-queda). Evita superestimar gas quando API falha.
+
+### Estado atual
+- **Preço POL**: ~$0.078 (real CoinGecko), gas oracle agora lê corretamente
+- **Gas estimado Polygon**: ~$0.005 (com POL real a $0.078, 280 gwei, 500k gas units)
+- **Circuit breaker**: não dispara mais por trades que nunca executaram
+- **Staircase WMATIC**: segurando posição sem lucro há horas (comportamento esperado: espera mercado virar)
+- **Próximo passo sugerido**: Staircase vender WMATIC stagnado após N horas sem lucro mínimo (feature request pendente)
+
+---
+
+## 24. CHANGELOG — 20/06/2026 (segunda leva)
+
+### getPairsForAnalysis — filtro por rede obrigatório
+- **Fix**: `getPairsForAnalysis(network)` agora filtra o ranking (`getTopPairs`) para manter apenas pares que existem na rede solicitada. Removeu o `getAllPairs()` fallback que retornava pares de qualquer rede, causando análise de pares Arc durante ciclos da Polygon.
+- **Efeito**: cada rede só enxerga seus próprios pares. `executarCicloAgentes('polygon')` nunca mais analisa `USDC→EURC` ou `cirBTC→USDC`.
+
+### MAX_POSITIONS fixo (10) → dinâmico por capital
+- **Antes**: `MAX_POSITIONS = 10` fixo. `amountUsd = (saldo * 0.9) / 9 vagas = $0.52` → nunca passava `minViableTrade` de ~$4.23. Nenhum trade executava.
+- **Agora**: `MIN_TRADE_SIZE = $5`. `maxPositions = max(1, floor(saldoEfetivo * 0.9 / 5))`. Amount por trade capped em `MIN_TRADE_SIZE * 1.2 = $6`.
+- **Com $5.20**: 1 posição, trade de $4.68 — valor viável.
+- Arquivos alterados: `lib/agentes-do-pregão.ts` (removeu `MAX_POSITIONS`, adicionou `MIN_TRADE_SIZE`, allocation agora usa `min($6.00, saldo/vagas)`)
+

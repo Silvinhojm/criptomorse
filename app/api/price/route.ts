@@ -4,7 +4,7 @@ const COINGECKO_BASE = 'https://api.coingecko.com/api/v3';
 
 const FALLBACK_PRICES: Record<string, number> = {
   'ethereum': 1850,
-  'matic-network': 0.35,
+  'matic-network': 0.078,
   'bitcoin': 68000,
   'arbitrum': 0.55,
   'solana': 145,
