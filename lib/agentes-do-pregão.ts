@@ -10,6 +10,7 @@ import { jumperLearn } from "./jumper-learn"
 import { provaoRanking } from "./provao-ranking"
 import { nanopaymentSystem } from "./nanopayment-system"
 import { pairProfitability } from "./pair-profitability"
+import { gridTrader } from "./grid-trading"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 const MIN_TRADE_SIZE = 5 // $ mínimo por trade para cobrir gas + spread + $0.05 lucro
@@ -233,6 +234,9 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   await avaliarVotosPassados(redeAtual)
 
   let maxPositions = 10
+
+  // Inicializa grid trading para a rede atual
+  gridTrader.init(redeAtual)
 
   if (!net.isTestnet) {
     const balUSDC = realSwap.getBalance("USDC");
@@ -594,6 +598,34 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     } else {
       pregão.adicionarLog(`❌ Sem consenso em ${pairLabel}: apenas ${votesForPair.length} agentes`)
     }
+  }
+
+  // ── Grid Trading: votos baseados em níveis de preço ──
+  const gridResult = await gridTrader.checkLevels(redeAtual)
+  for (const gv of gridResult.votes) {
+    const gridConfidence = gv.direction === "buy" ? 80 : 85
+    allVotes.push({
+      agentName: "Grid",
+      pair: gv.pairLabel,
+      fromToken: gv.pairFrom,
+      toToken: gv.pairTo,
+      network: redeAtual,
+      confidence: gridConfidence,
+      action: gv.direction === "buy" ? "buy" : "sell",
+      reason: gv.direction === "buy"
+        ? `📊 Grid COMPRA ${gv.pairLabel} @ $${gv.triggerPrice.toFixed(4)}`
+        : `📊 Grid VENDA ${gv.pairLabel} @ $${gv.triggerPrice.toFixed(4)}`,
+    })
+    allVotes.push({
+      agentName: "GridRef",
+      pair: gv.pairLabel,
+      fromToken: gv.pairFrom,
+      toToken: gv.pairTo,
+      network: redeAtual,
+      confidence: gridConfidence,
+      action: gv.direction === "buy" ? "buy" : "sell",
+      reason: `📊 Grid ${gv.direction === "buy" ? "confirma" : "confirma"} ${gv.pairLabel}`,
+    })
   }
 
   // ── Fallback ──
@@ -989,6 +1021,10 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       ? [...uniqueAgents].slice(0, 2)
       : ["Realizador", "ProfitTaker"]
     pregão.adicionarLog(`💰 Realizando lucro: ${pos.boughtToken} (${profitPercent.toFixed(1)}% → conf ${sellConfidence}%)`)
+
+    // Grid rebalance: vendeu com lucro → cria novo nível de compra
+    gridTrader.onPositionClosed(pos.boughtToken as TokenSymbol, profitPercent, redeAtual)
+
     for (const nome of vendedores) {
       pregão.receberOK({
         pregueiro: `Agente:${nome}`,
