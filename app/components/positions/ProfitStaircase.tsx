@@ -3,6 +3,7 @@
 import { type OpenPosition } from "@/lib/position-manager"
 import { DESIGN_SYSTEM as DS } from "@/constants/design-system"
 import { TrendingUp, Shield } from "lucide-react"
+import { useEffect, useState } from "react"
 
 type Props = {
   position: OpenPosition
@@ -11,8 +12,11 @@ type Props = {
 export default function ProfitStaircase({ position }: Props) {
   const profitPct = position.currentProfitPercent ?? 0
   const profitUsd = position.profitUsd ?? ((position.currentPrice - position.entryPrice) * position.amountBought)
-  const age = Date.now() - position.entryTimestamp
-  const ageSec = Math.round(age / 1000)
+  const [ageSec, setAgeSec] = useState(() => Math.round((Date.now() - position.entryTimestamp) / 1000))
+  useEffect(() => {
+    const id = setInterval(() => setAgeSec(Math.round((Date.now() - position.entryTimestamp) / 1000)), 1000)
+    return () => clearInterval(id)
+  }, [position.entryTimestamp])
 
   const temStopLoss = profitPct <= -15
   const lucroMinimo = profitUsd >= 0.05
