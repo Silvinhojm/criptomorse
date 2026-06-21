@@ -1062,3 +1062,33 @@ A SalaDeAula agora tem 3 abas:
 - **Efeito**: MarketMaker com -108 streak, ArbitrageHunter com -34, Liquidator com -22 voltam a ter confiança mínima para votar.
 - Arquivo: `lib/agentes-do-pregão.ts` (antes do emergency mode, streak reset automático)
 
+---
+
+## 25. CHANGELOG — 20/06/2026 (terceira leva)
+
+### Sell loop — proteção absoluta contra venda no prejuízo
+- **Fix**: `agentes-do-pregão.ts:919` adicionou `if (profitPercent <= 0) { continue }` no sell loop. Nunca gera ordem de venda volátil→stable se a posição está no zero ou negativo.
+- **Fix**: quando agentes votam WETH→USDC e a posição WETH está no prejuízo, o OK é bloqueado com `⏳ posição WETH no prejuízo (X%) — só Staircase pode fechar`
+- **Exceção**: apenas Staircase (stop loss -15% ou stale force close 30min) pode fechar posição no prejuízo
+- **Min meaningful profit**: 1% de pico mínimo para desarmar proteção. Picos de 0.01% não liberam venda.
+- Arquivo: `lib/agentes-do-pregão.ts` (linhas 896-920, ~935, ~979-984)
+
+### Grid stale reinit — grid reinicia quando preço foge do range
+- **Problema**: grid era inicializado uma vez (ex: WETH=$20) com níveis COMPRA a $19.70/$19.40/$19.10 e VENDA a $20.30/$20.60/$20.90. WETH subiu para $1700. Todos os 3 sell executaram imediatamente, buys ficaram pending para sempre. Grid nunca mais gerava trades.
+- **Solução**: `isGridStale()` + `cleanStaleGrids()` detecta quando:
+  - Todos buy pending + todos sell executed → preço subiu além do grid
+  - Todos sell pending + todos buy executed → preço caiu além do grid
+  - Todos 6 levels executados → ciclo completo
+- **Reinit**: grid é deletado e recriado no próximo ciclo com preço atual via `init()`. Roda no início de `init()` e no `checkLevels()` como safety net.
+- Arquivo: `lib/grid-trading.ts` (métodos novos `isGridStale`, `cleanStaleGrids`)
+
+### Break-even label — 0% não é prejuízo
+- **Fix**: logs mostravam `(0.0%) no prejuízo` quando profitPercent era exatamente 0. Agora mostra `break-even (0.0%)`. Apenas valores negativos (< 0%) exibem "no prejuízo".
+- Arquivo: `lib/agentes-do-pregão.ts` (linhas ~936, ~982)
+
+### Estado atual
+- **Polygon Mainnet**: balance $22.27, 1 posição WETH aberta (break-even), maxPositions=4. Trades bloqueados por baixa volatilidade (minViableTrade $60.86 >> $6/trade).
+- **Arc Testnet**: USDC→EURC executando a cada 10s sem afetar ranking (fee $0.015 pulada no accountant).
+- **Grid fix**: grid WETH foi reinicializado com preço atual (~$1700). Níveis frescos: COMPRA a ~$1674.50/$1649.00/$1623.50, VENDA a ~$1725.50/$1751.00/$1776.50.
+- **Lucro acumulado**: +$18.77 (já recuperou as perdas de $19 das 4 compras WETH anteriores aos fixes).
+

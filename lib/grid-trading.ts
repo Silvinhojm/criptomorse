@@ -56,6 +56,7 @@ class GridTrading {
 
   async init(network: NetworkKey) {
     this.state = loadState()
+    this.cleanStaleGrids(network)
     const pairs = TRADING_PAIRS[network] || []
     const volatileTokens = [
       ...new Set(
@@ -121,6 +122,7 @@ class GridTrading {
   async checkLevels(
     network: NetworkKey
   ): Promise<{ votes: GridLevel[] }> {
+    this.cleanStaleGrids(network)
     const triggered: GridLevel[] = []
 
     for (const [key, gridState] of Object.entries(this.state)) {
@@ -162,6 +164,41 @@ class GridTrading {
     }
     saveState(this.state)
     return { votes: triggered }
+  }
+
+  private isGridStale(
+    gridState: GridState
+  ): boolean {
+    const buys = gridState.levels.filter((l) => l.direction === "buy")
+    const sells = gridState.levels.filter((l) => l.direction === "sell")
+    const buysPending = buys.every((l) => l.status === "pending")
+    const sellsExecuted = sells.every((l) => l.status === "executed")
+    const sellsPending = sells.every((l) => l.status === "pending")
+    const buysExecuted = buys.every((l) => l.status === "executed")
+    const allExecuted =
+      buys.length > 0 &&
+      sells.length > 0 &&
+      buys.every((l) => l.status !== "pending") &&
+      sells.every((l) => l.status !== "pending")
+    return (
+      (buysPending && sellsExecuted) ||
+      (sellsPending && buysExecuted) ||
+      allExecuted
+    )
+  }
+
+  private cleanStaleGrids(network: NetworkKey) {
+    for (const [key, gridState] of Object.entries(this.state)) {
+      if (gridState.network !== network) continue
+      if (this.isGridStale(gridState)) {
+        const token = gridState.levels[0]?.token
+        pregão.adicionarLog(
+          `🧹 Grid ${token} obsoleto — reinicializando com preço atual`
+        )
+        delete this.state[key]
+      }
+    }
+    saveState(this.state)
   }
 
   onPositionClosed(

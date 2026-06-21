@@ -933,7 +933,8 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       const currentPrice = await positionManager.fetchTokenPrice(posVenda.boughtToken as TokenSymbol)
       const profitPercent = ((currentPrice - posVenda.entryPrice) / posVenda.entryPrice) * 100
       if (profitPercent <= 0) {
-        pregão.adicionarLog(`⏳ ${agreedPair.pair}: posição ${agreedPair.fromToken} no prejuízo (${profitPercent.toFixed(1)}%) — só Staircase pode fechar`)
+        const label = profitPercent < 0 ? `no prejuízo (${profitPercent.toFixed(1)}%)` : `break-even (0.0%)`
+        pregão.adicionarLog(`⏳ ${agreedPair.pair}: posição ${agreedPair.fromToken} ${label} — só Staircase pode fechar`)
       } else {
         pregão.adicionarLog(`💰 Venda lucrativa: ${agreedPair.pair} (${profitPercent.toFixed(1)}%)`)
         for (const v of agreeingAgents) {
@@ -978,7 +979,8 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
 
     // NUNCA vende no prejuízo — proteção absoluta
     if (profitPercent <= 0) {
-      pregão.adicionarLog(`⏳ ${pos.boughtToken}: ${profitPercent.toFixed(1)}% no prejuízo — segurando (staircase decide fechamento)`)
+      const label = profitPercent < 0 ? `${profitPercent.toFixed(1)}% no prejuízo` : `break-even (0.0%)`
+      pregão.adicionarLog(`⏳ ${pos.boughtToken}: ${label} — segurando (staircase decide fechamento)`)
       continue
     }
 
