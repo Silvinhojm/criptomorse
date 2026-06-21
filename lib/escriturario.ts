@@ -80,9 +80,11 @@ class Escriturário {
       this.log(`💰 ${fromToken}: ${saldoTokens.toFixed(4)} tokens × $${price.toFixed(2)} = $${saldoUsd.toFixed(2)}`)
     }
 
-    // Usar no máximo 90% do saldo disponível
+    // Usar valor do Pregão (se disponível) ou calcular do saldo
     let valorTrade: number
-    if (isTestnet) {
+    if (ordem.amountUsd && ordem.amountUsd > 0) {
+      valorTrade = Math.min(ordem.amountUsd, saldoUsd * 0.9)
+    } else if (isTestnet) {
       valorTrade = Math.min(VALOR_PADRAO_TRADE, saldoUsd * 0.9)
     } else {
       valorTrade = saldoUsd * 0.9
@@ -90,13 +92,6 @@ class Escriturário {
 
     if (valorTrade < 0.5) {
       this.log(`❌ Saldo insuficiente de ${fromToken} na ${ordem.rede} (USD: $${saldoUsd.toFixed(2)})`)
-      pregão.atualizarOrdem(ordem.id, { status: "falhou" })
-      return
-    }
-
-    // Mainnet: stable→volatile precisa de pelo menos $5
-    if (!isTestnet && isFromStable && !isStable(ordem.toToken as TokenSymbol) && valorTrade < 5.0) {
-      this.log(`❌ Trade volátil mínimo é $5.00 (tinha $${valorTrade.toFixed(2)}) na ${ordem.rede}`)
       pregão.atualizarOrdem(ordem.id, { status: "falhou" })
       return
     }

@@ -1023,6 +1023,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
           timestamp: Date.now(),
           fromToken: v.fromToken,
           toToken: v.toToken,
+          amountUsd,
         })
       }
     }
@@ -1052,6 +1053,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
           timestamp: Date.now(),
           fromToken: v.fromToken,
           toToken: v.toToken,
+          amountUsd,
         })
       }
     }

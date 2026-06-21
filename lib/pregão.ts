@@ -6,6 +6,7 @@ export interface OkSignal {
   timestamp: number
   fromToken: string
   toToken: string
+  amountUsd?: number
 }
 
 export interface OrdemExecucao {
@@ -18,6 +19,7 @@ export interface OrdemExecucao {
   confiancaMedia: number
   timestamp: number
   status: "preparando" | "pronto" | "executando" | "concluido" | "falhou"
+  amountUsd?: number
   resultado?: {
     txHash: string
     explorerUrl: string
@@ -191,6 +193,7 @@ class Pregão {
       pregueiros: participantes.map(p => p.nome),
       confiancaMedia,
       timestamp: Date.now(),
+      amountUsd: participantes[0].sinal.amountUsd,
       status: "preparando"
     }
 
