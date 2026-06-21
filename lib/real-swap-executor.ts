@@ -52,6 +52,7 @@ export const NETWORKS = {
       DAI:  "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
       WETH: "0x4200000000000000000000000000000000000006",
       WBTC: "0x0555E30dD009B6f21Bcb7A78FeE496525DbD919e",
+      NATIVE:"0x0000000000000000000000000000000000000000",
     },
   },
   polygon: {
@@ -69,6 +70,7 @@ export const NETWORKS = {
       WETH:  "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619",
       EURC:  "0xc52d20D70d2B1E27C2cb85AA0E3a9F5b4AEBf7e7",
       WBTC:  "0x1bfd67037b42cf73acF2047067bd4F2C47D9BfD6",
+      NATIVE:"0x0000000000000000000000000000000000000000",
     },
   },
   ethereum: {
@@ -85,6 +87,7 @@ export const NETWORKS = {
       WETH: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
       EURC: "0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c",
       WBTC: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+      NATIVE:"0x0000000000000000000000000000000000000000",
     },
   },
   arbitrum: {
@@ -100,6 +103,7 @@ export const NETWORKS = {
       WETH: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
       ARB:  "0x912CE59144191C1204E64559FE8253a0e49E6548",
       WBTC: "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f",
+      NATIVE:"0x0000000000000000000000000000000000000000",
     },
   },
 };
@@ -563,27 +567,22 @@ class RealSwapExecutor {
     if (this._refuelingGas) return;
     if (NETWORKS[this.networkKey].isTestnet) return;
     if (!this.signer) return;
-
-    const NATIVE_SWAP: Record<string, string> = {
-      polygon: "WMATIC", base: "WETH", ethereum: "WETH", arbitrum: "WETH",
-    };
-    const nativeToken = NATIVE_SWAP[this.networkKey];
-    if (!nativeToken) return;
+    if (!(NETWORKS[this.networkKey].tokens as any)["NATIVE"]) return;
 
     const nativeBal = await this.refreshNativeBalance();
-    const minReserve = 0.50;
-    if (nativeBal >= minReserve) return;
+    if (nativeBal >= 0.50) return;
 
     const usdcBal = this.getBalance("USDC");
     const swapAmount = Math.min(usdcBal * 0.1, amountUsd * 2, 5);
     if (swapAmount < 0.50) return;
 
-    log(`⛽ Native ${nativeBal < 0.01 ? "zerado" : "baixo"} ($${nativeBal.toFixed(4)}), comprando $${swapAmount.toFixed(2)} de ${nativeToken} com USDC`);
+    const nativeSym = NETWORKS[this.networkKey].nativeSymbol;
+    log(`⛽ ${nativeSym} ${nativeBal < 0.01 ? "zerado" : "baixo"} ($${nativeBal.toFixed(4)}), comprando $${swapAmount.toFixed(2)} com USDC`);
     this._refuelingGas = true;
-    const result = await this.executeSwap("USDC", nativeToken, swapAmount, log, "gas");
+    const result = await this.executeSwap("USDC", "NATIVE", swapAmount, log, "gas");
     this._refuelingGas = false;
     if (result.success) {
-      log(`✅ Gas recarregado: $${swapAmount.toFixed(2)} USDC → ${nativeToken}`);
+      log(`✅ Gas recarregado: $${swapAmount.toFixed(2)} USDC → ${nativeSym}`);
       await this.refreshNativeBalance();
     } else {
       log(`⚠️ Falha ao recarregar gas: ${result.message}`);
