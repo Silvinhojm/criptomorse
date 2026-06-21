@@ -1242,9 +1242,54 @@ antes do swap em Polygon:
 - Custo do bridge (~$0.02-0.05) é diluído nos micro-trades seguintes
 - Preparado para futura integração Circle Gateway (API server-side)
 
+### 27.9 Multi-Chain Scanning
+
+O bot agora escaneia **todas as mainnets simultaneamente** em cada ciclo, analisando pares
+de Polygon, Base e Arbitrum ao mesmo tempo. O melhor par (maior consenso entre agentes)
+é executado na rede onde a oportunidade foi detectada.
+
+```
+Ciclo multi-chain:
+  1. quantumWaveTrader.broadcastIntent() → wave com pares de TODAS as redes
+  2. Agentes analisam todos os pares em paralelo (Promise.all)
+  3. Consenso identifica: "WMATIC→USDC em Polygon" com 3 agentes, 65%
+  4. Pregão gera ordem com rede = "polygon"
+  5. Corretor: realSwap.switchNetwork("polygon") → CCTP bridge se necessário → auto-gas → swap
+  6. Próximo ciclo pode encontrar USDC→WETH na Base, e assim por diante
+```
+
+**Mudanças principais:**
+- `executarCicloAgentes("all")` escaneia Polygon + Base + Arbitrum (ignora Ethereum por gas alto)
+- `agentes-do-pregão.ts`: combina `TRADING_PAIRS` de todas as redes em `multiPairs[]`
+- Cada voto de agente carrega `network: pairNet` (rede do par, não rede primária)
+- `corretor.ts`: `switchNetwork()` antes de executar se a rede for diferente
+- Capital alocado via `unifiedBalance` (saldo USDC consolidado entre chains)
+- Grid trading desativado em modo multi-chain (grid é por rede)
+
+**Arquivos alterados:**
+- `lib/agentes-do-pregão.ts` — `executarCicloAgentes()` aceita "all", analisa multi-pairs
+- `lib/corretor.ts` — `executar()` alterna rede via `realSwap.switchNetwork()`
+- `app/components/PregãoDashboard.tsx` — chama `executarCicloAgentes("all")`
+
+**Benefício:**
+- Dezenas de pares voláteis em 3+ chains vs ~5 pares em 1 chain
+- Onda quântica capta momentum onde ele é mais forte (cross-chain)
+- Capital unificado não fica parado: USDC vai para a chain com melhor oportunidade
+
 ---
 
-## 28. CHANGELOG — 21/06/2026
+## 28. CHANGELOG — 28/06/2026
+
+### Multi-Chain Scanning
+- **Novo**: `lib/agentes-do-pregão.ts`: `executarCicloAgentes("all")` escaneia Polygon, Base e Arbitrum simultaneamente; combina `TRADING_PAIRS` em `multiPairs[]` com contexto de rede
+- **Novo**: `lib/agentes-do-pregão.ts`: cada voto carrega `network: pairNet` — a rede do par analisado, não da rede primária
+- **Novo**: `lib/agentes-do-pregão.ts`: capital alocado via `unifiedBalance` (saldo consolidado entre chains) em vez de `realSwap.getBalance()` (per-chain)
+- **Modificado**: `lib/corretor.ts`: `executar()` chama `realSwap.switchNetwork(ordem.rede)` antes de executar, permitindo trades em qualquer chain
+- **Modificado**: `app/components/PregãoDashboard.tsx`: ciclo de agentes chama `executarCicloAgentes("all")` em vez de `(redeRef.current)`
+- **Grid**: desativado em modo multi-chain (grid trading é por rede, incompatível com scanning cross-chain)
+- **Documentado**: ARCFLOW.md seção 27.9 — Multi-Chain Scanning
+
+---
 
 ### Auto-Gas: USDC → Native Token
 - **Novo**: `lib/real-swap-executor.ts`: método `ensureGasBalance()` — quando native token (POL/ETH/ARB) está abaixo de $0.50, swap automático de 10% do USDC da wallet para o wrapped native (WMATIC/WETH)
@@ -1312,9 +1357,12 @@ antes do swap em Polygon:
 - Cada par tem de 2 a 7 especialistas dedicados (antes eram todos os 13 agentes em todo par)
 
 ### Estado atual
-- **Polygon Mainnet**: 1 posição WETH break-even (0.0%) — grid adaptativo pode capturar micro-oscilações. Com Grid/GridRef fora do Top 3, agentes reais assumem.
-- **Arc Testnet**: grid adaptativo com 15 níveis por token, spacing mínimo lucrativo garantido.
-- **Grid Performance**: painel visível no dashboard mostrando lucro líquido real de cada micro-trade.
-- **Agentes**: cada robô focado em seus pares específicos, Synthesis como meta para qualquer par.
+- **Multi-Chain Scanning**: ativo — bot escaneia Polygon + Base + Arbitrum simultaneamente, executa na chain com melhor oportunidade
+- **Polygon Mainnet**: micro-trades voláteis (WMATIC, WETH) com lucro líquido $0.002-$0.02
+- **Base Mainnet**: WETH→USDC, USDC→WETH, WBTC disponíveis
+- **Arbitrum Mainnet**: ARB→USDC, WETH→USDC disponíveis
+- **CCTP Bridge**: ativo — USDC movido entre chains sob demanda; auto-gas compra native token se saldo < $0.50
+- **Ethereum**: excluído de micro-trades (gas $1.50); estratégia conservadora se um dia ativar
+- **Grid Trading**: disponível em modo single-chain; desativado em multi-chain
 - **Lucro acumulado**: +$18.77
 

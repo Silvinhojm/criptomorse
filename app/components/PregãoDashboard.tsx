@@ -225,7 +225,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       const { executarCicloPregueiros } = await import("@/lib/pregueiro")
       const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")
       await executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`))
-      await executarCicloAgentes(redeRef.current).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
+      await executarCicloAgentes("all").catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
     } catch (e) {
       addLog(`❌ Ciclo inicial: ${e instanceof Error ? e.message : e}`)
     }
@@ -238,7 +238,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         const { executarCicloPregueiros } = await import("@/lib/pregueiro")
         const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")
         await executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`))
-        await executarCicloAgentes(redeRef.current).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
+        await executarCicloAgentes("all").catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
       } catch (e) {
         addLog(`❌ Ciclo: ${e instanceof Error ? e.message : e}`)
       }
@@ -280,7 +280,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       const { executarCicloPregueiros } = await import("@/lib/pregueiro")
       const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")
       await executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`))
-      await executarCicloAgentes(redeRef.current).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
+      await executarCicloAgentes("all").catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
     } catch (e) {
       addLog(`❌ Ciclo manual: ${e instanceof Error ? e.message : e}`)
     }

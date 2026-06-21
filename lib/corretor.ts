@@ -45,6 +45,13 @@ class Corretor {
     const toKey = ordem.toToken as TokenSymbol
     const redeKey = ordem.rede as NetworkKey
 
+    // 🔥 Multi-chain: alterna rede se necessário (CCTP bridge + auto-gas no executeSwap)
+    const currentNet = realSwap.getNetworkKey()
+    if (currentNet !== redeKey) {
+      this.log(`🔀 Alternando rede: ${currentNet} → ${redeKey}`)
+      await realSwap.switchNetwork(redeKey)
+    }
+
     try {
       const fee = feeMonetization.calculateFee(
         `${ordem.fromToken}_${ordem.toToken}`,

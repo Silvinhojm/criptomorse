@@ -11,6 +11,7 @@ import { provaoRanking } from "./provao-ranking"
 import { nanopaymentSystem } from "./nanopayment-system"
 import { pairProfitability } from "./pair-profitability"
 import { gridTrader } from "./grid-trading"
+import { unifiedBalance } from "./unified-balance"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 
@@ -244,13 +245,28 @@ export function setPregãoAllowedBalance(val: number): void {
 }
 
 export async function executarCicloAgentes(rede?: string, amountUsd?: number): Promise<CicloResultado> {
-  const redeAtual = (rede ?? "arc") as NetworkKey
-  const net = NETWORKS[redeAtual]
-  const pairs = TRADING_PAIRS[redeAtual]
-  if (!pairs || !net) {
-    console.warn(`[AGENTES] Rede ${redeAtual} não configurada`)
+  const isMultiChain = !rede || rede === "all"
+  const networksToScan: NetworkKey[] = isMultiChain
+    ? (Object.keys(NETWORKS) as NetworkKey[]).filter(k => NETWORKS[k] && !NETWORKS[k].isTestnet)
+    : [rede as NetworkKey]
+  if (networksToScan.length === 0) {
+    console.warn(`[AGENTES] Nenhuma rede para scanear`)
     return { totalPairs: 0, votes: [], agreedPair: null, agreeingAgents: 0, waveCollapsed: false }
   }
+  const redeAtual = networksToScan[0]
+  const net = NETWORKS[redeAtual]
+  const pairs = TRADING_PAIRS[redeAtual] || []
+
+  // Monta lista combinada de pares de todas as redes alvo
+  interface PairWithNetwork { net: NetworkKey; from: TokenSymbol; to: TokenSymbol; label: string }
+  const allPairs: PairWithNetwork[] = []
+  for (const nk of networksToScan) {
+    const ps = TRADING_PAIRS[nk]
+    if (ps) {
+      for (const p of ps) allPairs.push({ net: nk, ...p })
+    }
+  }
+  const multiPairs = allPairs.length > 0 ? allPairs : pairs.map(p => ({ net: redeAtual, ...p }))
 
   if (!_autoResetDone) {
     const ranking = accountant.getRanking()
@@ -282,80 +298,93 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   gridTrader.init(redeAtual)
 
   if (!net.isTestnet) {
-    const balUSDC = realSwap.getBalance("USDC");
-    const balUSDT = realSwap.getBalance("USDT");
-    const balDAI = realSwap.getBalance("DAI");
-    const maiorStable = Math.max(balUSDC, balUSDT, balDAI);
+    // Multi-chain: unified balance across all chains
+    const isMultiUsdc = isMultiChain ? await unifiedBalance.initialize(realSwap.getAddress()).then(() => unifiedBalance.refreshAllBalances()).then(b => Object.values(b).reduce((s, v) => s + v, 0)).catch(() => 0) : 0
+    const balUSDC = isMultiChain ? isMultiUsdc : realSwap.getBalance("USDC")
+    const balUSDT = isMultiChain ? 0 : realSwap.getBalance("USDT")
+    const balDAI = isMultiChain ? 0 : realSwap.getBalance("DAI")
+    const maiorStable = isMultiChain ? balUSDC : Math.max(balUSDC, balUSDT, balDAI)
     const allowed = getPregãoAllowedBalance();
     const saldoEfetivo = allowed === Infinity ? maiorStable : Math.min(maiorStable, allowed);
     const posAbertas = positionManager.getOpenPositions().length;
-    const minTradeSize = getMinTradeSize(redeAtual)
+    // Usa o menor minTradeSize entre as redes alvo
+    const minTradeSize = Math.min(...networksToScan.map(n => getMinTradeSize(n)))
     maxPositions = Math.max(1, Math.floor((saldoEfetivo * 0.9) / minTradeSize))
     const vagas = Math.max(1, maxPositions - posAbertas);
 
     if (saldoEfetivo < minTradeSize) {
       amountUsd = 0
-      pregão.adicionarLog(`⚠️ Saldo efetivo $${saldoEfetivo.toFixed(2)} abaixo do mínimo $${minTradeSize.toFixed(2)} — pulando alocação`)
+      pregão.adicionarLog(`⚠️ Saldo unificado $${saldoEfetivo.toFixed(2)} abaixo do mínimo $${minTradeSize.toFixed(2)} — pulando alocação`)
     } else {
       amountUsd = Math.min(minTradeSize * 1.2, (saldoEfetivo * 0.9) / vagas);
-      const volMult = volatilityTracker.getPositionSizeMultiplier(pairs[0]?.to ?? "USDC")
+      const sampleVolToken = [...new Set(multiPairs.filter(p => !STABLES.has(p.to)).map(p => p.to))][0] || "USDC"
+      const volMult = volatilityTracker.getPositionSizeMultiplier(sampleVolToken)
       if (volMult < 1.0) {
         const original = amountUsd
         amountUsd = Math.round((amountUsd * volMult) * 100) / 100
         pregão.adicionarLog(`🧠 VolTracker: trade $${original.toFixed(2)} → $${amountUsd.toFixed(2)} (vol mult ${volMult.toFixed(1)}x)`)
       }
-      pregão.adicionarLog(`💰 Pregão alocou $${amountUsd.toFixed(2)} para este trade (saldo real $${maiorStable.toFixed(2)}, permitido $${allowed === Infinity ? "∞" : allowed.toFixed(2)}, ${posAbertas}/${maxPositions} posições ocupadas)`)
+      const redeStr = isMultiChain ? `multi-chain (${networksToScan.join(", ")})` : redeAtual
+      pregão.adicionarLog(`💰 Pregão alocou $${amountUsd.toFixed(2)} para este trade (saldo unificado $${maiorStable.toFixed(2)}, permitido $${allowed === Infinity ? "∞" : allowed.toFixed(2)}, ${posAbertas}/${maxPositions} posições, redes: ${redeStr})`)
     }
   }
 
   if (amountUsd === undefined || amountUsd <= 0) amountUsd = 5
 
-  let pairsToAnalyze: string[]
+  // 🔥 Multi-chain: usa pares de TODAS as redes alvo
+  let pairsToAnalyze: { net: NetworkKey; label: string }[]
   if (net.isTestnet) {
-    // Testnet: usa TODOS os pares disponíveis para maximizar velocidade
-    pairsToAnalyze = pairs.map(p => p.label)
+    pairsToAnalyze = multiPairs.map(p => ({ net: p.net, label: p.label }))
   } else {
-    const pairsFromProf = pairProfitability.getPairsForAnalysis(redeAtual)
-    if (redeAtual !== "ethereum") {
-      // Mainnet não-ETH: foca apenas em pares com tokens voláteis
-      const VOLATEIS = new Set(["WETH", "WBTC", "WMATIC", "ARB", "cirBTC", "mcirBTC"])
-      pairsToAnalyze = pairsFromProf
-        .filter(label => [...VOLATEIS].some(v => label.includes(v)))
-        .sort((a, b) => {
-          const aVol = [...VOLATEIS].some(v => a.includes(v)) ? 0 : 1
-          const bVol = [...VOLATEIS].some(v => b.includes(v)) ? 0 : 1
-          return aVol - bVol
-        })
-      if (pairsToAnalyze.length === 0) {
-        pairsToAnalyze = pairsFromProf
-        pregão.adicionarLog(`⚠️ Nenhum par volátil disponível em ${redeAtual} — usando todos`)
-      }
+    if (isMultiChain) {
+      pairsToAnalyze = multiPairs
+        .filter(p => p.net !== "ethereum") // ignora Ethereum (gas caro para micro-trades)
+        .map(p => ({ net: p.net, label: p.label }))
     } else {
-      pairsToAnalyze = pairsFromProf
+      const pairsFromProf = pairProfitability.getPairsForAnalysis(redeAtual)
+      if (redeAtual !== "ethereum") {
+        const VOLATEIS = new Set(["WETH", "WBTC", "WMATIC", "ARB", "cirBTC", "mcirBTC"])
+        const filtered = pairsFromProf
+          .filter(label => [...VOLATEIS].some(v => label.includes(v)))
+          .sort((a, b) => {
+            const aVol = [...VOLATEIS].some(v => a.includes(v)) ? 0 : 1
+            const bVol = [...VOLATEIS].some(v => b.includes(v)) ? 0 : 1
+            return aVol - bVol
+          })
+        pairsToAnalyze = (filtered.length > 0 ? filtered : pairsFromProf)
+          .map(label => ({ net: redeAtual, label }))
+      } else {
+        pairsToAnalyze = pairsFromProf.map(label => ({ net: redeAtual, label }))
+      }
     }
   }
-  pregão.adicionarLog(`🎯 Analisando ${pairsToAnalyze.length} pares: ${pairsToAnalyze.join(', ')}`)
+  pregão.adicionarLog(`🎯 Analisando ${pairsToAnalyze.length} pares em ${isMultiChain ? networksToScan.length + " redes" : redeAtual}: ${pairsToAnalyze.map(p => p.net + ":" + p.label).join(', ')}`)
 
   const wave = await quantumWaveTrader.broadcastIntent(amountUsd)
-  const wavePairs = wave.pairs.filter(p => p.network === redeAtual)
+  const wavePairs = wave.pairs // mantém TODOS os pares (multi-chain)
   gridTrader.setWaveData(wavePairs, redeAtual)
 
   const allVotes: AgentPairVote[] = []
 
   const tokensParaColetar = new Set<TokenSymbol>()
-  for (const p of pairs) {
+  for (const p of multiPairs) {
     tokensParaColetar.add(p.from); tokensParaColetar.add(p.to)
   }
   volatilityTracker.collectPrices([...tokensParaColetar]).catch(() => {})
 
   const volatileParaRede = [...tokensParaColetar].filter(t => !STABLES.has(t))
-  await positionManager.reconcileBalances(redeAtual, volatileParaRede)
+  // Reconcilia saldos em todas as redes alvo
+  if (isMultiChain) {
+    await Promise.all(networksToScan.map(nk => positionManager.reconcileBalances(nk, volatileParaRede)))
+  } else {
+    await positionManager.reconcileBalances(redeAtual, volatileParaRede)
+  }
 
-  // 🔥 Análise paralela de TODOS os pares simultaneamente
-  const pairResults = await Promise.all(pairsToAnalyze.map(async (pairLabel) => {
-    const pair = pairs.find(p => p.label === pairLabel)
+  // 🔥 Análise paralela de TODOS os pares simultaneamente (multi-chain)
+  const pairResults = await Promise.all(pairsToAnalyze.map(async ({ net: pairNet, label: pairLabel }) => {
+    const pair = multiPairs.find(p => p.net === pairNet && p.label === pairLabel)
     if (!pair) return { pairLabel, votes: [] }
-    const wavePair = wavePairs.find(wp => wp.label === pairLabel)
+    const wavePair = wavePairs.find(wp => wp.network === pairNet && wp.label === pairLabel)
     if (!wavePair) return { pairLabel, votes: [] }
 
     const assigned = AGENTES_NOMES
@@ -373,7 +402,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
             pair: pairLabel,
             fromToken: wavePair.fromToken,
             toToken: wavePair.toToken,
-            network: redeAtual,
+            network: pairNet,
             confidence: result.confidence,
             action: wavePair.momentum > 0 ? "buy" : "sell",
             reason: `Onda quântica: amplitude ${(wavePair.amplitude * 100).toFixed(0)}%`,
@@ -387,7 +416,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
             pair: pairLabel,
             fromToken: wavePair.fromToken,
             toToken: wavePair.toToken,
-            network: redeAtual,
+            network: pairNet,
             confidence: fallbackConfidence,
             action: wavePair.momentum > 0 ? "buy" : "sell",
             reason: `Quantum fallback: momentum ${(wavePair.momentum * 100).toFixed(2)}%`,
@@ -410,7 +439,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
             pair: pairLabel,
             fromToken: wavePair.fromToken,
             toToken: wavePair.toToken,
-            network: redeAtual,
+            network: pairNet,
             confidence: confidence,
             action: rsiAction,
             reason: `RSI: ${Math.round(rsi)} — ${rsiAction === "buy" ? "sobrevendido" : "sobrecomprado"}`,
@@ -427,7 +456,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         pair: pairLabel,
         fromToken: wavePair.fromToken,
         toToken: wavePair.toToken,
-        network: redeAtual,
+        network: pairNet,
         confidence: confidence,
         action: wavePair.momentum > 0 ? "buy" : "sell",
         reason: `Trend ${wavePair.momentum > 0 ? "🠕" : "🠗"} momentum ${(wavePair.momentum * 100).toFixed(2)}%`,
@@ -442,7 +471,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         pair: pairLabel,
         fromToken: wavePair.fromToken,
         toToken: wavePair.toToken,
-        network: redeAtual,
+        network: pairNet,
         confidence: confidence,
         action: wavePair.momentum > 0 ? "sell" : "buy",
         reason: `Reversão: amplitude ${(wavePair.amplitude * 100).toFixed(2)}%`,
@@ -461,7 +490,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
           pair: pairLabel,
           fromToken: pair.from,
           toToken: pair.to,
-          network: redeAtual,
+          network: pairNet,
           confidence: Math.min(75, Math.round(30 + spread * 10)),
           action: toPrice > fromPrice ? "sell" : "buy",
           reason: `Arbitragem ${pairLabel} (spread ${spread.toFixed(3)}%)`,
@@ -480,7 +509,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
           pair: pairLabel,
           fromToken: pair.from,
           toToken: pair.to,
-          network: redeAtual,
+          network: pairNet,
           confidence: Math.min(70, Math.round(40 + spread * 20)),
           action: toPrice > fromPrice ? "sell" : "buy",
           reason: `Market ${pairLabel} ${toPrice > fromPrice ? "🠕" : "🠗"} (${spread.toFixed(3)}%)`,
@@ -501,7 +530,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
           pair: pairLabel,
           fromToken: pair.from,
           toToken: pair.to,
-          network: redeAtual,
+          network: pairNet,
           confidence: 65,
           action: toPrice > fromPrice ? "sell" : "buy",
           reason: `BTC/ETH ${pairLabel} ${toPrice > fromPrice ? "🠕" : "🠗"}`,
@@ -516,7 +545,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         pair: pairLabel,
         fromToken: wavePair.fromToken,
         toToken: wavePair.toToken,
-        network: redeAtual,
+        network: pairNet,
         confidence: Math.round(wavePair.liquidity * 60),
         action: wavePair.momentum > 0 ? "buy" : "sell",
         reason: `Liquidez ${(wavePair.liquidity * 100).toFixed(0)}% — ${pairLabel}`,
@@ -524,14 +553,14 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     }
 
     // ── MomentumTrader ──
-    const momentumScore = Math.abs(wavePair.momentum) * wavePair.volatility
-    if (agentAssigned("MomentumTrader", pairLabel) && momentumScore > 0.005) {
+    if (agentAssigned("MomentumTrader", pairLabel) && Math.abs(wavePair.momentum) * wavePair.volatility > 0.005) {
+      const momentumScore = Math.abs(wavePair.momentum) * wavePair.volatility
       votesForPair.push({
         agentName: "MomentumTrader",
         pair: pairLabel,
         fromToken: wavePair.fromToken,
         toToken: wavePair.toToken,
-        network: redeAtual,
+        network: pairNet,
         confidence: Math.min(90, Math.round(40 + momentumScore * 2000)),
         action: wavePair.momentum > 0 ? "buy" : "sell",
         reason: `Momento × vol = ${(momentumScore * 10000).toFixed(0)} — ${wavePair.momentum > 0 ? "🠕🠕" : "🠗🠗"}`,
@@ -545,7 +574,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         pair: pairLabel,
         fromToken: wavePair.fromToken,
         toToken: wavePair.toToken,
-        network: redeAtual,
+        network: pairNet,
         confidence: Math.min(90, Math.round(wavePair.probability)),
         action: wavePair.momentum > 0 ? "buy" : "sell",
         reason: `NIM: ondas de probabilidade — ${pairLabel}`,
@@ -561,7 +590,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
           pair: pairLabel,
           fromToken: wavePair.fromToken,
           toToken: wavePair.toToken,
-          network: redeAtual,
+          network: pairNet,
           confidence: synthConfidence,
           action: wavePair.momentum > 0 ? "buy" : "sell",
           reason: `Síntese automática: momentum ${(wavePair.momentum * 100).toFixed(2)}%`,
@@ -604,7 +633,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
             pair: pairLabel,
             fromToken: wavePair.fromToken,
             toToken: wavePair.toToken,
-            network: redeAtual,
+            network: pairNet,
             confidence: confianca,
             action: direcaoUnica,
             reason: `📻 ${metrs} → ${direcaoUnica === "buy" ? "⬆ COMPRA" : "⬇ VENDA"} (${metrics.length}/${metrics.length} alinhadas)`,
@@ -620,7 +649,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         pair: pairLabel,
         fromToken: wavePair.fromToken,
         toToken: wavePair.toToken,
-        network: redeAtual,
+        network: pairNet,
         confidence: synthConfidence,
         action: votesForPair[0].action,
         reason: `Desempate: ${votesForPair[0].agentName} sugeriu, Synthesis confirma`,
@@ -650,60 +679,64 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     }
   }
 
-  const gridResult = await gridTrader.checkLevels(redeAtual)
-  for (const gv of gridResult.votes) {
-    const gridConfidence = gv.direction === "buy" ? 80 : 85
-    const balFrom = realSwap.getBalance(gv.pairFrom as TokenSymbol)
-    let balFromUsd = balFrom
-    if (!STABLES.has(gv.pairFrom)) {
-      const fromPrice = await positionManager.fetchTokenPrice(gv.pairFrom as TokenSymbol).catch(() => 1)
-      balFromUsd = balFrom * fromPrice
-    }
-    if (balFromUsd < 0.50) {
-      pregão.adicionarLog(`⏳ Grid ${gv.direction === "buy" ? "COMPRA" : "VENDA"} ${gv.pairLabel}: saldo insuficiente de ${gv.pairFrom} ($${balFromUsd.toFixed(2)})`)
-      continue
-    }
-
-    if (gv.direction === "sell") {
-      const temPos = positionManager.getOpenPositions()
-        .some(p => p.boughtToken === gv.token && p.networkKey === redeAtual && p.status === "open")
-      if (!temPos) {
-        pregão.adicionarLog(`⏳ Grid VENDA ${gv.pairLabel}: sem posição de ${gv.token} — pulando`)
+  // Grid trading: em multi-chain, verifica grids de TODAS as redes alvo
+  if (!isMultiChain) {
+    // Single-network: grid normal
+    const gridResult = await gridTrader.checkLevels(redeAtual)
+    for (const gv of gridResult.votes) {
+      const gridConfidence = gv.direction === "buy" ? 80 : 85
+      const balFrom = realSwap.getBalance(gv.pairFrom as TokenSymbol)
+      let balFromUsd = balFrom
+      if (!STABLES.has(gv.pairFrom)) {
+        const fromPrice = await positionManager.fetchTokenPrice(gv.pairFrom as TokenSymbol).catch(() => 1)
+        balFromUsd = balFrom * fromPrice
+      }
+      if (balFromUsd < 0.50) {
+        pregão.adicionarLog(`⏳ Grid ${gv.direction === "buy" ? "COMPRA" : "VENDA"} ${gv.pairLabel}: saldo insuficiente de ${gv.pairFrom} ($${balFromUsd.toFixed(2)})`)
         continue
       }
-      const jaVendendo = pregão.getOrdensAtivas()
-        .some(o => o.fromToken === gv.token && o.rede === redeAtual && o.status !== "concluido" && o.status !== "falhou")
-      if (jaVendendo) {
-        pregão.adicionarLog(`⏳ Grid VENDA ${gv.pairLabel}: já há ordem de venda ativa para ${gv.token} — pulando`)
-        continue
-      }
-    }
 
-    if (gv.direction === "buy") {
-      const posAbertas = positionManager.getOpenPositions().filter(p => p.networkKey === redeAtual && p.status === "open").length
-      const maiorStable = Math.max(
-        realSwap.getBalance("USDC"),
-        realSwap.getBalance("USDT"),
-        realSwap.getBalance("DAI"),
-      )
-      const maxPos = Math.max(1, Math.floor((maiorStable * 0.9) / 5))
-      if (posAbertas >= maxPos) {
-        pregão.adicionarLog(`⏳ Grid COMPRA ${gv.pairLabel}: ${posAbertas}/${maxPos} posições — pulando`)
-        continue
+      if (gv.direction === "sell") {
+        const temPos = positionManager.getOpenPositions()
+          .some(p => p.boughtToken === gv.token && p.networkKey === redeAtual && p.status === "open")
+        if (!temPos) {
+          pregão.adicionarLog(`⏳ Grid VENDA ${gv.pairLabel}: sem posição de ${gv.token} — pulando`)
+          continue
+        }
+        const jaVendendo = pregão.getOrdensAtivas()
+          .some(o => o.fromToken === gv.token && o.rede === redeAtual && o.status !== "concluido" && o.status !== "falhou")
+        if (jaVendendo) {
+          pregão.adicionarLog(`⏳ Grid VENDA ${gv.pairLabel}: já há ordem de venda ativa para ${gv.token} — pulando`)
+          continue
+        }
       }
-    }
 
-    const dirLabel = gv.direction === "buy" ? "🟢 COMPRA" : "🔴 VENDA"
-    pregão.adicionarLog(`📐 Grid ${dirLabel} ${gv.pairLabel} @ $${gv.triggerPrice.toFixed(4)} (${gridConfidence}%)`)
-    pregão.receberOK({
-      pregueiro: `Grid:${gv.direction === "buy" ? "Compra" : "Venda"}`,
-      rede: redeAtual,
-      par: gv.pairLabel,
-      confianca: gridConfidence,
-      timestamp: Date.now(),
-      fromToken: gv.pairFrom,
-      toToken: gv.pairTo,
-    })
+      if (gv.direction === "buy") {
+        const posAbertas = positionManager.getOpenPositions().filter(p => p.networkKey === redeAtual && p.status === "open").length
+        const maiorStable = Math.max(
+          realSwap.getBalance("USDC"),
+          realSwap.getBalance("USDT"),
+          realSwap.getBalance("DAI"),
+        )
+        const maxPos = Math.max(1, Math.floor((maiorStable * 0.9) / 5))
+        if (posAbertas >= maxPos) {
+          pregão.adicionarLog(`⏳ Grid COMPRA ${gv.pairLabel}: ${posAbertas}/${maxPos} posições — pulando`)
+          continue
+        }
+      }
+
+      const dirLabel = gv.direction === "buy" ? "🟢 COMPRA" : "🔴 VENDA"
+      pregão.adicionarLog(`📐 Grid ${dirLabel} ${gv.pairLabel} @ $${gv.triggerPrice.toFixed(4)} (${gridConfidence}%)`)
+      pregão.receberOK({
+        pregueiro: `Grid:${gv.direction === "buy" ? "Compra" : "Venda"}`,
+        rede: redeAtual,
+        par: gv.pairLabel,
+        confianca: gridConfidence,
+        timestamp: Date.now(),
+        fromToken: gv.pairFrom,
+        toToken: gv.pairTo,
+      })
+    }
   }
 
   const tokensComGrid = gridTrader.getActiveTokens(redeAtual)
@@ -748,7 +781,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
           pair: fallbackWave.label,
           fromToken: fallbackWave.fromToken,
           toToken: fallbackWave.toToken,
-          network: redeAtual,
+          network: fallbackWave.network,
           confidence: Math.min(60, Math.round(fallbackWave.probability)),
           action: fallbackWave.momentum > 0 ? "buy" : "sell",
           reason: `Síntese fallback: ${fallbackWave.label} (prob ${fallbackWave.probability.toFixed(0)}%)`,
@@ -771,7 +804,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         confidence: v.confidence,
         action: v.action,
         timestamp: Date.now(),
-        networkKey: redeAtual,
+        networkKey: v.network,
       })
     }
   }
@@ -951,7 +984,9 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   if (comprandoVolatil && vagasRestantes <= 0) {
     pregão.adicionarLog(`⏳ ${maxPositions}/${maxPositions} posições ocupadas — ${agreedPair.pair} aguardando vaga`)
   } else if (comprandoVolatil && !net.isTestnet) {
-    const gasCost = await gasPriceOracle.getGasCost(redeAtual)
+    const pairNet = agreedPair.network
+    const gasCost = await gasPriceOracle.getGasCost(pairNet)
+    // Saldo aproximado — o corretor faz CCTP bridge se faltar na rede alvo
     const balFrom = realSwap.getBalance(agreedPair.fromToken as TokenSymbol)
     const valorFinal = Math.min(amountUsd * 0.9, balFrom)
 
@@ -961,16 +996,16 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
 
     const expectedReturn = (avgConfidence / 100) * vol24h
     const spreadPct = 0.005
-    const minViableTrade = (getMinProfitReal(redeAtual) + gasCost) / Math.max(0.001, expectedReturn - spreadPct)
+    const minViableTrade = (getMinProfitReal(pairNet) + gasCost) / Math.max(0.001, expectedReturn - spreadPct)
 
     if (minViableTrade > 0 && valorFinal < minViableTrade) {
       pregão.adicionarLog(`⏳ Mercado pouco volátil — trade de $${valorFinal.toFixed(2)} não cobre custos (precisa ~$${minViableTrade.toFixed(2)}). Retorno esperado ${(expectedReturn * 100).toFixed(2)}% com ${(vol24h * 100).toFixed(1)}% vol`)
     } else {
-      pregão.adicionarLog(`✅ Trade viável: retorno esperado ${(expectedReturn * 100).toFixed(2)}% cobre gas + spread + $${getMinProfitReal(redeAtual).toFixed(2)}`)
+      pregão.adicionarLog(`✅ Trade viável em ${pairNet}: retorno esperado ${(expectedReturn * 100).toFixed(2)}% cobre gas + spread + $${getMinProfitReal(pairNet).toFixed(2)}`)
       if (vol24h >= 0.02) {
         pregão.adicionarLog(`📈 Mercado volátil (${(vol24h * 100).toFixed(1)}%) — condições favoráveis`)
       }
-      pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair} (${agreedPair.fromToken}→${agreedPair.toToken})`)
+      pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair} em ${pairNet} (${agreedPair.fromToken}→${agreedPair.toToken})`)
       for (const v of agreeingAgents) {
         pregão.receberOK({
           pregueiro: `Agente:${v.agentName}`,
@@ -984,7 +1019,8 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       }
     }
   } else if (!net.isTestnet && STABLES.has(agreedPair.fromToken) && STABLES.has(agreedPair.toToken)) {
-    const gasCost = await gasPriceOracle.getGasCost(redeAtual)
+    const pairNet = agreedPair.network
+    const gasCost = await gasPriceOracle.getGasCost(pairNet)
     const balFrom = realSwap.getBalance(agreedPair.fromToken as TokenSymbol)
     const valorFinal = Math.min(amountUsd * 0.9, balFrom)
 
@@ -992,13 +1028,13 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     const spreadEsperado = Math.max((wavePair?.amplitude ?? 0.0005), 0.0005)
     const expectedReturn = (agreeingAgents.reduce((s: number, v: AgentPairVote) => s + v.confidence, 0) / agreeingAgents.length / 100) * spreadEsperado
     const spreadPct = 0.005
-    const minViableTrade = (getMinProfitReal(redeAtual) + gasCost) / Math.max(0.001, expectedReturn - spreadPct)
+    const minViableTrade = (getMinProfitReal(pairNet) + gasCost) / Math.max(0.001, expectedReturn - spreadPct)
 
     if (minViableTrade > 0 && valorFinal < minViableTrade) {
       pregão.adicionarLog(`⏳ Stable-stable ${agreedPair.pair}: retorno esperado ${(expectedReturn * 100).toFixed(3)}% não cobre gas ($${gasCost.toFixed(4)}) — precisa ~$${minViableTrade.toFixed(2)} de trade`)
     } else {
       pregão.adicionarLog(`✅ Stable-stable ${agreedPair.pair} viável: $${valorFinal.toFixed(2)} cobre gas + spread`)
-      pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair} (${agreedPair.fromToken}→${agreedPair.toToken})`)
+      pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair} em ${pairNet} (${agreedPair.fromToken}→${agreedPair.toToken})`)
       for (const v of agreeingAgents) {
         pregão.receberOK({
           pregueiro: `Agente:${v.agentName}`,
@@ -1012,8 +1048,9 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       }
     }
   } else if (!STABLES.has(agreedPair.fromToken) && STABLES.has(agreedPair.toToken)) {
+    const pairNet = agreedPair.network
     const posVenda = positionManager.getOpenPositions()
-      .find(p => p.boughtToken === agreedPair.fromToken && p.networkKey === redeAtual && p.status === "open")
+      .find(p => p.boughtToken === agreedPair.fromToken && p.networkKey === pairNet && p.status === "open")
     if (posVenda) {
       const currentPrice = await positionManager.fetchTokenPrice(posVenda.boughtToken as TokenSymbol)
       const profitPercent = ((currentPrice - posVenda.entryPrice) / posVenda.entryPrice) * 100
@@ -1063,16 +1100,19 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
 
   const todasPosicoes = positionManager.getOpenPositions()
   pregão.adicionarLog(`🔍 Total de posições abertas: ${todasPosicoes.length}`)
-  const posicoesAbertas = todasPosicoes
-    .filter(p => p.networkKey === redeAtual && p.status === "open")
-  pregão.adicionarLog(`🔍 Posições em ${redeAtual}: ${posicoesAbertas.length}`)
+  const posicoesAbertas = isMultiChain
+    ? todasPosicoes.filter(p => p.status === "open")
+    : todasPosicoes.filter(p => p.networkKey === redeAtual && p.status === "open")
+  const redeLabel = isMultiChain ? `multi-chain (${networksToScan.length} redes)` : redeAtual
+  pregão.adicionarLog(`🔍 Posições em ${redeLabel}: ${posicoesAbertas.length}`)
   for (const pos of posicoesAbertas) {
+    const posNet = pos.networkKey as NetworkKey
     const currentPrice = await positionManager.fetchTokenPrice(pos.boughtToken)
     const profitPercent = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100
 
     if (profitPercent <= 0) {
       const label = profitPercent < 0 ? `${profitPercent.toFixed(1)}% no prejuízo` : `break-even (0.0%)`
-      pregão.adicionarLog(`⏳ ${pos.boughtToken}: ${label} — segurando (staircase decide fechamento)`)
+      pregão.adicionarLog(`⏳ ${pos.boughtToken} em ${posNet}: ${label} — segurando (staircase decide fechamento)`)
       continue
     }
 
@@ -1083,32 +1123,33 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     const STOP_LOSS = -15
     const MIN_MEANINGFUL_PROFIT = 1
     if (profitPercent > STOP_LOSS && (pos.peakProfitPercent ?? 0) < MIN_MEANINGFUL_PROFIT) {
-      pregão.adicionarLog(`⏳ ${pos.boughtToken}: ${profitPercent.toFixed(1)}% (pico ${(pos.peakProfitPercent ?? 0).toFixed(2)}%) sem lucro significativo — Staircase segura (hold)`)
+      pregão.adicionarLog(`⏳ ${pos.boughtToken} em ${posNet}: ${profitPercent.toFixed(1)}% (pico ${(pos.peakProfitPercent ?? 0).toFixed(2)}%) sem lucro significativo — Staircase segura (hold)`)
       continue
     }
 
     if (profitPercent > 100) {
-      pregão.adicionarLog(`⚠️ ${pos.boughtToken}: profit ${profitPercent.toFixed(1)}% irreal — entryPrice corrompido ($${pos.entryPrice.toFixed(4)}), pulando venda`)
+      pregão.adicionarLog(`⚠️ ${pos.boughtToken} em ${posNet}: profit ${profitPercent.toFixed(1)}% irreal — entryPrice corrompido ($${pos.entryPrice.toFixed(4)}), pulando venda`)
       continue
     }
 
-    const gasCost = await gasPriceOracle.getGasCost(redeAtual)
+    const gasCost = await gasPriceOracle.getGasCost(posNet)
     const positionValueUSD = pos.amountBought * currentPrice
     const profitUSD = positionValueUSD * (profitPercent / 100)
     const spreadCost = profitUSD * 0.005
-    const minProfit = redeAtual === "ethereum" ? gasCost * 3 : gasCost + spreadCost + getMinProfitReal(redeAtual)
+    // 🔥 Lucro líquido: só fecha se cobre gas + spread + lucro mínimo
+    const minProfit = posNet === "ethereum" ? gasCost * 3 : gasCost + spreadCost + getMinProfitReal(posNet)
     if (profitUSD < minProfit && profitPercent > 0) {
-      pregão.adicionarLog(`⏳ ${pos.boughtToken}: lucro $${profitUSD.toFixed(4)} < custos (gas $${gasCost.toFixed(4)} + spread $${spreadCost.toFixed(4)} + lucro $${getMinProfitReal(redeAtual).toFixed(4)}) — segurando`)
+      pregão.adicionarLog(`⏳ ${pos.boughtToken} em ${posNet}: lucro $${profitUSD.toFixed(4)} < custos (gas $${gasCost.toFixed(4)} + spread $${spreadCost.toFixed(4)} + lucro $${getMinProfitReal(posNet).toFixed(4)}) — segurando`)
       continue
     }
 
     // ETH: só vende se lucro >= 90% da variação 24h (conservador)
     // Demais redes: micro-trades fecham sem esperar variação 24h
-    if (profitPercent > 0 && redeAtual === "ethereum") {
+    if (profitPercent > 0 && posNet === "ethereum") {
       const { change24h, variation24h } = await positionManager.fetchTokenChange24h(pos.boughtToken as TokenSymbol)
       const profitTarget = variation24h * 0.9
       if (profitPercent < profitTarget) {
-        pregão.adicionarLog(`📊 ${pos.boughtToken}: ${profitPercent.toFixed(1)}% < meta ${profitTarget.toFixed(1)}% (90% da variação 24h=${variation24h.toFixed(1)}%, change=${change24h.toFixed(1)}%) — segurando`)
+        pregão.adicionarLog(`📊 ${pos.boughtToken} em ${posNet}: ${profitPercent.toFixed(1)}% < meta ${profitTarget.toFixed(1)}% (90% da variação 24h=${variation24h.toFixed(1)}%, change=${change24h.toFixed(1)}%) — segurando`)
         continue
       }
     }
@@ -1118,19 +1159,19 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       ? [...uniqueAgents].slice(0, 2)
       : ["Realizador", "ProfitTaker"]
     const jaVendendoGrid = pregão.getOrdensAtivas()
-      .some(o => o.fromToken === pos.boughtToken && o.rede === redeAtual && o.pregueiros.some(p => p.startsWith("Grid:")))
+      .some(o => o.fromToken === pos.boughtToken && o.rede === posNet && o.pregueiros.some(p => p.startsWith("Grid:")))
     if (jaVendendoGrid) {
-      pregão.adicionarLog(`⏳ ${pos.boughtToken}: grid já está vendendo — agente aguarda`)
+      pregão.adicionarLog(`⏳ ${pos.boughtToken} em ${posNet}: grid já está vendendo — agente aguarda`)
       continue
     }
 
-    pregão.adicionarLog(`💰 Realizando lucro: ${pos.boughtToken} (${profitPercent.toFixed(1)}% → conf ${sellConfidence}%)`)
-    gridTrader.onPositionClosed(pos.boughtToken as TokenSymbol, profitPercent, redeAtual)
+    pregão.adicionarLog(`💰 Realizando lucro: ${pos.boughtToken} em ${posNet} (${profitPercent.toFixed(1)}% → conf ${sellConfidence}%)`)
+    gridTrader.onPositionClosed(pos.boughtToken as TokenSymbol, profitPercent, posNet)
 
     for (const nome of vendedores) {
       pregão.receberOK({
         pregueiro: `Agente:${nome}`,
-        rede: redeAtual,
+        rede: posNet,
         par: sellPar,
         confianca: sellConfidence,
         timestamp: Date.now(),
