@@ -312,17 +312,16 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     maxPositions = Math.max(1, Math.floor((saldoEfetivo * 0.9) / minTradeSize))
     const vagas = Math.max(1, maxPositions - posAbertas);
 
-    if (saldoEfetivo < minTradeSize) {
+    if (saldoEfetivo < minTradeSize || (isMultiChain && realSwap.getBalance("USDC") < minTradeSize)) {
       amountUsd = 0
-      pregão.adicionarLog(`⚠️ Saldo unificado $${saldoEfetivo.toFixed(2)} abaixo do mínimo $${minTradeSize.toFixed(2)} — pulando alocação`)
+      const localUsdc = isMultiChain ? realSwap.getBalance("USDC") : saldoEfetivo
+      pregão.adicionarLog(`⚠️ Saldo USDC baixo: unified $${saldoEfetivo.toFixed(2)} / local $${localUsdc.toFixed(2)} — mínimo $${minTradeSize.toFixed(2)}`)
       // Auto-reabastecimento: vender posições abertas para liberar USDC
       const posicoes = positionManager.getOpenPositions()
       const posVendiveis = posicoes.filter(p => isMultiChain || p.networkKey === redeAtual)
       if (posVendiveis.length > 0) {
         pregão.adicionarLog(`🔄 Auto-reabastecimento: ${posVendiveis.length} posição(ões) disponíveis para venda`)
         for (const pos of posVendiveis) {
-          const balance = realSwap.getBalance(pos.boughtToken)
-          if (balance < 0.0001) continue // sem saldo on-chain, pula
           const sellPar = `${pos.boughtToken}→USDC`
           for (const nome of ["Cleanup", "ForcarVenda", "MeanReversion"]) {
             pregão.receberOK({
@@ -335,7 +334,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
               toToken: "USDC",
             })
           }
-          pregão.adicionarLog(`📢 Auto-sell: ${sellPar} em ${pos.networkKey} (${balance.toFixed(4)} ${pos.boughtToken}) — 3 OKs injetados`)
+          pregão.adicionarLog(`📢 Auto-sell: ${sellPar} em ${pos.networkKey} — 3 OKs injetados`)
         }
       }
       return {
