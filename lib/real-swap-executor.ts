@@ -255,6 +255,7 @@ class RealSwapExecutor {
   private nativeBalanceLastUpdated: number = 0;
   private priceCache: Map<TokenSymbol, { price: number; timestamp: number }> = new Map();
   private quoteCache: Map<string, { quote: QuoteResult | null; timestamp: number }> = new Map();
+  private _refuelingGas = false;
 
   private _getCachedQuote(key: string): QuoteResult | null | undefined {
     const cached = this.quoteCache.get(key);
@@ -554,6 +555,41 @@ class RealSwapExecutor {
     return false;
   }
 
+  // Auto-gas: se native token está baixo, compra com USDC
+  private async ensureGasBalance(
+    amountUsd: number,
+    log: (msg: string) => void
+  ): Promise<void> {
+    if (this._refuelingGas) return;
+    if (NETWORKS[this.networkKey].isTestnet) return;
+    if (!this.signer) return;
+
+    const NATIVE_SWAP: Record<string, string> = {
+      polygon: "WMATIC", base: "WETH", ethereum: "WETH", arbitrum: "WETH",
+    };
+    const nativeToken = NATIVE_SWAP[this.networkKey];
+    if (!nativeToken) return;
+
+    const nativeBal = await this.refreshNativeBalance();
+    const minReserve = 0.50;
+    if (nativeBal >= minReserve) return;
+
+    const usdcBal = this.getBalance("USDC");
+    const swapAmount = Math.min(usdcBal * 0.1, amountUsd * 2, 5);
+    if (swapAmount < 0.50) return;
+
+    log(`⛽ Native ${nativeBal < 0.01 ? "zerado" : "baixo"} ($${nativeBal.toFixed(4)}), comprando $${swapAmount.toFixed(2)} de ${nativeToken} com USDC`);
+    this._refuelingGas = true;
+    const result = await this.executeSwap("USDC", nativeToken, swapAmount, log, "gas");
+    this._refuelingGas = false;
+    if (result.success) {
+      log(`✅ Gas recarregado: $${swapAmount.toFixed(2)} USDC → ${nativeToken}`);
+      await this.refreshNativeBalance();
+    } else {
+      log(`⚠️ Falha ao recarregar gas: ${result.message}`);
+    }
+  }
+
   // Executar swap no melhor par disponível
   async executeSwap(
     fromToken: TokenSymbol,
@@ -590,10 +626,14 @@ class RealSwapExecutor {
       return this._fail(fromToken, toToken, amountUsd, `Saldo insuficiente de ${fromToken}: $${fromBalanceUsd.toFixed(4)} (${fromBalance.toFixed(6)} ${fromToken})`, timestamp);
     }
 
-    const nativeBalanceUsd = await this.refreshNativeBalance();
+    let nativeBalanceUsd = await this.refreshNativeBalance();
     const gasCost = await gasPriceOracle.getGasCost(this.networkKey);
     const isTestnet = NETWORKS[this.networkKey].isTestnet;
     const gasReserve = gasCost * 5;
+    if (!isTestnet && nativeBalanceUsd < gasReserve) {
+      await this.ensureGasBalance(amountUsd, log);
+      nativeBalanceUsd = await this.refreshNativeBalance();
+    }
     if (!isTestnet && nativeBalanceUsd < gasReserve) {
       return this._fail(fromToken, toToken, amountUsd,
         `Sem ${net.nativeSymbol} para gas: tem $${nativeBalanceUsd.toFixed(4)} (precisa ~$${gasReserve.toFixed(4)})`,

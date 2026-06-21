@@ -1185,7 +1185,29 @@ Em mainnet (exceto ETH), pares voláteis (WETH, WBTC, WMATIC, ARB) são analisad
 - Staircase nunca fecha no prejuízo (só stop loss de -15%)
 - Micro-trades só abrem se saldo + volatilidade compensarem o gas
 
-### 27.7 Gateway Unificado (CCTP Bridge Automático)
+### 27.7 Auto-Gas (USDC → Native Token)
+
+Quando o native token (POL, ETH, ARC) está baixo na mainnet, o bot automaticamente
+swap uma porção de USDC para o wrapped native (WMATIC, WETH) via LI.FI.
+
+```
+executeSwap(USDC → WMATIC, $2, polygon):
+  1. refreshNativeBalance → POL = $0.02 ❌
+  2. ensureGasBalance() é chamada
+  3. USDC balance = $10 → swap $1 USDC → WMATIC
+  4. refreshNativeBalance → POL = $1.00 ✅ (WMATIC vira POL na stack)
+  5. Prossegue com USDC → WMATIC
+```
+
+**Regras:**
+- Só ativa em mainnet (testnet não tem native token com valor)
+- Compra no máximo $5 de native token por vez (10% do USDC disponível)
+- Só compra se native < $0.50 e houver pelo menos $0.50 de USDC
+- Guard `_refuelingGas` previne recursão (ensureGasBalance → executeSwap → ensureGasBalance)
+
+**Arquivo:** `lib/real-swap-executor.ts` — método `ensureGasBalance()`
+
+### 27.8 Gateway Unificado (CCTP Bridge Automático)
 
 Quando o bot detecta uma oportunidade em uma rede onde o saldo de USDC é insuficiente,
 ele automaticamente faz bridge via **Circle CCTP** de outra rede que tenha USDC disponível.
@@ -1223,6 +1245,11 @@ antes do swap em Polygon:
 ---
 
 ## 28. CHANGELOG — 21/06/2026
+
+### Auto-Gas: USDC → Native Token
+- **Novo**: `lib/real-swap-executor.ts`: método `ensureGasBalance()` — quando native token (POL/ETH/ARB) está abaixo de $0.50, swap automático de 10% do USDC da wallet para o wrapped native (WMATIC/WETH)
+- **Novo**: chamado em `executeSwap()` antes do gas check falhar, com guard `_refuelingGas` para evitar recursão
+- **Impacto**: trades nunca param por falta de gas; USDC da própria wallet financia as taxas
 
 ### Gateway Unificado — CCTP Bridge Automático
 - **Novo**: `lib/real-swap-executor.ts`: método `ensureStableViaCCTP()` — quando saldo USDC é insuficiente na chain alvo, busca USDC em outra chain e faz bridge via Circle CCTP
