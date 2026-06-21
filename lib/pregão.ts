@@ -158,7 +158,12 @@ class Pregão {
       participantes = [okAgentes[0], okPregueiros[0]]
       origem = "🤝 Híbrido"
     } else if (okAgentes.length >= limiarAgentes) {
-      participantes = okAgentes.slice(0, limiarAgentes)
+      const sorted = okAgentes
+        .filter(a => a.sinal.confianca >= 30)
+        .sort((a, b) => b.sinal.confianca - a.sinal.confianca)
+      if (sorted.length >= limiarAgentes) {
+        participantes = sorted.slice(0, limiarAgentes)
+      }
       origem = "🏛️ Agentes"
     } else if (okPregueiros.length >= 3) {
       participantes = okPregueiros.slice(0, 3)
