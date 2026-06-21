@@ -38,6 +38,11 @@ export function getCircuitBreakerState(): CircuitBreakerState {
 
 export function setTestnetMode(isTestnet: boolean): void {
   state.isTestnet = isTestnet;
+  // Auto-resume se pânico veio de drawdown em mainnet mas agora estamos em testnet
+  if (isTestnet && state.isPanicActive) {
+    resumeFromPanic();
+    return;
+  }
   if (isTestnet) {
     state.maxLossesBeforePanic = 20;
     state.maxDrawdownPercent = 50;

@@ -5,7 +5,7 @@
 import { ethers } from "ethers";
 import { getQuote, isLifiCooldown, toTokenUnits } from "./lifi-executor";
 import type { QuoteResult } from "./lifi-executor";
-import { getCircuitBreakerState, recordError, recordTradeResult, setTestnetMode } from "./circuit-breaker";
+import { getCircuitBreakerState, recordError, setTestnetMode } from "./circuit-breaker";
 import { gasPriceOracle } from "./gas-price-oracle";
 import { getArcFeeParams } from "./arc-gas";
 import { generateSyntheticQuote, executeDirectSwap } from "./arc-direct-swap";
@@ -764,11 +764,6 @@ class RealSwapExecutor {
       }
 
       log(`💵 Lucro líquido real (pós-gas): $${profit.toFixed(4)}`);
-
-      const { isPanicActive } = recordTradeResult(profit);
-      if (isPanicActive) {
-        log(`🚨 Circuit breaker ativado!`);
-      }
 
       let memoTxHash: string | undefined;
       if (memoRef && this.networkKey === "arc" && this.signer) {
