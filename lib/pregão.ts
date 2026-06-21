@@ -117,48 +117,112 @@ class Pregão {
     if (!porPar) return
 
     const isGridOrder = signal.pregueiro.startsWith("Grid:")
-    const limiar = isGridOrder ? 1 : this.LIMIAR_OK
+    const limiarAgentes = this.LIMIAR_OK
 
+    // Coleta OKs válidos (dentro da janela)
     const okValidos = Array.from(porPar.entries())
       .flatMap(([nome, sinais]) => {
         const recentes = sinais.filter(s => Date.now() - s.timestamp < this.JANELA_MS)
         return recentes.length > 0 ? [{ nome, sinal: recentes[recentes.length - 1] }] : []
       })
 
-    if (okValidos.length >= limiar) {
-      const participantes = okValidos.slice(0, limiar)
-      const confiancaMedia = Math.round(participantes.reduce((s, p) => s + p.sinal.confianca, 0) / participantes.length)
+    // Separa por tipo: agentes vs pregueiros
+    const okAgentes = okValidos.filter(p => p.nome.startsWith("Agente:"))
+    const okPregueiros = okValidos.filter(p => !p.nome.startsWith("Agente:") && !p.nome.startsWith("Grid:"))
 
-      // Grid orders bypass confidence minimum
-      if (!isGridOrder && rede === "polygon" && confiancaMedia < 40) {
-        this.log(`🚫 Confiança ${confiancaMedia}% < 40% mínimo em mainnet — ordem rejeitada`)
-        return
-      }
+    // 🔥 Consenso Híbrido: 1 agente + 1 pregueiro = ORDEM
+    const TEM_LIMIAR_HIBRIDO = okAgentes.length >= 1 && okPregueiros.length >= 1
+    
+    // Grid orders: limiar = 1 (OK único do grid)
+    const gridOk = okValidos.filter(p => p.nome.startsWith("Grid:"))
+    const TEM_GRID = gridOk.length >= 1
 
-      if (this.getOrdensAtivas().length >= 5) {
-        this.log(`⏳ ${this.getOrdensAtivas().length} ordens ativas — aguardando`)
-        return
-      }
+    // Verifica se tem consenso
+    const temConsenso = TEM_GRID || TEM_LIMIAR_HIBRIDO || okAgentes.length >= limiarAgentes || okPregueiros.length >= 3
 
-      const origem = isGridOrder ? "📐 Grid" : "🏛️"
-      const ordem: OrdemExecucao = {
-        id: `${isGridOrder ? "grid" : "ordem"}_${Date.now()}_${rede}_${par.replace(/[^a-zA-Z0-9]/g, "_")}`,
-        rede,
-        par,
-        fromToken: participantes[0].sinal.fromToken,
-        toToken: participantes[0].sinal.toToken,
-        pregueiros: participantes.map(p => p.nome),
-        confiancaMedia,
-        timestamp: Date.now(),
-        status: "preparando"
-      }
+    if (!temConsenso) {
+      return
+    }
 
-      this.ordens.push(ordem)
-      this.log(`${origem} ORDEM GERADA: ${par} na ${rede} (${ordem.pregueiros.join(", ")})`)
-      this.onOrdemCallback?.(ordem)
+    // Seleciona os participantes da ordem
+    let participantes: { nome: string; sinal: OkSignal }[] = []
+    let origem = "🏛️"
 
-      for (const p of participantes) {
-        porPar.delete(p.nome)
+    if (TEM_GRID) {
+      participantes = gridOk.slice(0, 1)
+      origem = "📐 Grid"
+    } else if (TEM_LIMIAR_HIBRIDO) {
+      // Híbrido: 1 agente + 1 pregueiro
+      participantes = [okAgentes[0], okPregueiros[0]]
+      origem = "🤝 Híbrido"
+    } else if (okAgentes.length >= limiarAgentes) {
+      participantes = okAgentes.slice(0, limiarAgentes)
+      origem = "🏛️ Agentes"
+    } else if (okPregueiros.length >= 3) {
+      participantes = okPregueiros.slice(0, 3)
+      origem = "📊 Pregueiros"
+    }
+
+    if (participantes.length === 0) return
+
+    // Calcula confiança média
+    const confiancaMedia = Math.round(participantes.reduce((s, p) => s + p.sinal.confianca, 0) / participantes.length)
+
+    // Grid orders bypass confidence minimum
+    const MAINNETS = new Set(["polygon", "base", "ethereum", "arbitrum"])
+    if (!TEM_GRID && MAINNETS.has(rede) && confiancaMedia < 40) {
+      this.log(`🚫 Confiança ${confiancaMedia}% < 40% mínimo em mainnet — ordem rejeitada`)
+      return
+    }
+
+    // Limite de ordens ativas (máximo 10 — mais micro-trades simultâneos)
+    if (this.getOrdensAtivas().length >= 10) {
+      this.log(`⏳ ${this.getOrdensAtivas().length} ordens ativas — aguardando`)
+      return
+    }
+
+    // Cria a ordem
+    const ordem: OrdemExecucao = {
+      id: `${TEM_GRID ? "grid" : "ordem"}_${Date.now()}_${rede}_${par.replace(/[^a-zA-Z0-9]/g, "_")}`,
+      rede,
+      par,
+      fromToken: participantes[0].sinal.fromToken,
+      toToken: participantes[0].sinal.toToken,
+      pregueiros: participantes.map(p => p.nome),
+      confiancaMedia,
+      timestamp: Date.now(),
+      status: "preparando"
+    }
+
+    this.ordens.push(ordem)
+    
+    // Log detalhado da origem da ordem
+    const detalhe = TEM_GRID ? `Grid:${gridOk[0].nome}` :
+                    TEM_LIMIAR_HIBRIDO ? `Agente:${okAgentes[0].nome} + Pregueiro:${okPregueiros[0].nome}` :
+                    `${participantes.length} agentes`
+    this.log(`${origem} ORDEM GERADA: ${par} na ${rede} (${detalhe}) conf=${confiancaMedia}%`)
+
+    this.onOrdemCallback?.(ordem)
+
+    // Remove os OKs usados
+    for (const p of participantes) {
+      const key = p.nome
+      const sinais = porPar.get(key)
+      if (sinais) {
+        const validos = sinais.filter(s => Date.now() - s.timestamp < this.JANELA_MS)
+        if (validos.length > 1) {
+          // Remove apenas o OK mais recente
+          const sorted = validos.sort((a, b) => b.timestamp - a.timestamp)
+          const toRemove = sorted[0]
+          const updated = validos.filter(s => s !== toRemove)
+          if (updated.length > 0) {
+            porPar.set(key, updated)
+          } else {
+            porPar.delete(key)
+          }
+        } else {
+          porPar.delete(key)
+        }
       }
     }
   }
@@ -225,9 +289,11 @@ class Pregão {
     for (const o of this.ordens) {
       if ((o.status === "preparando" || o.status === "pronto") && agora - o.timestamp > 5000) {
         o.status = "falhou"
+        this.log(`🧹 Ordem ${o.id} travada em "${o.status}" — marcada como falha`)
       }
       if (o.status === "executando" && agora - o.timestamp > 30000) {
         o.status = "falhou"
+        this.log(`🧹 Ordem ${o.id} travada em "executando" — marcada como falha`)
       }
     }
   }

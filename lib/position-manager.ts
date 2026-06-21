@@ -1,10 +1,12 @@
 // lib/position-manager.ts
 // Gerenciamento de posicoes com fechamento inteligente
-// Regra: após 1 minuto, se lucro >= $0.05 → fecha (lucro verdadeiro pós-gas+spread)
+// Regra: após 1 minuto, se lucro >= mínimo por rede → fecha
+// ETH: $0.05 | Demais redes: $0.002 (micro-trades)
 // Nunca fecha no prejuízo — segura até ter lucro mínimo ou stop loss
 
 import { realSwap, isStable, type NetworkKey, type TokenSymbol } from "./real-swap-executor";
 import { pregão } from "./pregão";
+import { gasPriceOracle } from "./gas-price-oracle";
 
 export interface OpenPosition {
   id: string;
@@ -35,7 +37,11 @@ const STALE_FORCE_CLOSE_MS = 30 * 60 * 1000; // 30min sem lucro → força fecha
 // Tempo mínimo antes de considerar fechamento com lucro
 const MIN_PROFIT_HOLD_MS = 60 * 1000; // 1 minuto
 // Lucro mínimo real desejado (já descontado gas + spread na abertura)
-const MIN_PROFIT_USD = 0.05;
+// ETH: conservador ($0.05) | Demais redes: micro-trades ($0.002)
+function getMinProfitUsd(networkKey: NetworkKey): number {
+  if (networkKey === "ethereum") return 0.05
+  return 0.002
+}
 
 class PositionManager {
   private positions: Map<string, OpenPosition> = new Map();
@@ -101,7 +107,7 @@ class PositionManager {
     return pos;
   }
 
-  staircaseUpdate(id: string, currentPrice: number, _dropSteps?: number, _levels?: number[]): "hold" | "close" {
+  async staircaseUpdate(id: string, currentPrice: number, _dropSteps?: number, _levels?: number[]): Promise<"hold" | "close"> {
     const pos = this.positions.get(id);
     if (!pos || pos.status !== "open") return "hold";
 
@@ -142,11 +148,20 @@ class PositionManager {
       return "close";
     }
 
-    // Se passou 1 minuto E lucro >= $0.05 → fecha com lucro verdadeiro
-    if (age >= MIN_PROFIT_HOLD_MS && currentProfitUsd >= MIN_PROFIT_USD) {
-      pregão.adicionarLog(`✅ ${pos.boughtToken}: $${currentProfitUsd.toFixed(2)} de lucro em ${Math.round(age / 1000)}s — fechando (mínimo $${MIN_PROFIT_USD.toFixed(2)})`);
-      this.onStaircaseCloseCallback?.(pos);
-      return "close";
+    // 🔒 Só fecha se lucro bruto cobrir gas da venda + spread + lucro mínimo
+    // Evita fechar no prejuízo por causa de custos de transação
+    const minProfitUsd = getMinProfitUsd(pos.networkKey)
+    if (age >= MIN_PROFIT_HOLD_MS && currentProfitUsd > 0) {
+      const sellGasCost = await gasPriceOracle.getGasCost(pos.networkKey)
+      const sellSpread = currentProfitUsd * 0.005
+      const custoTotalVenda = sellGasCost + sellSpread
+      const lucroLiquido = currentProfitUsd - custoTotalVenda
+
+      if (lucroLiquido >= minProfitUsd) {
+        pregão.adicionarLog(`✅ ${pos.boughtToken}: lucro bruto $${currentProfitUsd.toFixed(4)} - custos (gas $${sellGasCost.toFixed(4)} + spread $${sellSpread.toFixed(4)}) = líquido $${lucroLiquido.toFixed(4)} — fechando`)
+        this.onStaircaseCloseCallback?.(pos);
+        return "close";
+      }
     }
 
     return "hold";

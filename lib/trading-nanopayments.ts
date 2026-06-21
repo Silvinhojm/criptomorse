@@ -169,7 +169,7 @@ class TradingNanopaymentSystem {
     for (const pos of positions) {
       try {
         const price = await positionManager.fetchTokenPrice(pos.boughtToken);
-        const decision = positionManager.staircaseUpdate(pos.id, price);
+        const decision = await positionManager.staircaseUpdate(pos.id, price);
 
         if (decision === "close") {
           console.log(`Fechando posicao ${pos.boughtToken} automaticamente...`);

@@ -424,7 +424,7 @@ async function verificarStaircaseFechamento(redes: NetworkKey[]) {
 
   for (const pos of posicoes) {
     const currentPrice = await positionManager.fetchTokenPrice(pos.boughtToken)
-    const acao = positionManager.staircaseUpdate(pos.id, currentPrice)
+    const acao = await positionManager.staircaseUpdate(pos.id, currentPrice)
 
     if (acao === "close") {
       if (staircaseCloseSent.has(pos.id)) continue

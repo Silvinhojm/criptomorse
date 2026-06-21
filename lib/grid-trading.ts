@@ -153,7 +153,7 @@ class AdaptiveGridTrading {
       }
 
       pregão.adicionarLog(
-        `📐 Grid Adaptativo ${token}: ${MAX_GRID_LEVELS}níveis, espaçamento ${(spacing * 100).toFixed(2)}%, centro $${price.toFixed(4)} (vol ${(volData.vol1h * 100).toFixed(2)}%)`
+        `📐 Grid Adaptativo ${token}: ${MAX_GRID_LEVELS} níveis, espaçamento ${(spacing * 100).toFixed(2)}%, centro $${price.toFixed(4)} (vol ${(volData.vol1h * 100).toFixed(2)}%)`
       )
     }
     saveState(this.state)
@@ -335,6 +335,22 @@ class AdaptiveGridTrading {
           pregão.adicionarLog(
             `📊 Grid ${isBuy ? "🟢 COMPRA" : "🔴 VENDA"} ${level.pairLabel} @ $${level.triggerPrice.toFixed(4)} (atual $${currentPrice.toFixed(4)})`
           )
+
+          // 🔥 ENVIA OK DIRETO AO PREGÃO (pula pipeline de agentes)
+          const gridConfidence = isBuy ? 80 : 85
+          const dirLabel = isBuy ? "Compra" : "Venda"
+          
+          pregão.receberOK({
+            pregueiro: `Grid:${dirLabel}`,
+            rede: network,
+            par: level.pairLabel,
+            confianca: gridConfidence,
+            timestamp: Date.now(),
+            fromToken: level.pairFrom,
+            toToken: level.pairTo,
+          })
+          
+          pregão.adicionarLog(`📐 Grid OK enviado: ${level.pairLabel} (${gridConfidence}%)`)
 
           // Registra performance estimada (metade do round-trip por perna)
           const grossEst = level.amount * g.spacing * 0.5

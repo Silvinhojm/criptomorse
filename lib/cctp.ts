@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
 
-const CCTP_CONFIG = {
+export const CCTP_CONFIG = {
   arc: {
     tokenMessenger: '0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA',
     messageTransmitter: '0x5e7A2B3c8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8',
@@ -32,6 +32,14 @@ const CCTP_CONFIG = {
     chainId: 1,
     domainId: 0,
     rpcUrl: 'https://eth.llamarpc.com',
+  },
+  arbitrum: {
+    tokenMessenger: '0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA',
+    messageTransmitter: '0x5e7A2B3c8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8',
+    usdc: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
+    chainId: 42161,
+    domainId: 3,
+    rpcUrl: 'https://arb1.arbitrum.io/rpc',
   },
 };
 

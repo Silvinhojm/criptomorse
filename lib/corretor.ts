@@ -67,6 +67,7 @@ class Corretor {
         let profit = (resultado.profit ?? 0) - fee.fee
         const isStableTo = ["USDC", "USDT", "DAI", "EURC"].includes(ordem.toToken)
         const isStableFrom = ["USDC", "USDT", "DAI", "EURC"].includes(ordem.fromToken)
+        const netConf = NETWORKS[ordem.rede as NetworkKey]
 
         if (isStableFrom && !isStableTo) {
           profit = 0
@@ -85,7 +86,6 @@ class Corretor {
         }
 
         if (!isStableFrom && isStableTo) {
-          // Busca posição pelo token exato ou variante (ex: "WETH" e "ETH")
           const pos = positionManager.getOpenPositions()
             .find(p => (p.boughtToken === ordem.fromToken || p.boughtToken === `W${ordem.fromToken}` || `W${p.boughtToken}` === ordem.fromToken) && p.status === "open")
           if (pos) {
@@ -97,10 +97,13 @@ class Corretor {
           }
         }
 
-        // Aprendizado: pontua cada agente que votou nesta ordem
-        // Testnet: só pontua se lucro real (não perder streak por fee simulado)
-        const netConf = NETWORKS[ordem.rede as NetworkKey]
+        // FIX: não afeta aprendizado nem circuit breaker em dois casos:
+        // 1. Testnet com fee simulada (perda entre -$0.02 e +$0.02)
+        // 2. Mainnet com perda pequena de fechamento forçado (stale/stop < $2.00)
+        //    Essas perdas são de gestão de risco, não de estratégia ruim
         const isTestnetSwap = netConf?.isTestnet && profit <= 0.02 && profit >= -0.02
+        const isSmallForcedLoss = !netConf?.isTestnet && profit < 0 && profit > -2.00
+
         if (!isTestnetSwap) {
           const profitPorAgente = profit / Math.max(1, ordem.pregueiros.filter(n => AGENTES_CONHECIDOS.has(n.replace("Agente:", ""))).length)
           for (const nome of ordem.pregueiros) {
@@ -129,10 +132,10 @@ class Corretor {
           this.log(`🧪 Testnet: pulando pontuação (fee simulada $${profit.toFixed(4)} não afeta ranking)`)
         }
 
-        // Recompensa financeira por performance: 10% do lucro como pool proporcional
+        // Recompensa financeira por performance
         const agentesQueVotaram = ordem.pregueiros.filter(n => AGENTES_CONHECIDOS.has(n.replace("Agente:", "")))
         if (profit > 0 && agentesQueVotaram.length > 0) {
-          const rewardPool = profit * 0.1 // 10% do lucro
+          const rewardPool = profit * 0.1
           const rewardPerAgent = rewardPool / agentesQueVotaram.length
           for (const nome of agentesQueVotaram) {
             const agente = nome.replace("Agente:", "")
@@ -143,9 +146,17 @@ class Corretor {
 
         pairProfitability.recordTrade(ordem.par, profit, profit > 0)
 
-        const { isPanicActive } = recordTradeResult(profit)
-        if (isPanicActive) {
-          this.log(`🚨 Circuit breaker ativado após trade!`)
+        // FIX: circuit breaker não ativa para perdas pequenas de gestão de risco
+        if (!isTestnetSwap && !isSmallForcedLoss) {
+          const { isPanicActive } = recordTradeResult(profit)
+          if (isPanicActive) {
+            this.log(`🚨 Circuit breaker ativado após trade!`)
+          }
+        } else {
+          const motivo = isTestnetSwap
+            ? `fee simulada testnet $${profit.toFixed(4)}`
+            : `fechamento forçado mainnet $${profit.toFixed(4)} (< $2.00)`
+          this.log(`🛡️ Circuit breaker preservado: ${motivo}`)
         }
 
         pregão.atualizarOrdem(ordem.id, {
@@ -164,7 +175,7 @@ class Corretor {
       } else {
         this.log(`❌ Falha na execução: ${resultado.message}`)
         pregão.atualizarOrdem(ordem.id, { status: "falhou" })
-        if (resultado.txHash) { // só conta perda real se TX foi enviada on-chain
+        if (resultado.txHash) {
           recordTradeResult(-valorTrade * 0.1)
         }
       }
@@ -178,7 +189,7 @@ class Corretor {
     const coinIds: Record<string, string> = {
       WETH: "ethereum", WMATIC: "matic-network", WBTC: "bitcoin",
       ARB: "arbitrum", SOL: "solana",
-    };
+    }
     const coinId = coinIds[token] || token.toLowerCase()
     try {
       const res = await fetch(`/api/price?ids=${coinId}`)

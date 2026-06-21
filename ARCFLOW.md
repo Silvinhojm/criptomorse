@@ -1101,7 +1101,136 @@ Pregão (verificarOrdem):
 
 ---
 
-## 27. CHANGELOG — 21/06/2026
+## 27. ESTRATÉGIA — MICRO-TRADES POR QUANTIDADE (EXCETO ETH)
+
+### 27.1 Conceito
+
+Em redes com gas barato (Polygon, Base, Arbitrum, Arc), o sistema opera micro-trades
+com lucro líquido real a partir de $0.002, priorizando **quantidade de trades lucrativos**
+em vez de esperar grandes ganhos por posição.
+
+```
+ETH mainnet ($1.50 gas) → estratégia conservadora (MIN_PROFIT_REAL=$0.05, MIN_TRADE_SIZE=$5)
+Polygon ($0.005-0.08 gas) → micro-trades (MIN_PROFIT_REAL=$0.005, MIN_TRADE_SIZE=$2)
+Base ($0.05-0.08 gas) → micro-trades (MIN_PROFIT_REAL=$0.005, MIN_TRADE_SIZE=$2)
+Arbitrum ($0.03 gas) → micro-trades (MIN_PROFIT_REAL=$0.005, MIN_TRADE_SIZE=$2)
+Arc testnet ($0.006 gas) → micro-trades (MIN_PROFIT_REAL=$0.002, MIN_TRADE_SIZE=$1)
+```
+
+### 27.2 Parâmetros Dinâmicos por Rede
+
+```typescript
+// agentes-do-pregão.ts:
+function getMinTradeSize(network: NetworkKey): number {
+  if (network === "ethereum") return 5  // $5 mínimo na ETH mainnet
+  return 2  // $2 mínimo nas demais redes
+}
+
+function getMinProfitReal(network: NetworkKey): number {
+  if (network === "ethereum") return 0.05  // $0.05 lucro mínimo na ETH
+  return 0.005  // $0.005 lucro mínimo nas demais (micro-trades)
+}
+
+// position-manager.ts:
+function getMinProfitUsd(networkKey: NetworkKey): number {
+  if (networkKey === "ethereum") return 0.05
+  return 0.002  // $0.002 — fecha assim que qualquer lucro líquido surgir
+}
+
+// real-swap-executor.ts:
+function getMinProfitThreshold(networkKey: NetworkKey): number {
+  if (networkKey === "ethereum") return Math.max(0.01, gasCost * 3)
+  return Math.max(0.001, gasCost * 1.5)  // margem menor, trades mais frequentes
+}
+```
+
+### 27.3 Pares por Rede
+
+Cada rede agora prioriza pares diferentes:
+
+| Rede | Pares Prioritários | Estratégia |
+|------|--------------------|------------|
+| Arc (testnet) | USDC→EURC, EURC→USDC, USDC→cirBTC | Estáveis + aprendizado |
+| Polygon (mainnet) | WMATIC→USDC, WETH→USDC, USDC→WMATIC, USDC→WETH | Voláteis primeiro |
+| Base (mainnet) | WETH→USDC, USDC→WETH, WBTC→USDC | Voláteis primeiro |
+| Arbitrum (mainnet) | ARB→USDC, WETH→USDC, USDC→ARB, USDC→WETH | Voláteis primeiro |
+| Ethereum (mainnet) | WETH→USDC, USDC→WETH, WBTC→USDC | Conservador (gas alto) |
+
+Em mainnet (exceto ETH), pares voláteis (WETH, WBTC, WMATIC, ARB) são analisados
+**antes** de pares stable-stable, garantindo que micro-trades voláteis tenham prioridade.
+
+### 27.4 Fechamento Agressivo (Staircase)
+
+- **Redes não-ETH**: fecha posição assim que lucro líquido ≥ $0.002
+- **ETH mainnet**: mantém lógica conservadora ($0.05 de lucro mínimo)
+- Stop loss de -15% continua valendo para todas as redes
+- Stale force close (30min sem lucro) continua liberando vaga
+
+### 27.5 Fluxo de Micro-Trade
+
+```
+1. Agentes detectam oportunidade em par volátil (ex: WMATIC→USDC)
+2. Pregão valida: MIN_PROFIT_REAL = $0.005 (não-ETH)
+3. Trade mínimo: $2 (não-ETH)
+4. Executa swap → abre posição
+5. Staircase monitora: assim que lucro ≥ $0.002 → fecha
+6. Lucro líquido: $0.002-$0.02 por trade
+7. Repete: dezenas de micro-trades por hora
+```
+
+### 27.6 Proteções
+
+- **Ethereum excluído** de micro-trades (gas $1.50 inviabiliza)
+- Circuit breaker continua ativo em todas as redes
+- Staircase nunca fecha no prejuízo (só stop loss de -15%)
+- Micro-trades só abrem se saldo + volatilidade compensarem o gas
+
+### 27.7 Gateway Unificado (CCTP Bridge Automático)
+
+Quando o bot detecta uma oportunidade em uma rede onde o saldo de USDC é insuficiente,
+ele automaticamente faz bridge via **Circle CCTP** de outra rede que tenha USDC disponível.
+
+```
+antes do swap em Polygon:
+  1. realSwap.refreshAllBalances() → saldo USDC = $0.50, precisa de $2.00
+  2. ensureStableViaCCTP() é chamada
+  3. unifiedBalance.refreshAllBalances() → checa todas as chains
+  4. Base tem $10 USDC → CCTP bridge Base→Polygon ($2.00)
+  5. refreshAllBalances() → saldo USDC = $2.50 ✅
+  6. Executa swap USDC→WMATIC normalmente
+```
+
+**Fluxo de Bridge (lib/real-swap-executor.ts:ensureStableViaCCTP):**
+- Só ativa se `fromToken` for USDC (CCTP não suporta outras stables)
+- Varre todas as chains configuradas (Base, Polygon, Arbitrum, Ethereum, Arc)
+- Usa `unified-balance.ts` para consultar saldos on-chain em tempo real
+- Cria signer temporário conectado à RPC da source chain via private key
+- Chama `CCTPService.initiateTransfer()` (burn → fetch_attestation → mint)
+- Após confirmação, atualiza saldos e prossegue com o swap
+
+**Arquivos envolvidos:**
+- `lib/real-swap-executor.ts` — `ensureStableViaCCTP()` + chamada em `executeSwap()`
+- `lib/cctp.ts` — `CCTPService` com suporte a todas as 5 chains (arbitrum adicionado)
+- `lib/unified-balance.ts` — `UnifiedBalanceManager` consulta saldos USDC on-chain
+- `lib/caixa.ts` — Gateway browser-only (MetaMask); não usado no bot headless
+
+**Benefício:**
+- Capital não fica fragmentado: USDC concentrado em 1-2 chains, movido sob demanda
+- Cada micro-trade pode acontecer em QUALQUER chain, independente de onde está o saldo
+- Custo do bridge (~$0.02-0.05) é diluído nos micro-trades seguintes
+- Preparado para futura integração Circle Gateway (API server-side)
+
+---
+
+## 28. CHANGELOG — 21/06/2026
+
+### Gateway Unificado — CCTP Bridge Automático
+- **Novo**: `lib/real-swap-executor.ts`: método `ensureStableViaCCTP()` — quando saldo USDC é insuficiente na chain alvo, busca USDC em outra chain e faz bridge via Circle CCTP
+- **Novo**: `lib/real-swap-executor.ts`: `ensureStableViaCCTP` chamado em `executeSwap()` antes do balance check falhar
+- **Modificado**: `lib/real-swap-executor.ts`: salva `privateKey` durante `initialize()` para criar signers temporários em outras chains
+- **Modificado**: `lib/cctp.ts`: `CCTP_CONFIG` exportado + arbitrum adicionado ao config
+- **Integração**: `unified-balance.ts` consulta saldos USDC on-chain em todas as chains para decidir source do bridge
+- **Documentado**: ARCFLOW.md seção 27.7 — Gateway Unificado (CCTP Bridge Automático)
 
 ### Grid/GridRef removidos do ranking competitivo
 - **Problema**: Grid e GridRef são bots de grid trading (operacionais), mas seus votos eram registrados em `historicoVotos` e avaliados em `avaliarVotosPassados`, acumulando scores no accountant. Com scores altos (~76 pts), viravam Top 3 — mas sem votos ativos (grid sem níveis gatilhados), o Top 3 ficava com 0 votos válidos, travando o sistema em fallback com agentes de baixa confiança.

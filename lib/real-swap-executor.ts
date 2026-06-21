@@ -11,6 +11,8 @@ import { getArcFeeParams } from "./arc-gas";
 import { generateSyntheticQuote, executeDirectSwap } from "./arc-direct-swap";
 import { arcMemo } from "./arc-memo";
 import { transactionMemos } from "./transaction-memos";
+import { CCTPService, CCTP_CONFIG } from "./cctp";
+import { unifiedBalance } from "./unified-balance";
 
 // ─── Redes suportadas ────────────────────────────────────────────────────────
 // Custo estimado de gas em USD por rede (para deducao do lucro)
@@ -174,9 +176,11 @@ export function isStable(token: TokenSymbol): boolean {
 }
 
 // Lucro mínimo dinâmico por rede (cobre gas real da RPC + margem)
+// ETH: margem 3x (conservador) | Demais redes: margem 1.5x (micro-trades)
 async function getMinProfitThreshold(networkKey: NetworkKey): Promise<number> {
   const gasCost = await gasPriceOracle.getGasCost(networkKey);
-  return Math.max(0.01, gasCost * 3);
+  if (networkKey === "ethereum") return Math.max(0.01, gasCost * 3);
+  return Math.max(0.001, gasCost * 1.5);
 }
 
 const ERC20_ABI = [
@@ -230,11 +234,22 @@ const COIN_IDS: Record<string, string> = {
   ETH: "ethereum", POL: "matic-network", ARC: "usd-coin",
 };
 
+const cctpService = new CCTPService();
+
+const UB_CHAIN: Record<string, string> = {
+  arc: "Arc Testnet",
+  base: "Base",
+  polygon: "Polygon",
+  ethereum: "Ethereum",
+  arbitrum: "Arbitrum",
+};
+
 class RealSwapExecutor {
   private provider: ethers.JsonRpcProvider | null = null;
   private signer: ethers.Signer | null = null;
   private networkKey: NetworkKey = "arc";
   private userAddress: string = "";
+  private privateKey: string = "";
   private tokenBalances: Map<TokenSymbol, TokenBalance> = new Map();
   private nativeBalanceWei: bigint = 0n;
   private nativeBalanceLastUpdated: number = 0;
@@ -287,10 +302,12 @@ class RealSwapExecutor {
       } else if (privateKeyOrAddress.length === 66 && privateKeyOrAddress.startsWith("0x")) {
         this.signer = new ethers.Wallet(privateKeyOrAddress, this.provider);
         this.userAddress = await this.signer.getAddress();
+        this.privateKey = privateKeyOrAddress;
         console.log(`✅ RealSwapExecutor: ${net.name} | ${this.userAddress.slice(0, 6)}...${this.userAddress.slice(-4)}`);
       } else if (privateKeyOrAddress.length === 64 && /^[0-9a-fA-F]+$/.test(privateKeyOrAddress)) {
         this.signer = new ethers.Wallet("0x" + privateKeyOrAddress, this.provider);
         this.userAddress = await this.signer.getAddress();
+        this.privateKey = "0x" + privateKeyOrAddress;
         console.log(`✅ RealSwapExecutor: ${net.name} | ${this.userAddress.slice(0, 6)}...${this.userAddress.slice(-4)}`);
       } else {
         this.userAddress = privateKeyOrAddress;
@@ -485,6 +502,58 @@ class RealSwapExecutor {
     return profitable[0];
   }
 
+  // Gateway via CCTP: se falta USDC na rede alvo, busca de outra chain
+  private async ensureStableViaCCTP(
+    fromToken: TokenSymbol,
+    amountUsd: number,
+    log: (msg: string) => void
+  ): Promise<boolean> {
+    if (!isStable(fromToken) || fromToken !== "USDC") return false;
+    if (!this.privateKey) return false;
+
+    const targetChain = this.networkKey;
+    const targetChainName = UB_CHAIN[targetChain];
+    if (!targetChainName) return false;
+
+    await unifiedBalance.initialize(this.userAddress);
+    const balances = await unifiedBalance.refreshAllBalances();
+
+    const sourceChains = Object.keys(UB_CHAIN).filter(k => k !== targetChain);
+    for (const srcChain of sourceChains) {
+      const srcChainName = UB_CHAIN[srcChain];
+      const srcBalance = balances[srcChainName] ?? await unifiedBalance.fetchBalance(srcChainName);
+      if (srcBalance < amountUsd * 1.05) continue;
+
+      log(`🌉 Bridge via CCTP: ${srcChain}→${targetChain} $${amountUsd.toFixed(2)} USDC`);
+      try {
+        const srcConfig = CCTP_CONFIG[srcChain as keyof typeof CCTP_CONFIG];
+        if (!srcConfig) continue;
+        const srcProvider = new ethers.JsonRpcProvider(srcConfig.rpcUrl);
+        const srcSigner = new ethers.Wallet(this.privateKey, srcProvider);
+
+        const result = await cctpService.initiateTransfer({
+          fromChain: srcChain,
+          toChain: targetChain,
+          amount: amountUsd,
+          recipient: this.userAddress,
+          signer: srcSigner,
+          onStep: (step) => log(`  CCTP ${step.name}: ${step.state}${step.txHash ? ' ' + step.txHash.slice(0, 10) + '...' : ''}`),
+        });
+
+        if (result.status === "completed") {
+          log(`✅ Bridge CCTP concluído: ${srcChain}→${targetChain} | TX: ${result.txHash.slice(0, 10)}...`);
+          return true;
+        }
+      } catch (err: any) {
+        log(`⚠️ Bridge CCTP falhou de ${srcChain}: ${err.message}`);
+        continue;
+      }
+    }
+
+    log(`⚠️ Nenhuma source chain com USDC suficiente para bridge`);
+    return false;
+  }
+
   // Executar swap no melhor par disponível
   async executeSwap(
     fromToken: TokenSymbol,
@@ -506,9 +575,17 @@ class RealSwapExecutor {
     }
 
     await this.refreshAllBalances();
-    const fromBalance     = this.getBalance(fromToken);
+    let fromBalance     = this.getBalance(fromToken);
     const fromPrice       = await this._getTokenPrice(fromToken);
-    const fromBalanceUsd  = fromBalance * fromPrice;
+    let fromBalanceUsd  = fromBalance * fromPrice;
+    if (fromBalanceUsd < amountUsd * 0.95) {
+      const bridged = await this.ensureStableViaCCTP(fromToken, amountUsd, log);
+      if (bridged) {
+        await this.refreshAllBalances();
+        fromBalance = this.getBalance(fromToken);
+        fromBalanceUsd = fromBalance * fromPrice;
+      }
+    }
     if (fromBalanceUsd < amountUsd * 0.95) {
       return this._fail(fromToken, toToken, amountUsd, `Saldo insuficiente de ${fromToken}: $${fromBalanceUsd.toFixed(4)} (${fromBalance.toFixed(6)} ${fromToken})`, timestamp);
     }
@@ -628,9 +705,10 @@ class RealSwapExecutor {
         log(`⏸️ Lucro estimado $${estimatedProfit.toFixed(4)} - gas $${gasCostEstimated.toFixed(3)} = $${netProfit.toFixed(4)} (min: $${minProfit})`);
         return this._fail(fromToken, toToken, amountUsd, `Lucro líquido não atinge mínimo: $${netProfit.toFixed(4)}`, timestamp);
       }
-      if (!isTestnet && !isStable(toToken) && amountUsd < 5) {
-        log(`⏸️ Trade volátil $${amountUsd.toFixed(2)} abaixo do mínimo $5.00`);
-        return this._fail(fromToken, toToken, amountUsd, `Trade mínimo para voláteis é $5.00 (tentativa: $${amountUsd.toFixed(2)})`, timestamp);
+      const minVolatileTrade = this.networkKey === "ethereum" ? 5 : 2
+      if (!isTestnet && !isStable(toToken) && amountUsd < minVolatileTrade) {
+        log(`⏸️ Trade volátil $${amountUsd.toFixed(2)} abaixo do mínimo $${minVolatileTrade.toFixed(2)}`);
+        return this._fail(fromToken, toToken, amountUsd, `Trade mínimo para voláteis é $${minVolatileTrade.toFixed(2)} (tentativa: $${amountUsd.toFixed(2)})`, timestamp);
       }
 
       const isBuyingVolatile  = !isStable(toToken) && isStable(fromToken);
