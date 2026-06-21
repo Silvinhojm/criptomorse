@@ -721,6 +721,18 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     }
   }
 
+  // Streak catastrófico: agentes com streak < -15 são recuperados para -3
+  // (impede que erros do passado congelem agentes para sempre)
+  const catRanking = accountant.getRanking()
+  for (const score of catRanking) {
+    if (score.streak < -15) {
+      const originalStreak = score.streak
+      score.streak = -3
+      score.wins = Math.max(1, score.wins)
+      pregão.adicionarLog(`🚑 ${score.agentName}: streak catastrófico ${originalStreak} → -3 (recuperação automática)`)
+    }
+  }
+
   const allBelow20 = votes.every(v => v.confidence < 20)
   const lastTrade = accountant.getLastTradeTime()
   const idleMs = Date.now() - lastTrade

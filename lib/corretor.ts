@@ -98,29 +98,36 @@ class Corretor {
         }
 
         // Aprendizado: pontua cada agente que votou nesta ordem
-        const profitPorAgente = profit / Math.max(1, ordem.pregueiros.filter(n => AGENTES_CONHECIDOS.has(n.replace("Agente:", ""))).length)
-        for (const nome of ordem.pregueiros) {
-          const agente = nome.replace("Agente:", "")
-          if (!AGENTES_CONHECIDOS.has(agente)) continue
-          accountant.addReport({
-            id: `${ordem.id}_${agente}`,
-            agentName: agente,
-            action: isStableFrom && !isStableTo ? "buy" : !isStableFrom && isStableTo ? "sell" : "hold",
-            fromToken: ordem.fromToken,
-            toToken: ordem.toToken,
-            amount: valorTrade,
-            toAmount: resultado.toAmount,
-            profit: profitPorAgente,
-            profitPercent: resultado.fromAmount > 0 ? (profitPorAgente / resultado.fromAmount) * 100 : 0,
-            entryPrice: resultado.fromAmount / Math.max(1, resultado.toAmount),
-            exitPrice: resultado.toAmount > 0 ? resultado.toAmount / Math.max(1, resultado.fromAmount) : 1,
-            status: "completed",
-            duration: Date.now() - ordem.timestamp,
-            timestamp: Date.now(),
-            networkKey: ordem.rede,
-          })
+        // Testnet: só pontua se lucro real (não perder streak por fee simulado)
+        const netConf = NETWORKS[ordem.rede as NetworkKey]
+        const isTestnetSwap = netConf?.isTestnet && profit <= 0.02 && profit >= -0.02
+        if (!isTestnetSwap) {
+          const profitPorAgente = profit / Math.max(1, ordem.pregueiros.filter(n => AGENTES_CONHECIDOS.has(n.replace("Agente:", ""))).length)
+          for (const nome of ordem.pregueiros) {
+            const agente = nome.replace("Agente:", "")
+            if (!AGENTES_CONHECIDOS.has(agente)) continue
+            accountant.addReport({
+              id: `${ordem.id}_${agente}`,
+              agentName: agente,
+              action: isStableFrom && !isStableTo ? "buy" : !isStableFrom && isStableTo ? "sell" : "hold",
+              fromToken: ordem.fromToken,
+              toToken: ordem.toToken,
+              amount: valorTrade,
+              toAmount: resultado.toAmount,
+              profit: profitPorAgente,
+              profitPercent: resultado.fromAmount > 0 ? (profitPorAgente / resultado.fromAmount) * 100 : 0,
+              entryPrice: resultado.fromAmount / Math.max(1, resultado.toAmount),
+              exitPrice: resultado.toAmount > 0 ? resultado.toAmount / Math.max(1, resultado.fromAmount) : 1,
+              status: "completed",
+              duration: Date.now() - ordem.timestamp,
+              timestamp: Date.now(),
+              networkKey: ordem.rede,
+            })
+          }
+          this.log(`🧠 Agentes pontuados: ${ordem.pregueiros.filter(n => AGENTES_CONHECIDOS.has(n.replace("Agente:", ""))).join(", ")} (profit: $${profitPorAgente.toFixed(4)} cada)`)
+        } else {
+          this.log(`🧪 Testnet: pulando pontuação (fee simulada $${profit.toFixed(4)} não afeta ranking)`)
         }
-        this.log(`🧠 Agentes pontuados: ${ordem.pregueiros.filter(n => AGENTES_CONHECIDOS.has(n.replace("Agente:", ""))).join(", ")} (profit: $${profitPorAgente.toFixed(4)} cada)`)
 
         // Recompensa financeira por performance: 10% do lucro como pool proporcional
         const agentesQueVotaram = ordem.pregueiros.filter(n => AGENTES_CONHECIDOS.has(n.replace("Agente:", "")))

@@ -209,6 +209,9 @@ MAX_POSITION_AGE_MS = 12 * 60 * 60 * 1000
 STALE_NO_PROFIT_MS = 4 * 60 * 60 * 1000
 // 4h sem lucro — NÃO fecha mais (só loga aviso). Espera mercado virar.
 
+STALE_FORCE_CLOSE_MS = 30 * 60 * 1000
+// 30min sem lucro — FECHA para liberar vaga (impede posição fantasma de travar o sistema)
+
 MAX_LOSS_PERCENT = -15
 // Stop loss máximo: se perda passar de 15%, fecha imediatamente
 
@@ -439,6 +442,7 @@ Se preço cai para $3100 → lucro 3.3% → nível atual = 1
 - Staircase só ativa após lucro > 0% (nível 0 = 0%)
 - Close só acontece se pico > nível 0 (evita fechar no prejuízo)
 - **Stale (4h sem lucro)**: NÃO fecha mais — segura e espera o mercado virar
+- **Stale force close (30min sem lucro)**: FECHA posição que nunca lucrou para liberar vaga
 - **Expired (12h)**: só força fechamento se a posição já viu lucro (peakProfitPercent > 0)
 - **Stop loss (-15%)**: única exceção que fecha no prejuízo (proteção catastrófica)
 - Ao fechar, injeta 3 OKs no Pregão com `toToken: "USDC"` sempre
@@ -1025,8 +1029,8 @@ A SalaDeAula agora tem 3 abas:
 - **Preço POL**: ~$0.078 (real CoinGecko), gas oracle agora lê corretamente
 - **Gas estimado Polygon**: ~$0.005 (com POL real a $0.078, 280 gwei, 500k gas units)
 - **Circuit breaker**: não dispara mais por trades que nunca executaram
-- **Staircase WMATIC**: segurando posição sem lucro há horas (comportamento esperado: espera mercado virar)
-- **Próximo passo sugerido**: Staircase vender WMATIC stagnado após N horas sem lucro mínimo (feature request pendente)
+- **Staircase WMATIC**: ~~segurando posição sem lucro há horas~~ **RESOLVIDO**: stale force close após 30min
+- **Próximo passo sugerido**: ~~Staircase vender WMATIC stagnado~~ **RESOLVIDO**
 
 ---
 
@@ -1041,4 +1045,20 @@ A SalaDeAula agora tem 3 abas:
 - **Agora**: `MIN_TRADE_SIZE = $5`. `maxPositions = max(1, floor(saldoEfetivo * 0.9 / 5))`. Amount por trade capped em `MIN_TRADE_SIZE * 1.2 = $6`.
 - **Com $5.20**: 1 posição, trade de $4.68 — valor viável.
 - Arquivos alterados: `lib/agentes-do-pregão.ts` (removeu `MAX_POSITIONS`, adicionou `MIN_TRADE_SIZE`, allocation agora usa `min($6.00, saldo/vagas)`)
+
+### Testnet não afeta ranking dos agentes
+- **Fix**: `corretor.ts` agora pula `accountant.addReport()` em testnet quando o profit é apenas a fee simulada (≤ $0.02). Antes, cada swap simulado registrava -$0.015 de perda, destruindo streaks dos agentes.
+- **Efeito**: ArbitrageHunter estava com -34 streak e Liquidator com -22 streak. Agora streaks só mudam com trades reais na mainnet.
+- Arquivo: `lib/corretor.ts` (linha 100-125, guard `isTestnetSwap`)
+
+### Stale force close — posição sem lucro após 30min
+- **Fix**: `position-manager.ts` adicionou `STALE_FORCE_CLOSE_MS = 30min`. Posição que nunca lucrou após 30min é fechada para liberar vaga.
+- **Antes**: `STALE_NO_PROFIT_MS = 4h` segurava posição sem lucro por 4h bloqueando novos trades.
+- **Efeito**: WMATIC parado em $0.078 vai fechar após 30min, liberando slot para novo trade.
+- Arquivo: `lib/position-manager.ts` (linha 32, nova regra antes do stale existente)
+
+### Streak catastrófico — recuperação automática
+- **Fix**: `agentes-do-pregão.ts` agora recupera streaks < -15 para -3 em todo ciclo. Impede que agentes com streaks destruídos por bugs/testnet fiquem congelados para sempre.
+- **Efeito**: MarketMaker com -108 streak, ArbitrageHunter com -34, Liquidator com -22 voltam a ter confiança mínima para votar.
+- Arquivo: `lib/agentes-do-pregão.ts` (antes do emergency mode, streak reset automático)
 

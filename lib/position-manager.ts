@@ -30,6 +30,7 @@ const MAX_POSITION_AGE_MS = 12 * 60 * 60 * 1000;
 const POSITIONS_STORAGE_KEY = "arcflow_open_positions";
 const MAX_LOSS_PERCENT = -15;
 const STALE_NO_PROFIT_MS = 4 * 60 * 60 * 1000;
+const STALE_FORCE_CLOSE_MS = 30 * 60 * 1000; // 30min sem lucro → força fechamento
 
 // Tempo mínimo antes de considerar fechamento com lucro
 const MIN_PROFIT_HOLD_MS = 60 * 1000; // 1 minuto
@@ -120,6 +121,12 @@ class PositionManager {
     // Stop loss: se perda > MAX_LOSS_PERCENT, fecha imediatamente
     if (profitPercent < MAX_LOSS_PERCENT) {
       pregão.adicionarLog(`🛑 Stop loss: ${pos.boughtToken} perdeu ${profitPercent.toFixed(2)}% (limite ${MAX_LOSS_PERCENT}%) — fechando`);
+      return "close";
+    }
+
+    // Stale force close: 30min sem nunca lucrar → fecha para liberar vaga
+    if (age > STALE_FORCE_CLOSE_MS && pos.peakProfitPercent <= 0) {
+      pregão.adicionarLog(`⏰ ${pos.boughtToken}: ${(age / 60000).toFixed(0)}min sem lucro — forçando fechamento para liberar vaga`);
       return "close";
     }
 
