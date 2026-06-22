@@ -17,6 +17,7 @@ import { resumeFromPanic, setTestnetMode } from "@/lib/circuit-breaker"
 import { AGENTES_NOMES, AGENTE_CORES, getPregãoAllowedBalance, setPregãoAllowedBalance } from "@/lib/agentes-do-pregão"
 import { positionManager } from "@/lib/position-manager"
 import { narrador } from "@/lib/narrator"
+import { contratante } from "@/lib/contratante"
 
 const COR_PREGÃO = "#d4a574"
 const COR_FUNDO = "#0f172a"
@@ -56,6 +57,9 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
   const [openPositions, setOpenPositions] = useState(0)
   const [openPositionsData, setOpenPositionsData] = useState<ReturnType<typeof positionManager.getOpenPositions>>([])
   const [recentTrades, setRecentTrades] = useState<ReturnType<typeof positionManager.getRecentTrades>>([])
+  const [contratanteState, setContratanteState] = useState(contratante.getState())
+  const [contratanteAtivo, setContratanteAtivo] = useState(false)
+  const contratanteTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const redeRef = useRef(rede)
   const balanceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -303,6 +307,51 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     atualizarTudo()
   }
 
+  // ─── Contratante (JobRobot) ─────────────────────────────
+  useEffect(() => {
+    contratante.onChange(() => setContratanteState(contratante.getState()))
+  }, [])
+
+  useEffect(() => {
+    if (!contratanteAtivo) {
+      if (contratanteTimerRef.current) clearInterval(contratanteTimerRef.current)
+      return
+    }
+    const netRede = NETWORKS[redeRef.current as NetworkKey]
+    if (netRede?.isTestnet !== true) {
+      addLog("⚠️ Contratante só funciona em testnet (Arc)")
+      setContratanteAtivo(false)
+      return
+    }
+    const run = async () => {
+      const { ok, msg } = await contratante.tryExecuteCycle()
+      addLog(msg)
+    }
+    run()
+    contratanteTimerRef.current = setInterval(run, 60000)
+    return () => { if (contratanteTimerRef.current) clearInterval(contratanteTimerRef.current) }
+  }, [contratanteAtivo, rede])
+
+  const alternarContratante = () => {
+    const netRede = NETWORKS[redeRef.current as NetworkKey]
+    if (netRede?.isTestnet !== true) {
+      addLog("⚠️ Contratante só funciona em testnet (Arc)")
+      return
+    }
+    if (!contratanteAtivo) {
+      const pk = localStorage.getItem("arcflow_private_key")
+      if (!pk) {
+        addLog("❌ Contratante: private key não encontrada no localStorage")
+        return
+      }
+      contratante.setPrivateKey(pk)
+      addLog("🤖 Contratante iniciado — criando jobs a cada 60s na Arc testnet")
+    } else {
+      addLog("⏹️ Contratante parado")
+    }
+    setContratanteAtivo(!contratanteAtivo)
+  }
+
   const corStatus = (status: string) => {
     switch (status) {
       case "preparando": return "#fbbf24"
@@ -460,6 +509,43 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
           ))}
         </div>
       </div>
+
+      {/* 🤖 Contratante — Job Robot (Arc testnet only) */}
+      {NETWORKS[redeRef.current as NetworkKey]?.isTestnet && (
+        <div style={{ marginBottom: 12, background: "rgba(59,130,246,0.05)", borderRadius: 12, padding: 12, border: "1px solid rgba(59,130,246,0.15)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <span style={{ fontSize: 20 }}>📋</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, color: "#60a5fa", fontWeight: "bold" }}>Contratante — Job Robot</div>
+              <div style={{ fontSize: 9, color: "#94a3b8" }}>
+                {contratanteState.jobsCriados > 0
+                  ? `${contratanteState.jobsCriados} jobs criados • ${contratanteState.txCount} transações`
+                  : "Cria jobs ERC-8183 na Arc testnet automaticamente"}
+              </div>
+            </div>
+            <button onClick={alternarContratante} style={{
+              padding: "6px 12px", fontSize: 10, fontWeight: "bold",
+              background: contratanteAtivo ? "#ef4444" : "#3b82f6", color: "#fff",
+              border: "none", borderRadius: 6, cursor: "pointer"
+            }}>
+              {contratanteAtivo ? "⏹️ Parar" : "▶️ Iniciar"}
+            </button>
+          </div>
+          {contratanteState.ultimoResultado && (
+            <div style={{ fontSize: 9, color: contratanteState.ultimoError ? "#ef4444" : "#94a3b8", padding: "4px 8px", background: "rgba(0,0,0,0.3)", borderRadius: 6 }}>
+              {contratanteState.ultimoResultado}
+              {contratanteState.ultimoError && (
+                <div style={{ color: "#ef4444", marginTop: 2 }}>⚠️ {contratanteState.ultimoError}</div>
+              )}
+            </div>
+          )}
+          {contratanteState.ultimoJobId && (
+            <div style={{ fontSize: 8, color: "#6b7280", marginTop: 4 }}>
+              Último job: #{contratanteState.ultimoJobId} • Ciclo: {contratanteState.cicloAtual}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 📦 Carteira — Posições Abertas + Últimas Operações */}
       <div style={{ marginBottom: 12, background: "rgba(212,165,116,0.05)", borderRadius: 12, padding: 12, border: "1px solid rgba(212,165,116,0.15)" }}>

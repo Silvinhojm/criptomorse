@@ -1312,6 +1312,13 @@ Browser → /api/lifi/quote (GET) → li.quest/v1/quote (server-side)
 - **Novo**: `lib/position-manager.ts:getRecentTrades(n)` — retorna últimas N posições ordenadas por timestamp
 - **Dados atualizados a cada 8s via polling do `positionManager`
 
+#### JobRobot (Contratante) — Arc testnet
+- **Novo**: `lib/job-robot.ts` — robô autônomo que cria jobs ERC-8183 na Arc testnet via `ethers.Wallet` (private key, sem MetaMask). Ciclo: createJob → approve + setBudget → fund → submit → complete (5-6 transações por job)
+- **Novo**: `lib/contratante.ts` — gerenciador do ciclo de jobs com estado reativo; notifica dashboard via `onChange()`
+- **Novo**: `PregãoDashboard.tsx` — botão Iniciar/Parar visível só na testnet, mostra jobs criados, transações, último resultado
+- **Descrições**: 8 descrições diferentes rotacionadas a cada ciclo (análise, market making, wave detection, etc.)
+- **Budget**: $0.50 USDC por job (configurável via `contratante.setBudget()`)
+
 #### Outros fixes
 - **jumper-learn.ts**: consulta artigos via `/api/narrator/learn` (proxy) em vez de fetch direto para `jumper.xyz` (CORS).
 - **PregãoDashboard.tsx**: removeu static import de `pregueiro.ts`; usa `PREGUEIROS_DISPLAY` inline (resolve HMR crash).
