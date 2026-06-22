@@ -298,6 +298,10 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   gridTrader.init(redeAtual)
 
   if (!net.isTestnet) {
+    // Garantir que o provider está na rede correta antes de ler saldos
+    if (realSwap.getNetworkKey() !== redeAtual) {
+      await realSwap.switchNetwork(redeAtual)
+    }
     // Multi-chain: unified balance across all chains
     const isMultiUsdc = isMultiChain ? await unifiedBalance.initialize(realSwap.getAddress()).then(() => unifiedBalance.refreshAllBalances()).then(b => Object.values(b).reduce((s, v) => s + v, 0)).catch(() => 0) : 0
     const balUSDC = isMultiChain ? isMultiUsdc : realSwap.getBalance("USDC")
