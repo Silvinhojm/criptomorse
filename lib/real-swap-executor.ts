@@ -252,6 +252,16 @@ class RealSwapExecutor {
   private provider: ethers.JsonRpcProvider | null = null;
   private signer: ethers.Signer | null = null;
   private networkKey: NetworkKey = "arc";
+  private BACKUP_RPCS: Record<string, string[]> = {
+    polygon: [
+      "https://polygon.llamarpc.com",
+      "https://polygon-rpc.com",
+      "https://rpc-mainnet.maticvigil.com",
+    ],
+    base: [],
+    ethereum: [],
+    arbitrum: [],
+  }
   private userAddress: string = "";
   private privateKey: string = "";
   private tokenBalances: Map<TokenSymbol, TokenBalance> = new Map();
@@ -364,24 +374,17 @@ class RealSwapExecutor {
     console.log(`🔀 RealSwapExecutor switch: ${net.name}`);
   }
 
-  // RPCs de backup por rede (usados quando o primário falha)
-  private BACKUP_RPCS: Record<string, string[]> = {
-    polygon: [
-      "https://polygon.llamarpc.com",
-      "https://polygon-rpc.com",
-      "https://rpc-mainnet.maticvigil.com",
-    ],
-    base: [],
-    ethereum: [],
-    arbitrum: [],
-  }
-
   // Atualizar todos os saldos de tokens da rede atual
   async refreshAllBalances(): Promise<Map<TokenSymbol, TokenBalance>> {
-    if (!this.provider || !this.userAddress) return this.tokenBalances;
+    if (!this.userAddress) return this.tokenBalances;
 
     const net = NETWORKS[this.networkKey];
     this.tokenBalances.clear();
+
+    const rpcsParaTentar = [net.rpcUrl, ...(this.BACKUP_RPCS[this.networkKey] ?? [])]
+    if (typeof window !== 'undefined' && (window as any).ethereum) {
+      rpcsParaTentar.push('metamask')
+    }
 
     const fetchFrom = async (prov: ethers.Provider): Promise<number> => {
       let nonZero = 0
@@ -406,29 +409,18 @@ class RealSwapExecutor {
       return nonZero
     }
 
-    const nonZero = await fetchFrom(this.provider)
-    if (nonZero > 0) return this.tokenBalances
-
-    // Fallback 1: RPCs de backup
-    const backups = this.BACKUP_RPCS[this.networkKey] ?? []
-    for (const rpc of backups) {
+    for (const rpc of rpcsParaTentar) {
       try {
-        const bp = new ethers.JsonRpcProvider(rpc)
-        const nz = await fetchFrom(bp)
-        if (nz > 0) {
-          console.log(`🔁 Balance refresh fallback: ${rpc}`)
-          return this.tokenBalances
+        if (rpc === 'metamask') {
+          const mmProvider = new ethers.BrowserProvider((window as any).ethereum)
+          const nz = await fetchFrom(mmProvider)
+          if (nz > 0) { console.log('🔁 Balance via MetaMask'); break }
+        } else {
+          const bp = new ethers.JsonRpcProvider(rpc, undefined, { staticNetwork: true })
+          const nz = await fetchFrom(bp)
+          if (nz > 0) { console.log(`🔁 Balance via ${rpc.replace(/https?:\/\//, '')}`); break }
         }
       } catch { continue }
-    }
-
-    // Fallback 2: MetaMask (se disponível)
-    if (typeof window !== 'undefined' && (window as any).ethereum) {
-      try {
-        const mmProvider = new ethers.BrowserProvider((window as any).ethereum)
-        const mmOk = await fetchFrom(mmProvider)
-        if (mmOk > 0) console.log('🔁 Balance refresh fallback: MetaMask provider')
-      } catch { /* MetaMask fallback falhou */ }
     }
 
     return this.tokenBalances;
