@@ -298,9 +298,13 @@ ORDEM_TIMEOUT_MS = 120000  // 2min — ordem "preparando"/"pronto"/"executando" 
 //   retornoEsperado = (confiancaMedia / 100) * (volatilidade24h / 100)
 //   tradeMinimo = (MIN_PROFIT_REAL + gasCost) / max(0.001, retornoEsperado - spreadPct)
 //   Só executa se valorFinal >= tradeMinimo (garante $0.05 de lucro real)
+//   Stable-stable: bloqueado se retornoUsd < gasCost × 1.5 (retorno não cobre gas)
 MIN_PROFIT_REAL = 0.05  // Lucro mínimo real desejado por trade (USD)
-MIN_TRADE_SIZE = 5      // $ mínimo por trade para cobrir gas + spread + $0.05 lucro
-TRADE_SPREAD_PCT = 0.005  // 0.5% de spread estimado
+MIN_TRADE_SIZE = 20     // $ mínimo por trade em mainnet (Polygon/Base/Arb); $50 em ETH; $2 em testnet
+TRADE_SPREAD_PCT = 0.005  // 0.5% base, dinâmico: max(0.001, 0.005 - vol24h × 0.04)
+
+// Votos BUY+SELL simultâneos do mesmo agente no mesmo par são removidos (blindagem)
+// Pares com saldo do from-token < $1 são filtrados antes da análise
 ```
 
 ### 4.6 Agent Learning (corretor.ts + accountant.ts)
@@ -364,6 +368,8 @@ MIN_BALANCE_THRESHOLD = 0.50  // $0.50 — saldos abaixo disso são ignorados no
 | `Pregão.ordens` | Ordens pendentes (mas a blockchain continua processando) |
 | `QuantumWave.wave` | Onda quântica atual (recriada no próximo ciclo) |
 | `Pregueiros.historico` | Histórico de preços dos pregueiros (recomeça) |
+| `Pregão.sessionStats` | Estatísticas da sessão (trades/wins/losses/profit) — zera no F5 |
+| | Dashboard mostra métricas por sessão + acumuladas lado a lado |
 
 ### Recuperação pós-F5:
 1. `positionManager` carrega posições abertas do localStorage
