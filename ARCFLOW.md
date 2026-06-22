@@ -1298,6 +1298,10 @@ Browser → /api/lifi/quote (GET) → li.quest/v1/quote (server-side)
 - **Modificado**: `lib/real-swap-executor.ts:refreshAllBalances()` — agora cria provider fresco a cada ciclo (`new ethers.JsonRpcProvider(net.rpcUrl)` via proxy), com cascata de RPCs fallback (llamarpc, polygon-rpc, maticvigil) e MetaMask BrowserProvider como último recurso.
 - **CCTP bridge**: usa `caixa.getSaldo()` (cache de 10s) em vez de `unifiedBalance` diretamente, garantindo dados frescos.
 
+#### correção automática de entryPrice corrompido
+- **Problema**: posições WETH antigas com `entryPrice = $559.87` (preço irreal, WETH real ~$1850). O sistema detectava `profitPercent > 100%` e pulava a venda, deixando a posição presa para sempre.
+- **Fix**: `lib/agentes-do-pregão.ts:1236-1243` — quando detecta `profitPercent > 100%` e `amountPaid > 0 && amountBought > 0`, recalcula: `entryPrice = amountPaid / amountBought` (preço real do swap), salva a posição corrigida via `positionManager.savePositions()`, e prossegue com o fluxo normal de fechamento. `position-manager.ts:savePositions()` tornado `public`.
+
 #### LI.FI Quote Proxy (CORS)
 - **Novo**: `app/api/lifi/quote/route.ts` — proxy GET para `li.quest/v1/quote`, mesmo padrão do RPC proxy
 - **Modificado**: `lib/lifi-executor.ts:getQuote()` — fetch para `/api/lifi/quote` em vez de `https://li.quest/v1/quote`

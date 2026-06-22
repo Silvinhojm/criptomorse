@@ -35,10 +35,11 @@ This version has breaking changes — APIs, conventions, and file structure may 
 10. **caixa.ts** — cache 10s `getSaldo()`
 11. **escriturario** — `switchNetwork()` + unified balance fallback em mainnet
 12. **pregão** — `okAgentes` sorted by confidence >= 30%
+13. **entryPrice corrompido corrigido** — `agentes-do-pregão.ts:1236`: quando `profitPercent > 100%`, recalcula `entryPrice = amountPaid / amountBought` (swap real), salva posição corrigida via `positionManager.savePositions()`
 
 ### Current State
-- **Polygon Mainnet**: wallet zerada ($0.00 USDC, <$0.001 POL). Bot parou de trade por falta de saldo.
-- **Arc Testnet**: rodando mas perdendo $0.015/trade em USDC→EURC (spread come lucro). +19 trades no total.
+- **Polygon Mainnet**: wallet $23.30 USDC, $2.085 POL. Bot rodando com LI.FI proxy (CORS resolvido). 25 trades executados, $116.95 bruto / ~$18.77 líquido. entryPrice corrigido automaticamente.
+- **Arc Testnet**: rodando mas perdendo $0.015/trade em USDC→EURC (spread come lucro).
 - **CCTP Bridge**: ainda não testado com sucesso
 - **LI.FI**: `Failed to fetch` resolvido com proxy `/api/lifi/quote`
 - **Ver deploy automático no Vercel****
