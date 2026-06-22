@@ -54,6 +54,8 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
   const [cicloAtivo, setCicloAtivo] = useState(false)
   const [cicloIntervalo, setCicloIntervalo] = useState(10)
   const [openPositions, setOpenPositions] = useState(0)
+  const [openPositionsData, setOpenPositionsData] = useState<ReturnType<typeof positionManager.getOpenPositions>>([])
+  const [recentTrades, setRecentTrades] = useState<ReturnType<typeof positionManager.getRecentTrades>>([])
   const redeRef = useRef(rede)
   const balanceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -161,6 +163,8 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       setWalletBalance(usdc)
       if (usdc > 0) setDepositAmount(Math.floor(usdc).toString())
       setOpenPositions(positionManager.getOpenPositions().length)
+      setOpenPositionsData(positionManager.getOpenPositions())
+      setRecentTrades(positionManager.getRecentTrades(5))
       const nativeUsd = await realSwap.refreshNativeBalance()
       setNativeBalance(nativeUsd)
       if (nativeUsd < 0.05 && nativeUsd > 0 && !netConf.isTestnet) {
@@ -454,6 +458,93 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
               {ag.icone} {ag.nome}
             </span>
           ))}
+        </div>
+      </div>
+
+      {/* 📦 Carteira — Posições Abertas + Últimas Operações */}
+      <div style={{ marginBottom: 12, background: "rgba(212,165,116,0.05)", borderRadius: 12, padding: 12, border: "1px solid rgba(212,165,116,0.15)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <span style={{ fontSize: 20 }}>🤖</span>
+          <div>
+            <div style={{ fontSize: 11, color: "#fff", fontWeight: "bold" }}>Olá! Aqui está sua carteira</div>
+            <div style={{ fontSize: 9, color: "#94a3b8" }}>
+              {openPositions > 0
+                ? `Você tem ${openPositions} posição${openPositions > 1 ? "ões" : ""} aberta${openPositions > 1 ? "s" : ""} — veja os detalhes abaixo`
+                : "Nenhuma posição aberta no momento. O bot vai comprar quando encontrar uma oportunidade viável."}
+            </div>
+          </div>
+        </div>
+
+        {/* Posições abertas */}
+        {openPositionsData.length > 0 && (
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 10, color: "#d4a574", marginBottom: 6, fontWeight: "bold" }}>📦 POSIÇÕES ABERTAS</div>
+            {openPositionsData.map((pos, i) => {
+              const profitPct = pos.currentProfitPercent ?? ((pos.currentPrice - pos.entryPrice) / pos.entryPrice) * 100
+              const profitColor = profitPct >= 0 ? "#22c55e" : "#ef4444"
+              return (
+                <div key={pos.id} style={{
+                  background: "rgba(0,0,0,0.3)", borderRadius: 8, padding: "8px 10px", marginBottom: 4,
+                  borderLeft: `3px solid ${profitColor}`
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: 16 }}>{pos.boughtToken === "WETH" ? "ETH" : pos.boughtToken}</span>
+                      <span style={{ fontSize: 9, color: "#6b7280" }}>{pos.networkKey}</span>
+                    </div>
+                    <span style={{ color: profitColor, fontWeight: "bold", fontSize: 12 }}>
+                      {profitPct >= 0 ? "+" : ""}{profitPct.toFixed(2)}%
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", gap: 16, marginTop: 4, fontSize: 9, color: "#94a3b8" }}>
+                    <span>💰 {pos.amountBought.toFixed(6)} {pos.boughtToken}</span>
+                    <span>📊 Entry: ${pos.entryPrice.toFixed(2)}</span>
+                    <span>💵 Investido: ${pos.amountPaid.toFixed(2)}</span>
+                    <span>⏱️ {tempoRelativo(pos.entryTimestamp)}</span>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {/* Últimas 5 operações */}
+        <div>
+          <div style={{ fontSize: 10, color: "#d4a574", marginBottom: 6, fontWeight: "bold" }}>🕐 ÚLTIMAS OPERAÇÕES</div>
+          {recentTrades.length === 0 ? (
+            <div style={{ fontSize: 9, color: "#6b7280", padding: "4px 0" }}>
+              Nenhuma operação registrada ainda. Os trades aparecerão aqui conforme forem executados.
+            </div>
+          ) : (
+            recentTrades.map((t, i) => {
+              const isClosed = t.status === "closed"
+              const profitPct = isClosed ? (t.profitPercent ?? 0) : (t.currentProfitPercent ?? ((t.currentPrice - t.entryPrice) / t.entryPrice) * 100)
+              const profitColor = profitPct >= 0 ? "#22c55e" : "#ef4444"
+              return (
+                <div key={t.id} style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "5px 8px", marginBottom: 2,
+                  background: isClosed ? "rgba(34,197,94,0.05)" : "rgba(255,255,255,0.03)",
+                  borderRadius: 6, fontSize: 9
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span>{isClosed ? "✅" : "🔄"}</span>
+                    <span style={{ color: "#fff", fontWeight: "bold" }}>{t.paidToken}→{t.boughtToken}</span>
+                    <span style={{ color: "#6b7280" }}>{t.networkKey}</span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ color: "#6b7280" }}>${t.amountPaid.toFixed(2)}</span>
+                    <span style={{ color: profitColor, fontWeight: "bold" }}>
+                      {isClosed
+                        ? `${profitPct >= 0 ? "+" : ""}$${(t.profitUsd ?? 0).toFixed(4)}`
+                        : `${profitPct >= 0 ? "+" : ""}${profitPct.toFixed(2)}%`}
+                    </span>
+                    <span style={{ color: "#6b7280" }}>{tempoRelativo(isClosed ? (t.closeTimestamp ?? t.entryTimestamp) : t.entryTimestamp)}</span>
+                  </div>
+                </div>
+              )
+            })
+          )}
         </div>
       </div>
 

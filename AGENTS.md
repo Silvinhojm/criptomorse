@@ -36,9 +36,11 @@ This version has breaking changes — APIs, conventions, and file structure may 
 11. **escriturario** — `switchNetwork()` + unified balance fallback em mainnet
 12. **pregão** — `okAgentes` sorted by confidence >= 30%
 13. **entryPrice corrompido corrigido** — `agentes-do-pregão.ts:1236`: quando `profitPercent > 100%`, recalcula `entryPrice = amountPaid / amountBought` (swap real), salva posição corrigida via `positionManager.savePositions()`
+14. **Painel de carteira no dashboard** — `PregãoDashboard.tsx`: novo card com 🤖 robô explicativo, posições abertas (token, entry, profit%), últimas 5 operações (status, valor, lucro). Dados atualizados a cada 8s via polling do `positionManager`.
+15. **getRecentTrades()** — `position-manager.ts:182`: novo método que retorna as últimas N posições (abertas + fechadas) ordenadas por timestamp.
 
 ### Current State
-- **Polygon Mainnet**: wallet $23.30 USDC, $2.085 POL. Bot rodando com LI.FI proxy (CORS resolvido). 25 trades executados, $116.95 bruto / ~$18.77 líquido. entryPrice corrigido automaticamente.
+- **Polygon Mainnet**: wallet $23.30 USDC, $2.085 POL. Bot rodando com LI.FI proxy (CORS resolvido). 25 trades executados, $116.95 bruto / ~$18.77 líquido. entryPrice corrigido automaticamente. Dashboard agora mostra posições abertas + últimas 5 operações.
 - **Arc Testnet**: rodando mas perdendo $0.015/trade em USDC→EURC (spread come lucro).
 - **CCTP Bridge**: ainda não testado com sucesso
 - **LI.FI**: `Failed to fetch` resolvido com proxy `/api/lifi/quote`

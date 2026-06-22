@@ -1307,6 +1307,11 @@ Browser → /api/lifi/quote (GET) → li.quest/v1/quote (server-side)
 - **Modificado**: `lib/lifi-executor.ts:getQuote()` — fetch para `/api/lifi/quote` em vez de `https://li.quest/v1/quote`
 - **Impacto**: Elimina `TypeError: Failed to fetch` em chamadas LI.FI no navegador
 
+#### Painel de posições no dashboard
+- **Novo**: `PregãoDashboard.tsx` — card com 🤖 robô explicativo mostrando posições abertas (token, entry price, profit%) e últimas 5 operações (status, valor, lucro)
+- **Novo**: `lib/position-manager.ts:getRecentTrades(n)` — retorna últimas N posições ordenadas por timestamp
+- **Dados atualizados a cada 8s via polling do `positionManager`
+
 #### Outros fixes
 - **jumper-learn.ts**: consulta artigos via `/api/narrator/learn` (proxy) em vez de fetch direto para `jumper.xyz` (CORS).
 - **PregãoDashboard.tsx**: removeu static import de `pregueiro.ts`; usa `PREGUEIROS_DISPLAY` inline (resolve HMR crash).

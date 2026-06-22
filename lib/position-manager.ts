@@ -179,6 +179,12 @@ class PositionManager {
     return Array.from(this.positions.values());
   }
 
+  getRecentTrades(n: number = 5): OpenPosition[] {
+    return Array.from(this.positions.values())
+      .sort((a, b) => (b.closeTimestamp ?? b.entryTimestamp) - (a.closeTimestamp ?? a.entryTimestamp))
+      .slice(0, n)
+  }
+
   // Buscar preco do token (cache 15s)
   async fetchTokenPrice(token: TokenSymbol): Promise<number> {
     const cached = this.priceCache.get(token);
