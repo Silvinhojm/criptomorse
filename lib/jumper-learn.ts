@@ -13,12 +13,14 @@ class JumperLearn {
 
   private async fetchArticles(): Promise<LearnArticle[]> {
     try {
-      const res = await fetch("https://jumper.xyz/pt/learn?tab=all", {
+      const res = await fetch("/api/narrator/learn", {
         signal: AbortSignal.timeout(8000),
-        headers: { "User-Agent": "ArcflowAgent/1.0" },
       })
-      const html = await res.text()
-      return this.parseHtml(html)
+      const body = await res.json()
+      if (body.articles && body.articles.length > 0) {
+        return body.articles as LearnArticle[]
+      }
+      return this.getDefaultArticles()
     } catch {
       return this.getDefaultArticles()
     }

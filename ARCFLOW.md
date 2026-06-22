@@ -739,6 +739,18 @@ Se for adicionar um novo token, atualizar em **todos** os lugares:
 - Mainnet: verificar se pairPriceFeed está retornando preços diferentes de 1.0
 - Verificar se há liquidez real no par via LI.FI
 
+### Bug (22/06): "Compra (stable→volátil) destrói streak dos agentes"
+- `corretor.ts:80`: `profit = 0` em abertura de posição
+- `accountant.ts:147-153`: profit ≤ 0 conta como derrota → streak negativo
+- Cada compra WMATIC dava -1 streak, depois de 6 compras streak = -6, confiança 15%
+- **Fix**: `isBuyOpening` flag skipping accountant.addReport + reward + circuit breaker para compras
+- Agentes só são avaliados na venda (volátil→stable), onde o lucro é real
+
+### Bug (22/06): "minViableTrade com bypass para trades < $5"
+- `agentes-do-pregão.ts:1098`: condição `valorFinal >= 5` impedia cheque de viabilidade para micro-trades
+- Trade de $2.40 na Polygon ($0.08 gas) executava sem verificar se retorno cobre custos
+- **Fix**: `valorFinal >= minSizeForCheck` onde `minSizeForCheck = getMinTradeSize(pairNet)` ($2 p/ Polygon)
+
 ---
 
 ## 16. COMANDOS ÚTEIS
@@ -1040,67 +1052,6 @@ Pregão (verificarOrdem):
 | `lib/pregão.ts` | `verificarOrdem` aceita `Grid:` prefix com LIMIAR=1 |
 | `lib/agentes-do-pregão.ts` | Grid envia OKs direto ao Pregão; grid awareness reduz confiança de agentes |
 
----
-
-## 26. ESTRATÉGIA — GRID ADAPTATIVO COM ZONA NEUTRA
-
-### 26.1 Conceito
-
-O Grid Adaptativo substitui o antigo sistema de grid fixo. Em vez de níveis estáticos ao redor do preço de inicialização, o grid agora **deriva, salta e se reequilibra** conforme o mercado se move.
-
-```
-Zona Neutra (centro do grid)
-  ├── Preço atual = centro do grid
-  ├── 15 níveis (7-8 de compra abaixo, 7-8 de venda acima)
-  ├── Espaçamento DINÂMICO baseado na volatilidade do token
-  │   (vol < 0.3% → 0.25%, vol < 0.5% → 0.3%, vol < 1% → 0.5%, etc.)
-  └── Cada nível = $5, micro-ganhos na volatilidade
-
-Drift (deriva suave)
-  ├── Se preço fica 60%+ do tempo acima do centro → centro SOBE devagar
-  ├── Se preço fica 60%+ do tempo abaixo do centro → centro DESCE devagar
-  └── Velocidade: 12% da distância por ciclo — suave, sem solavancos
-
-Red Line (linha vermelha)
-  ├── Se preço escapa 2.2× além do nível mais externo → RED LINE
-  ├── Grid pula para o preço atual (novo centro)
-  ├── Cria nível "catch-up" na direção do salto
-  └── Cooldown de 3min entre saltos (evita whipsaw)
-
-Auto-Rebalance
-  ├── Quando um nível de COMPRA executa → cria novo nível de VENDA 1.5 espaçamento acima
-  ├── Quando um nível de VENDA executa → cria novo nível de COMPRA 1.5 espaçamento abaixo
-  ├── Grid sempre mantém ~15 níveis ativos
-  └── Posições executadas são preservadas durante re-centerings
-```
-
-### 26.2 Fluxo de Decisão
-
-```
-Grid nível atingido? 
-  ├── Sim → valida saldo + posições → OK direto ao Pregão (pula agentes)
-  │        Pregão aceita com LIMIAR=1 (Grid: prefix)
-  └── Não → agentes votam normalmente
-           ├── Se grid ativo no token → confiança dos agentes REDUZIDA (-30%)
-           ├── Se grid saltou → confiança NORMAL
-           └── Se grid obsoleto → confiança AUMENTADA
-
-Pregão (verificarOrdem):
-  ├── Grid: prefix → LIMIAR=1, pula mínimo de 40% confiança
-  ├── Agente normal → LIMIAR=2, mínimo 40% em mainnet
-  └── Ambos → max 5 ordens ativas simultâneas
-```
-
-### 26.3 Arquivos Alterados
-
-| Arquivo | Mudança |
-|---------|---------|
-| `lib/grid-trading.ts` | Reescrevendo: grid adaptativo (15 níveis, spacing dinâmico, drift, red line, auto-rebalance) |
-| `lib/pregão.ts` | `verificarOrdem` aceita `Grid:` prefix com LIMIAR=1 |
-| `lib/agentes-do-pregão.ts` | Grid envia OKs direto ao Pregão; grid awareness reduz confiança de agentes |
-
----
-
 ## 27. ESTRATÉGIA — MICRO-TRADES POR QUANTIDADE (EXCETO ETH)
 
 ### 27.1 Conceito
@@ -1263,11 +1214,11 @@ Ciclo multi-chain:
 - `agentes-do-pregão.ts`: combina `TRADING_PAIRS` de todas as redes em `multiPairs[]`
 - Cada voto de agente carrega `network: pairNet` (rede do par, não rede primária)
 - `corretor.ts`: `switchNetwork()` antes de executar se a rede for diferente
-- Capital alocado via `unifiedBalance` (saldo USDC consolidado entre chains)
+- Capital alocado via `unifiedBalance` (saldo USDC consolidado entre chains), com fallback para `realSwap.getBalance()` (wallet balance) quando maior
 - Grid trading desativado em modo multi-chain (grid é por rede)
 
 **Arquivos alterados:**
-- `lib/agentes-do-pregão.ts` — `executarCicloAgentes()` aceita "all", analisa multi-pairs
+- `lib/agentes-do-pregão.ts` — `executarCicloAgentes()` aceita "all", analisa multi-pairs; wallet balance priority sobre unified balance
 - `lib/corretor.ts` — `executar()` alterna rede via `realSwap.switchNetwork()`
 - `app/components/PregãoDashboard.tsx` — chama `executarCicloAgentes("all")`
 
@@ -1275,12 +1226,67 @@ Ciclo multi-chain:
 - Dezenas de pares voláteis em 3+ chains vs ~5 pares em 1 chain
 - Onda quântica capta momentum onde ele é mais forte (cross-chain)
 - Capital unificado não fica parado: USDC vai para a chain com melhor oportunidade
+- Wallet balance real tem prioridade sobre unified balance (evita sub-alocação quando Circle Kit retorna saldo menor)
+
+### 27.10 RPC Proxy (CORS Bypass)
+
+O Next.js API route `/api/rpc-proxy` atua como intermediário para todas as chamadas RPC
+(Polygon, Ethereum, etc.), resolvendo bloqueios de CORS que ocorrem ao chamar RPCs
+diretamente do navegador.
+
+```
+Browser → /api/rpc-proxy (POST) → RPC externa (polygon-rpc.com, etc.)
+  ├── req.body: { rpcUrl: string, body: JsonRpcPayload }
+  ├── Timeout: 15s
+  └── Erro: retorna 502 com mensagem
+```
+
+**Uso em `real-swap-executor.ts`:**
+- `_createProxyProvider(rpcUrl)` cria um `ethers.JsonRpcProvider` que roteia todas as chamadas via `/api/rpc-proxy`
+- Todo provider criado em `switchNetwork()` ou `refreshAllBalances()` usa o proxy
+- Evita CORS sem precisar de extensões de navegador ou configurar proxy reverso
+
+**Arquivos:**
+- `app/api/rpc-proxy/route.ts` — endpoint POST que encaminha chamadas RPC
+- `lib/real-swap-executor.ts` — `_createProxyProvider()` usa fetch para o proxy em vez de ethers.js direto
 
 ---
 
-## 28. CHANGELOG — 28/06/2026
+## 28. CHANGELOG
 
-### Multi-Chain Scanning
+### 22/06/2026 — Bug Fixes, Wallet Balance Priority, RPC Proxy
+
+#### Profit Streak não é mais destruído por compras
+- **Problema GRAVE**: `lib/corretor.ts` — ao executar uma compra (stable → volátil), profit era 0 (preço de entrada = preço de saída no mesmo instante). Esse profit=0 era reportado ao `accountant.addReport()`, que trata profit ≤ 0 como loss, decrementando o streak de TODOS os agentes que votaram a favor. Após 6 compras, streaks iam a -6, levando semanas para se recuperar.
+- **Fix**: `lib/corretor.ts` — `executar()` detecta `isBuyOpening` (fromToken é stable e toToken é volátil) com `BUY_STABLES.includes(fromToken) && VOLATILE_TOKENS.includes(toToken)`. Se for compra, **não chama** `accountant.addReport()` nem `processarRecompensa()` nem `circuitBreaker.recordTrade()`. Profit só é contabilizado no fechamento da posição (venda).
+
+#### minViableTrade com bypass para micro-trades
+- **Problema**: `lib/agentes-do-pregão.ts:1098` — `minViableTrade` usava valor hardcoded `>= 5` (dólares) mesmo em redes de gas barato como Polygon ($0.08 de gas).
+- **Fix**: Substituído por `minSizeForCheck = getMinTradeSize(pairNet)` — retorna `$2` em redes não-ETH. Micro-trades de $2+ são viáveis com gas de $0.08 (Polygon).
+
+#### Wallet balance tem prioridade sobre Unified Balance
+- **Problema**: `lib/agentes-do-pregão.ts` — em multi-chain mode, capital alocado via `unifiedBalance` (Circle Kit) retornava $6.37 enquanto a wallet real tinha $23.68. Isso sub-alocava capital, impedindo trades maiores.
+- **Fix**: `lib/agentes-do-pregão.ts:328` — quando `walletBalance` (via `realSwap.getBalance()`) é MAIOR que `unifiedBalance`, usa o wallet balance. `Math.max(walletBalance, unifiedBalance)`. Documentado em ARCFLOW.md 27.9.
+
+#### RPC Proxy para contornar CORS
+- **Novo**: `app/api/rpc-proxy/route.ts` — endpoint POST que recebe `{ rpcUrl, body }`, faz fetch para a RPC externa e retorna o resultado. Timeout de 15s.
+- **Novo**: `lib/real-swap-executor.ts` — `_createProxyProvider(rpcUrl)` cria `ethers.JsonRpcProvider` personalizado que roteia chamadas via `/api/rpc-proxy` em vez de chamar a RPC diretamente.
+- **Impacto**: Todas as chamadas RPC (balance, gas, etc.) agora passam pelo proxy, eliminando erros de CORS no navegador.
+
+#### refreshAllBalances com RPC fallback chain
+- **Modificado**: `lib/real-swap-executor.ts:refreshAllBalances()` — agora cria provider fresco a cada ciclo (`new ethers.JsonRpcProvider(net.rpcUrl)` via proxy), com cascata de RPCs fallback (llamarpc, polygon-rpc, maticvigil) e MetaMask BrowserProvider como último recurso.
+- **CCTP bridge**: usa `caixa.getSaldo()` (cache de 10s) em vez de `unifiedBalance` diretamente, garantindo dados frescos.
+
+#### Outros fixes
+- **jumper-learn.ts**: consulta artigos via `/api/narrator/learn` (proxy) em vez de fetch direto para `jumper.xyz` (CORS).
+- **PregãoDashboard.tsx**: removeu static import de `pregueiro.ts`; usa `PREGUEIROS_DISPLAY` inline (resolve HMR crash).
+- **caixa.ts**: cache de 10s em `getSaldo()` — Circle Kit `getBalances()` chamado 12x/min por ciclo; cache reduz para 6x/min sem perda de dados.
+- **escriturario.ts**: `switchNetwork()` antes de ler saldos; fallback para unified balance em mainnet também (não só testnet).
+- **okAgentes sorted by confidence**: `pregão.ts:160-165` — ordena agentes por confiança decrescente e filtra >= 30% antes de selecionar participantes.
+
+---
+
+### Multi-Chain Scanning (28/06/2026)
 - **Novo**: `lib/agentes-do-pregão.ts`: `executarCicloAgentes("all")` escaneia Polygon, Base e Arbitrum simultaneamente; combina `TRADING_PAIRS` em `multiPairs[]` com contexto de rede
 - **Novo**: `lib/agentes-do-pregão.ts`: cada voto carrega `network: pairNet` — a rede do par analisado, não da rede primária
 - **Novo**: `lib/agentes-do-pregão.ts`: capital alocado via `unifiedBalance` (saldo consolidado entre chains) em vez de `realSwap.getBalance()` (per-chain)
@@ -1356,13 +1362,13 @@ Ciclo multi-chain:
 - Log atualizado: `"🔍 Analisando USDC→WETH — Quantum, Technical, TrendFollower..."`
 - Cada par tem de 2 a 7 especialistas dedicados (antes eram todos os 13 agentes em todo par)
 
-### Estado atual
-- **Multi-Chain Scanning**: ativo — bot escaneia Polygon + Base + Arbitrum simultaneamente, executa na chain com melhor oportunidade
-- **Polygon Mainnet**: micro-trades voláteis (WMATIC, WETH) com lucro líquido $0.002-$0.02
-- **Base Mainnet**: WETH→USDC, USDC→WETH, WBTC disponíveis
-- **Arbitrum Mainnet**: ARB→USDC, WETH→USDC disponíveis
-- **CCTP Bridge**: ativo — USDC movido entre chains sob demanda; auto-gas compra native token se saldo < $0.50
-- **Ethereum**: excluído de micro-trades (gas $1.50); estratégia conservadora se um dia ativar
+### Estado atual (22/06/2026)
+- **Polygon Mainnet**: ativo — bot fez 6 trades reais (+$0.19 acumulado), consumiu todo USDC
+- **RPC Proxy**: implementado — todas as RPCs via `/api/rpc-proxy` (CORS bypass)
+- **Auto-reabastecimento**: quando saldo < minTradeSize e existem posições abertas, injeta 3 OKs de venda (Cleanup, ForcarVenda, MeanReversion) com 90% de confiança
+- **Wallet balance priority**: wallet real tem prioridade sobre unified balance (Circle Kit)
+- **CCTP Bridge**: implementado mas ainda não testado com sucesso (RPC rate limiting pode estar bloqueando)
 - **Grid Trading**: disponível em modo single-chain; desativado em multi-chain
-- **Lucro acumulado**: +$18.77
+- **Streaks se recuperando**: streaks entre -2 e -6 (após bug das compras); Quantum 57%, TrendFollower 50%, Technical 50%, MeanReversion 50%
+- **WMATIC**: volatilidade 24h no piso de 0.5%, retorno esperado (0.13%) menor que spread (0.5%), bloqueando minViableTrade
 

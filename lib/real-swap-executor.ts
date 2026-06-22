@@ -13,6 +13,7 @@ import { arcMemo } from "./arc-memo";
 import { transactionMemos } from "./transaction-memos";
 import { CCTPService, CCTP_CONFIG } from "./cctp";
 import { unifiedBalance } from "./unified-balance";
+import { caixa } from "./caixa";
 
 // ─── Redes suportadas ────────────────────────────────────────────────────────
 // Custo estimado de gas em USD por rede (para deducao do lucro)
@@ -309,7 +310,7 @@ class RealSwapExecutor {
     try {
       this.networkKey = networkKey;
       const net = NETWORKS[networkKey];
-      this.provider = new ethers.JsonRpcProvider(net.rpcUrl);
+      this.provider = this._createProxyProvider(net.rpcUrl);
 
       if (readOnly) {
         this.userAddress = privateKeyOrAddress;
@@ -347,7 +348,7 @@ class RealSwapExecutor {
     try {
       this.networkKey = networkKey;
       const net = NETWORKS[networkKey];
-      this.provider = new ethers.JsonRpcProvider(net.rpcUrl);
+      this.provider = this._createProxyProvider(net.rpcUrl);
       this.signer = externalSigner;
       this.userAddress = userAddress;
       console.log(`✅ RealSwapExecutor (external signer): ${net.name} | ${this.userAddress}`);
@@ -364,7 +365,7 @@ class RealSwapExecutor {
   async switchNetwork(networkKey: NetworkKey): Promise<void> {
     this.networkKey = networkKey;
     const net = NETWORKS[networkKey];
-    this.provider = new ethers.JsonRpcProvider(net.rpcUrl);
+    this.provider = this._createProxyProvider(net.rpcUrl);
     if (this.signer && typeof (this.signer as any).connect === "function") {
       this.signer = (this.signer as ethers.Wallet).connect(this.provider);
     }
@@ -374,20 +375,60 @@ class RealSwapExecutor {
     console.log(`🔀 RealSwapExecutor switch: ${net.name}`);
   }
 
+  private _createProxyProvider(targetRpcUrl: string): ethers.JsonRpcProvider {
+    const provider = new ethers.JsonRpcProvider();
+    // Redireciona todas as chamadas RPC pelo backend para evitar CORS
+    (provider as any)._send = async function(payload: any) {
+      const res = await fetch('/api/rpc-proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rpcUrl: targetRpcUrl, body: payload }),
+      });
+      if (!res.ok) {
+        throw new Error(`RPC proxy HTTP ${res.status}: ${res.statusText}`);
+      }
+      const data = await res.json();
+      // ethers espera array de respostas mesmo para chamada única
+      return Array.isArray(data) ? data : [data];
+    };
+    return provider;
+  }
+
   // Atualizar todos os saldos de tokens da rede atual
   async refreshAllBalances(): Promise<Map<TokenSymbol, TokenBalance>> {
     if (!this.userAddress) return this.tokenBalances;
 
     const net = NETWORKS[this.networkKey];
-    this.tokenBalances.clear();
+    const previousBalances = new Map(this.tokenBalances)
+    this.tokenBalances.clear()
 
-    const rpcsParaTentar = [net.rpcUrl, ...(this.BACKUP_RPCS[this.networkKey] ?? [])]
+    const rpcsParaTentar: string[] = ['__PROVIDER__']
+    rpcsParaTentar.push(net.rpcUrl, ...(this.BACKUP_RPCS[this.networkKey] ?? []))
     if (typeof window !== 'undefined' && (window as any).ethereum) {
       rpcsParaTentar.push('metamask')
     }
 
-    const fetchFrom = async (prov: ethers.Provider): Promise<number> => {
+    type ResolvedBalance = { raw: bigint; decimals: bigint }
+    const rpcCall = async (rpcUrl: string, method: string, params: unknown[]): Promise<any> => {
+      const res = await fetch('/api/rpc-proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rpcUrl, body: { jsonrpc: '2.0', id: 1, method, params } }),
+      })
+      const data = await res.json()
+      if (data.error) throw new Error(data.error.message)
+      return data.result
+    }
+    const erc20BalanceOf = (address: string, userAddress: string, rpcUrl: string): Promise<ResolvedBalance> =>
+      Promise.all([
+        rpcCall(rpcUrl, 'eth_call', [{ to: address, data: `0x70a08231000000000000000000000000${userAddress.slice(2)}` }, 'latest']),
+        rpcCall(rpcUrl, 'eth_call', [{ to: address, data: '0x313ce567' }, 'latest']),
+      ]).then(([raw, decimals]) => ({ raw: BigInt(raw), decimals: BigInt(decimals) }))
+
+    let anyProviderSucceeded = false
+    const fetchFrom = async (prov: ethers.Provider, label: string): Promise<number> => {
       let nonZero = 0
+      let tokenCount = 0
       await Promise.all(
         (Object.entries(net.tokens) as [string, string][]).map(async ([symbol, address]) => {
           try {
@@ -399,28 +440,67 @@ class RealSwapExecutor {
             const balance = parseFloat(ethers.formatUnits(raw, decimals));
             this.tokenBalances.set(symbol, { symbol, balance, address, decimals: Number(decimals) });
             if (balance > 0.0001) nonZero++
-          } catch {
+            tokenCount++
+          } catch (e) {
             if (!this.tokenBalances.has(symbol)) {
               this.tokenBalances.set(symbol, { symbol, balance: 0, address, decimals: 6 });
             }
           }
         })
       );
+      if (tokenCount > 0) {
+        anyProviderSucceeded = true
+        console.log(`🔁 Balance via ${label}: ${nonZero} non-zero of ${Object.keys(net.tokens).length}`)
+      }
       return nonZero
+    }
+    const fetchFromProxyRpc = async (rpcUrl: string, label: string): Promise<boolean> => {
+      let ok = 0
+      await Promise.all(
+        (Object.entries(net.tokens) as [string, string][]).map(async ([symbol, address]) => {
+          try {
+            const { raw, decimals } = await erc20BalanceOf(address, this.userAddress!, rpcUrl)
+            const balance = parseFloat(ethers.formatUnits(raw, Number(decimals)))
+            this.tokenBalances.set(symbol, { symbol, balance, address, decimals: Number(decimals) })
+            if (balance > 0.0001) ok++
+          } catch {
+            if (!this.tokenBalances.has(symbol)) {
+              this.tokenBalances.set(symbol, { symbol, balance: 0, address, decimals: 6 })
+            }
+          }
+        })
+      )
+      if (ok > 0) {
+        anyProviderSucceeded = true
+        console.log(`🔁 Balance via ${label}: ${ok} non-zero`)
+      }
+      return this.tokenBalances.size > 0
     }
 
     for (const rpc of rpcsParaTentar) {
       try {
         if (rpc === 'metamask') {
           const mmProvider = new ethers.BrowserProvider((window as any).ethereum)
-          const nz = await fetchFrom(mmProvider)
-          if (nz > 0) { console.log('🔁 Balance via MetaMask'); break }
+          await fetchFrom(mmProvider, 'MetaMask')
+          if (this.tokenBalances.size > 0) break
+        } else if (rpc === '__PROVIDER__') {
+          if (!this.provider) throw new Error('no provider')
+          await fetchFrom(this.provider, 'signer provider')
+          if (this.tokenBalances.size > 0) break
         } else {
-          const bp = new ethers.JsonRpcProvider(rpc, undefined, { staticNetwork: true })
-          const nz = await fetchFrom(bp)
-          if (nz > 0) { console.log(`🔁 Balance via ${rpc.replace(/https?:\/\//, '')}`); break }
+          const ok = await fetchFromProxyRpc(rpc, rpc.replace(/https?:\/\//, ''))
+          if (ok) break
         }
-      } catch { continue }
+      } catch (e) {
+        console.warn(`⚠️ RPC ${rpc} failed:`, (e as Error)?.message ?? e)
+        continue
+      }
+    }
+
+    if (!anyProviderSucceeded && previousBalances.size > 0) {
+      console.log('↩️ All RPCs failed, restoring previous balances')
+      this.tokenBalances.clear()
+      previousBalances.forEach((v, k) => this.tokenBalances.set(k, v))
     }
 
     return this.tokenBalances;
@@ -556,20 +636,44 @@ class RealSwapExecutor {
     const targetChainName = UB_CHAIN[targetChain];
     if (!targetChainName) return false;
 
-    await unifiedBalance.initialize(this.userAddress);
-    const balances = await unifiedBalance.refreshAllBalances();
+    let balances: Record<string, number> = {};
+    try {
+      const s = await caixa.getSaldo("mainnet");
+      balances = s.porRede;
+    } catch {
+      balances = {};
+    }
 
     const sourceChains = Object.keys(UB_CHAIN).filter(k => k !== targetChain);
     for (const srcChain of sourceChains) {
       const srcChainName = UB_CHAIN[srcChain];
-      const srcBalance = balances[srcChainName] ?? await unifiedBalance.fetchBalance(srcChainName);
+      let srcBalance = balances[srcChainName] ?? 0;
+
+      if (srcBalance === 0) {
+        try {
+          const srcConfig = CCTP_CONFIG[srcChain as keyof typeof CCTP_CONFIG];
+          if (srcConfig && srcConfig.rpcUrl) {
+            const prov = this._createProxyProvider(srcConfig.rpcUrl);
+            const contract = new ethers.Contract(srcConfig.usdc, ERC20_ABI, prov);
+            const [raw, decimals] = await Promise.all([
+              contract.balanceOf(this.userAddress),
+              contract.decimals(),
+            ]);
+            srcBalance = parseFloat(ethers.formatUnits(raw, decimals));
+            log(`🔍 On-chain USDC em ${srcChainName}: $${srcBalance.toFixed(2)}`);
+          }
+        } catch (err: any) {
+          log(`⚠️ Fallback balance ${srcChainName}: ${err.message}`);
+        }
+      }
+
       if (srcBalance < amountUsd * 1.05) continue;
 
       log(`🌉 Bridge via CCTP: ${srcChain}→${targetChain} $${amountUsd.toFixed(2)} USDC`);
       try {
         const srcConfig = CCTP_CONFIG[srcChain as keyof typeof CCTP_CONFIG];
         if (!srcConfig) continue;
-        const srcProvider = new ethers.JsonRpcProvider(srcConfig.rpcUrl);
+        const srcProvider = this._createProxyProvider(srcConfig.rpcUrl);
         const srcSigner = new ethers.Wallet(this.privateKey, srcProvider);
 
         const result = await cctpService.initiateTransfer({

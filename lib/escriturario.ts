@@ -1,7 +1,8 @@
-import { realSwap, NETWORKS, type TokenSymbol, isStable } from "./real-swap-executor"
+import { realSwap, NETWORKS, type TokenSymbol, type NetworkKey, isStable } from "./real-swap-executor"
 import { pregão, type OrdemExecucao } from "./pregão"
 import { corretor } from "./corretor"
 import { unifiedBalance } from "./unified-balance"
+import { caixa } from "./caixa"
 
 const VALOR_PADRAO_TRADE = 5
 
@@ -47,6 +48,13 @@ class Escriturário {
     const netConf = NETWORKS[ordem.rede as keyof typeof NETWORKS]
     const isTestnet = netConf?.isTestnet ?? true
 
+    // 🔥 Garantir que realSwap está na rede correta antes de ler saldo
+    const currentNet = realSwap.getNetworkKey()
+    const ordemNet = ordem.rede as NetworkKey
+    if (currentNet !== ordemNet) {
+      await realSwap.switchNetwork(ordemNet)
+    }
+
     // Refresh saldo on-chain se parecer desatualizado
     let saldoTokens = realSwap.getBalance(fromToken as TokenSymbol)
     if (saldoTokens < 1) {
@@ -54,12 +62,22 @@ class Escriturário {
       await realSwap.refreshAllBalances()
       saldoTokens = realSwap.getBalance(fromToken as TokenSymbol)
       if (isTestnet) this.log(`📊 Após refresh: ${saldoTokens.toFixed(4)} ${fromToken}`)
-      // Na testnet, se wallet está vazia, usa Caixa Livre (Unified Balance)
-      if (isTestnet && saldoTokens < 0.0001 && fromToken === "USDC") {
-        const ub = unifiedBalance.getUnifiedBalance()
-        if (ub > saldoTokens) {
-          this.log(`🏦 Usando Caixa Livre: $${ub.toFixed(2)} USDC disponível`)
-          saldoTokens = ub
+      // Se saldo local insuficiente, tenta unified balance (CCTP bridge pode trazer de outra rede)
+      if (saldoTokens < 0.0001 && fromToken === "USDC") {
+        let totalUb = 0
+        try {
+          if (isTestnet) {
+            totalUb = unifiedBalance.getUnifiedBalance()
+          } else {
+            const s = await caixa.getSaldo("mainnet")
+            totalUb = s.totalUSD
+          }
+        } catch {
+          totalUb = 0
+        }
+        if (totalUb > saldoTokens) {
+          this.log(`🏦 Usando unified balance: $${totalUb.toFixed(2)} USDC disponível (CCTP bridge fará a ponte)`)
+          saldoTokens = totalUb
         }
       }
     }

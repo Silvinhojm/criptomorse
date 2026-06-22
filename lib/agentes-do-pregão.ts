@@ -11,7 +11,7 @@ import { provaoRanking } from "./provao-ranking"
 import { nanopaymentSystem } from "./nanopayment-system"
 import { pairProfitability } from "./pair-profitability"
 import { gridTrader } from "./grid-trading"
-import { unifiedBalance } from "./unified-balance"
+import { caixa, UB_CHAIN } from "./caixa"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 
@@ -246,8 +246,25 @@ export function setPregãoAllowedBalance(val: number): void {
 
 export async function executarCicloAgentes(rede?: string, amountUsd?: number): Promise<CicloResultado> {
   const isMultiChain = !rede || rede === "all"
+
+  // Filtra redes multi-chain: só inclui redes onde o usuário tem saldo USDC
+  let chainNamesWithBalance = new Set<string>()
+  if (isMultiChain) {
+    try {
+      const s = await caixa.getSaldo("mainnet")
+      for (const [name, bal] of Object.entries(s.porRede)) {
+        if (bal > 0) chainNamesWithBalance.add(name)
+      }
+    } catch {}
+  }
+
   const networksToScan: NetworkKey[] = isMultiChain
-    ? (Object.keys(NETWORKS) as NetworkKey[]).filter(k => NETWORKS[k] && !NETWORKS[k].isTestnet)
+    ? (Object.keys(NETWORKS) as NetworkKey[]).filter(k => {
+        if (!NETWORKS[k] || NETWORKS[k].isTestnet) return false
+        if (chainNamesWithBalance.size === 0) return true // fallback: todas
+        const ubName = UB_CHAIN[k]
+        return ubName ? chainNamesWithBalance.has(ubName) : true
+      })
     : [rede as NetworkKey]
   if (networksToScan.length === 0) {
     console.warn(`[AGENTES] Nenhuma rede para scanear`)
@@ -298,13 +315,21 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   gridTrader.init(redeAtual)
 
   if (!net.isTestnet) {
-    // Garantir que o provider está na rede correta antes de ler saldos
-    if (realSwap.getNetworkKey() !== redeAtual) {
-      await realSwap.switchNetwork(redeAtual)
+    // Multi-chain: unified balance via Circle Kit (funciona no navegador, sem CORS)
+    let totalUnificado = 0
+    if (isMultiChain) {
+      try {
+        const saldoCaixa = await caixa.getSaldo("mainnet")
+        totalUnificado = saldoCaixa.totalUSD
+      } catch {
+        totalUnificado = 0
+      }
     }
-    // Multi-chain: unified balance across all chains
-    const isMultiUsdc = isMultiChain ? await unifiedBalance.initialize(realSwap.getAddress()).then(() => unifiedBalance.refreshAllBalances()).then(b => Object.values(b).reduce((s, v) => s + v, 0)).catch(() => 0) : 0
-    const balUSDC = isMultiChain ? isMultiUsdc : realSwap.getBalance("USDC")
+    const walletUSDC = realSwap.getBalance("USDC")
+    if (isMultiChain && walletUSDC > totalUnificado) {
+      pregão.adicionarLog(`📊 Unified balance $${totalUnificado.toFixed(2)} < wallet $${walletUSDC.toFixed(2)} — usando wallet como referência`)
+    }
+    const balUSDC = isMultiChain ? Math.max(totalUnificado, walletUSDC) : walletUSDC
     const balUSDT = isMultiChain ? 0 : realSwap.getBalance("USDT")
     const balDAI = isMultiChain ? 0 : realSwap.getBalance("DAI")
     const maiorStable = isMultiChain ? balUSDC : Math.max(balUSDC, balUSDT, balDAI)
@@ -316,7 +341,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     maxPositions = Math.max(1, Math.floor((saldoEfetivo * 0.9) / minTradeSize))
     const vagas = Math.max(1, maxPositions - posAbertas);
 
-    if (saldoEfetivo < minTradeSize || (isMultiChain && realSwap.getBalance("USDC") < minTradeSize)) {
+    if (saldoEfetivo < minTradeSize) {
       amountUsd = 0
       const localUsdc = isMultiChain ? realSwap.getBalance("USDC") : saldoEfetivo
       pregão.adicionarLog(`⚠️ Saldo USDC baixo: unified $${saldoEfetivo.toFixed(2)} / local $${localUsdc.toFixed(2)} — mínimo $${minTradeSize.toFixed(2)}`)
@@ -1074,7 +1099,8 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     const spreadPct = 0.005
     const minViableTrade = (getMinProfitReal(pairNet) + gasCost) / Math.max(0.001, expectedReturn - spreadPct)
 
-    if (minViableTrade > 0 && valorFinal < minViableTrade && valorFinal >= 5) {
+    const minSizeForCheck = getMinTradeSize(pairNet)
+    if (minViableTrade > 0 && valorFinal < minViableTrade && valorFinal >= minSizeForCheck) {
       pregão.adicionarLog(`⏳ Mercado pouco volátil — trade de $${valorFinal.toFixed(2)} não cobre custos (precisa ~$${minViableTrade.toFixed(2)}). Retorno esperado ${(expectedReturn * 100).toFixed(2)}% com ${(vol24h * 100).toFixed(1)}% vol`)
     } else {
       pregão.adicionarLog(`✅ Trade viável em ${pairNet}: retorno esperado ${(expectedReturn * 100).toFixed(2)}% cobre gas + spread + $${getMinProfitReal(pairNet).toFixed(2)}`)

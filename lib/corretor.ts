@@ -76,8 +76,9 @@ class Corretor {
         const isStableFrom = ["USDC", "USDT", "DAI", "EURC"].includes(ordem.fromToken)
         const netConf = NETWORKS[ordem.rede as NetworkKey]
 
-        if (isStableFrom && !isStableTo) {
-          profit = 0
+        const isBuyOpening = isStableFrom && !isStableTo
+
+        if (isBuyOpening) {
           const currentPrice = resultado.toAmount > 0
             ? valorTrade / resultado.toAmount
             : await this.buscarPreco(toKey)
@@ -104,14 +105,14 @@ class Corretor {
           }
         }
 
-        // FIX: não afeta aprendizado nem circuit breaker em dois casos:
+        // FIX: não afeta aprendizado nem circuit breaker em três casos:
         // 1. Testnet com fee simulada (perda entre -$0.02 e +$0.02)
         // 2. Mainnet com perda pequena de fechamento forçado (stale/stop < $2.00)
-        //    Essas perdas são de gestão de risco, não de estratégia ruim
+        // 3. Compra (abertura de posição) — lucro só realizado na venda
         const isTestnetSwap = netConf?.isTestnet && profit <= 0.02 && profit >= -0.02
         const isSmallForcedLoss = !netConf?.isTestnet && profit < 0 && profit > -2.00
 
-        if (!isTestnetSwap) {
+        if (!isTestnetSwap && !isBuyOpening) {
           const profitPorAgente = profit / Math.max(1, ordem.pregueiros.filter(n => AGENTES_CONHECIDOS.has(n.replace("Agente:", ""))).length)
           for (const nome of ordem.pregueiros) {
             const agente = nome.replace("Agente:", "")
@@ -119,7 +120,7 @@ class Corretor {
             accountant.addReport({
               id: `${ordem.id}_${agente}`,
               agentName: agente,
-              action: isStableFrom && !isStableTo ? "buy" : !isStableFrom && isStableTo ? "sell" : "hold",
+              action: "sell",
               fromToken: ordem.fromToken,
               toToken: ordem.toToken,
               amount: valorTrade,
@@ -135,13 +136,15 @@ class Corretor {
             })
           }
           this.log(`🧠 Agentes pontuados: ${ordem.pregueiros.filter(n => AGENTES_CONHECIDOS.has(n.replace("Agente:", ""))).join(", ")} (profit: $${profitPorAgente.toFixed(4)} cada)`)
+        } else if (isBuyOpening) {
+          this.log(`📦 Posição ${toKey} — lucro contabilizado apenas no fechamento da posição`)
         } else {
           this.log(`🧪 Testnet: pulando pontuação (fee simulada $${profit.toFixed(4)} não afeta ranking)`)
         }
 
-        // Recompensa financeira por performance
+        // Recompensa financeira por performance (apenas vendas com lucro)
         const agentesQueVotaram = ordem.pregueiros.filter(n => AGENTES_CONHECIDOS.has(n.replace("Agente:", "")))
-        if (profit > 0 && agentesQueVotaram.length > 0) {
+        if (profit > 0 && agentesQueVotaram.length > 0 && !isBuyOpening) {
           const rewardPool = profit * 0.1
           const rewardPerAgent = rewardPool / agentesQueVotaram.length
           for (const nome of agentesQueVotaram) {
@@ -151,14 +154,18 @@ class Corretor {
           this.log(`🏅 Pool de recompensa: 10% do lucro = $${rewardPool.toFixed(4)} — $${rewardPerAgent.toFixed(4)} para cada um dos ${agentesQueVotaram.length} agentes`)
         }
 
-        pairProfitability.recordTrade(ordem.par, profit, profit > 0)
+        if (!isBuyOpening) {
+          pairProfitability.recordTrade(ordem.par, profit, profit > 0)
+        }
 
         // FIX: circuit breaker não ativa para perdas pequenas de gestão de risco
-        if (!isTestnetSwap && !isSmallForcedLoss) {
+        if (!isTestnetSwap && !isSmallForcedLoss && !isBuyOpening) {
           const { isPanicActive } = recordTradeResult(profit)
           if (isPanicActive) {
             this.log(`🚨 Circuit breaker ativado após trade!`)
           }
+        } else if (isBuyOpening) {
+          this.log(`🔒 Circuit breaker preservado: abertura de posição sem lucro contabilizado`)
         } else {
           const motivo = isTestnetSwap
             ? `fee simulada testnet $${profit.toFixed(4)}`

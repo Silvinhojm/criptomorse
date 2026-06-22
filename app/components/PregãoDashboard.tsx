@@ -3,7 +3,13 @@ import { useState, useEffect, useRef, useCallback } from "react"
 import { pregão, type OrdemExecucao, type CashBoxState } from "@/lib/pregão"
 import { escriturário } from "@/lib/escriturario"
 import { corretor } from "@/lib/corretor"
-import { PREGUEIROS } from "@/lib/pregueiro"
+// Display-only constant avoids static import of pregueiro.ts (HMR bug)
+const PREGUEIROS_DISPLAY = [
+  { config: { nome: "Tendência", icone: "📈", cor: "#a78bfa" } },
+  { config: { nome: "Volume", icone: "📊", cor: "#f97316" } },
+  { config: { nome: "Sentimento", icone: "🧠", cor: "#22c55e" } },
+  { config: { nome: "Tático", icone: "⚡", cor: "#fbbf24" } },
+]
 import { NETWORKS, realSwap, isStable } from "@/lib/real-swap-executor"
 import type { NetworkKey } from "@/lib/real-swap-executor"
 import { caixa } from "@/lib/caixa"
@@ -424,10 +430,10 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
 
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 11, color: COR_PREGÃO, marginBottom: 6, display: "flex", alignItems: "center", gap: 4 }}>
-          <span>👥</span> {PREGUEIROS.length + AGENTES_NOMES.length} robôs ativos
+          <span>👥</span> {PREGUEIROS_DISPLAY.length + AGENTES_NOMES.length} robôs ativos
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 4 }}>
-          {PREGUEIROS.map(p => (
+          {PREGUEIROS_DISPLAY.map(p => (
             <span key={p.config.nome} style={{
               padding: "3px 8px", borderRadius: 12, fontSize: 10,
               background: `${p.config.cor}22`, color: p.config.cor,

@@ -4,7 +4,7 @@ import { createViemAdapterFromProvider } from "@circle-fin/adapter-viem-v2"
 type UbChain = "Arc_Testnet" | "Base" | "Polygon" | "Ethereum" | "Arbitrum"
 type UbNetworkType = "mainnet" | "testnet"
 
-const UB_CHAIN: Record<string, UbChain> = {
+export const UB_CHAIN: Record<string, UbChain> = {
   arc: "Arc_Testnet",
   base: "Base",
   polygon: "Polygon",
@@ -487,3 +487,18 @@ class Caixa {
 }
 
 export const caixa = new Caixa()
+
+// Cache decorator — evita chamadas repetidas ao Circle Kit no mesmo ciclo
+const saldoCache = { value: null as SaldoCaixa | null, timestamp: 0 }
+const SALDO_CACHE_TTL = 10_000 // 10s
+const _getSaldoOriginal = caixa.getSaldo.bind(caixa)
+caixa.getSaldo = async (networkType?: UbNetworkType) => {
+  const now = Date.now()
+  if (saldoCache.value && now - saldoCache.timestamp < SALDO_CACHE_TTL) {
+    return saldoCache.value
+  }
+  const result = await _getSaldoOriginal(networkType)
+  saldoCache.value = result
+  saldoCache.timestamp = now
+  return result
+}
