@@ -336,6 +336,8 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
           }
           pregão.adicionarLog(`📢 Auto-sell: ${sellPar} em ${pos.networkKey} — 3 OKs injetados`)
         }
+      } else {
+        pregão.adicionarLog(`💰 Deposite USDC na wallet ${realSwap.getAddress()} (Polygon) para retomar os trades`)
       }
       return {
         totalPairs: 0,
