@@ -38,7 +38,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
   const [oksAtivos, setOksAtivos] = useState<{ par: string; rede: string; pregueiros: string[]; total: number }[]>([])
   const [cashBox, setCashBox] = useState<CashBoxState>({ saldoUSDC: 0, saldosPorRede: {}, ultimaAtualizacao: 0 })
   const [logs, setLogs] = useState<string[]>([])
-  const [status, setStatus] = useState({ ordensAtivas: 0, ordensConcluidas: 0, oksPendentes: 0 })
+  const [status, setStatus] = useState({ ordensAtivas: 0, ordensConcluidas: 0, oksPendentes: 0, sessionTrades: 0, sessionWins: 0, sessionLosses: 0, sessionProfit: 0 })
   const [caixaAtiva, setCaixaAtiva] = useState(false)
   const [caixaSaldo, setCaixaSaldo] = useState(0)
   const [caixaDepositando, setCaixaDepositando] = useState(false)
@@ -384,6 +384,26 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
           <div style={{ fontSize: 9, color: "#94a3b8" }}>💰 Lucro Acumulado</div>
           <div style={{ fontSize: 22, fontWeight: "bold", color: "#22c55e" }}>
             ${ordens.filter(o => o.status === "concluido" && o.resultado).reduce((s, o) => s + (o.resultado?.profit ?? 0), 0).toFixed(2)}
+          </div>
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 12 }}>
+        <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 6, padding: 6, textAlign: "center" }}>
+          <div style={{ fontSize: 8, color: "#64748b" }}>🔄 Sessão Trades</div>
+          <div style={{ fontSize: 16, fontWeight: "bold" }}>{status.sessionTrades}</div>
+        </div>
+        <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 6, padding: 6, textAlign: "center" }}>
+          <div style={{ fontSize: 8, color: "#64748b" }}>✅ Wins</div>
+          <div style={{ fontSize: 16, fontWeight: "bold", color: "#22c55e" }}>{status.sessionWins}</div>
+        </div>
+        <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 6, padding: 6, textAlign: "center" }}>
+          <div style={{ fontSize: 8, color: "#64748b" }}>❌ Losses</div>
+          <div style={{ fontSize: 16, fontWeight: "bold", color: "#ef4444" }}>{status.sessionLosses}</div>
+        </div>
+        <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 6, padding: 6, textAlign: "center" }}>
+          <div style={{ fontSize: 8, color: "#64748b" }}>📈 Lucro Sessão</div>
+          <div style={{ fontSize: 16, fontWeight: "bold", color: status.sessionProfit >= 0 ? "#22c55e" : "#ef4444" }}>
+            ${status.sessionProfit.toFixed(2)}
           </div>
         </div>
       </div>

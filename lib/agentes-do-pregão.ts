@@ -16,8 +16,10 @@ import { caixa, UB_CHAIN } from "./caixa"
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 
 function getMinTradeSize(network: NetworkKey): number {
-  if (network === "ethereum") return 5
-  return 2
+  const net = NETWORKS[network]
+  if (!net || net.isTestnet) return 2
+  if (network === "ethereum") return 50
+  return 20
 }
 
 function getMinProfitReal(network: NetworkKey): number {
@@ -460,13 +462,33 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       }
     }
   }
+  // 💰 Filtrar pares com saldo < $1 para evitar ruído
+  const antesFiltro = pairsToAnalyze.length
+  const tokenPrices = await Promise.all(
+    [...new Set(multiPairs.map(p => p.from))].map(async (t) => {
+      const price = await positionManager.fetchTokenPrice(t as TokenSymbol).catch(() => 0)
+      return { token: t, usd: price }
+    })
+  )
+  const priceMap = new Map(tokenPrices.map(p => [p.token, p.usd]))
+  pairsToAnalyze = pairsToAnalyze.filter(({ net: pairNet, label }) => {
+    const p = multiPairs.find(mp => mp.net === pairNet && mp.label === label)
+    if (!p) return false
+    const bal = realSwap.getBalance(p.from as TokenSymbol)
+    if (STABLES.has(p.from)) return bal >= 1
+    const price = priceMap.get(p.from) ?? 0
+    return bal * price >= 1
+  })
+  if (pairsToAnalyze.length < antesFiltro) {
+    pregão.adicionarLog(`💸 ${antesFiltro - pairsToAnalyze.length} pares filtrados por saldo < $1`)
+  }
   pregão.adicionarLog(`🎯 Analisando ${pairsToAnalyze.length} pares em ${isMultiChain ? networksToScan.length + " redes" : redeAtual}: ${pairsToAnalyze.map(p => p.net + ":" + p.label).join(', ')}`)
 
   const wave = await quantumWaveTrader.broadcastIntent(amountUsd)
   const wavePairs = wave.pairs // mantém TODOS os pares (multi-chain)
   gridTrader.setWaveData(wavePairs, redeAtual)
 
-  const allVotes: AgentPairVote[] = []
+  let allVotes: AgentPairVote[] = []
 
   const tokensParaColetar = new Set<TokenSymbol>()
   for (const p of multiPairs) {
@@ -779,6 +801,26 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     } else if (result.votes.length > 0) {
       pregão.adicionarLog(`❌ Sem consenso em ${result.pairLabel}: apenas ${result.votes.length} agente`)
     }
+  }
+
+  // 🔥 Blindar votos BUY+SELL simultâneos do mesmo agente no mesmo par
+  const votosRemovidos: string[] = []
+  for (const v of allVotes) {
+    const conflito = allVotes.find(o =>
+      o.agentName === v.agentName &&
+      o.network === v.network &&
+      o.fromToken === v.toToken &&
+      o.toToken === v.fromToken &&
+      o.action !== v.action
+    )
+    if (conflito && !votosRemovidos.includes(v.agentName)) {
+      votosRemovidos.push(v.agentName)
+    }
+  }
+  if (votosRemovidos.length > 0) {
+    const antes = allVotes.length
+    allVotes = allVotes.filter(v => !votosRemovidos.includes(v.agentName))
+    pregão.adicionarLog(`🧹 Blindagem: ${votosRemovidos.join(", ")} votaram BUY+SELL no mesmo par — ${antes - allVotes.length} votos removidos`)
   }
 
   // Grid trading: em multi-chain, verifica grids de TODAS as redes alvo
@@ -1133,7 +1175,11 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     const spreadPct = Math.max(0.001, 0.005 - spreadEsperado * 0.5)
     const minViableTrade = (getMinProfitReal(pairNet) + gasCost) / Math.max(0.001, expectedReturn - spreadPct)
 
-    if (minViableTrade > 0 && valorFinal < minViableTrade) {
+    const retornoUsd = expectedReturn * valorFinal
+    const gasThreshold = gasCost * 1.5
+    if (retornoUsd < gasThreshold) {
+      pregão.adicionarLog(`⏳ Stable-stable ${agreedPair.pair}: retorno esperado $${retornoUsd.toFixed(4)} < gas threshold $${gasThreshold.toFixed(4)} (gas $${gasCost.toFixed(4)} × 1.5) — bloqueado`)
+    } else if (minViableTrade > 0 && valorFinal < minViableTrade) {
       pregão.adicionarLog(`⏳ Stable-stable ${agreedPair.pair}: retorno esperado ${(expectedReturn * 100).toFixed(3)}% não cobre gas ($${gasCost.toFixed(4)}) — precisa ~$${minViableTrade.toFixed(2)} de trade`)
     } else {
       pregão.adicionarLog(`✅ Stable-stable ${agreedPair.pair} viável: $${valorFinal.toFixed(2)} cobre gas + spread`)

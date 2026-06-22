@@ -57,6 +57,7 @@ class Pregão {
   private onOrdemCallback: ((ordem: OrdemExecucao) => void) | null = null
   private onLogCallback: ((msg: string) => void) | null = null
   private onCashBoxChangeCallback: ((state: CashBoxState) => void) | null = null
+  private sessionStats = { trades: 0, wins: 0, losses: 0, profit: 0 }
 
   onOrdem(cb: (ordem: OrdemExecucao) => void) {
     this.onOrdemCallback = cb
@@ -256,7 +257,17 @@ class Pregão {
   atualizarOrdem(id: string, update: Partial<OrdemExecucao>) {
     const ordem = this.ordens.find(o => o.id === id)
     if (ordem) {
+      const wasCompleted = ordem.status === "concluido"
       Object.assign(ordem, update)
+      if (ordem.status === "concluido" && ordem.resultado && !wasCompleted) {
+        this.sessionStats.trades++
+        if (ordem.resultado.profit > 0) {
+          this.sessionStats.wins++
+        } else {
+          this.sessionStats.losses++
+        }
+        this.sessionStats.profit += ordem.resultado.profit
+      }
       this.onOrdemCallback?.(ordem)
     }
   }
@@ -324,11 +335,15 @@ class Pregão {
     }
   }
 
-  getStatus(): { ordensAtivas: number; ordensConcluidas: number; oksPendentes: number } {
+  getStatus(): { ordensAtivas: number; ordensConcluidas: number; oksPendentes: number; sessionTrades: number; sessionWins: number; sessionLosses: number; sessionProfit: number } {
     return {
       ordensAtivas: this.getOrdensAtivas().length,
       ordensConcluidas: this.getOrdensConcluidas().length,
-      oksPendentes: this.getOksAtivos().reduce((s, o) => s + o.total, 0)
+      oksPendentes: this.getOksAtivos().reduce((s, o) => s + o.total, 0),
+      sessionTrades: this.sessionStats.trades,
+      sessionWins: this.sessionStats.wins,
+      sessionLosses: this.sessionStats.losses,
+      sessionProfit: this.sessionStats.profit
     }
   }
 }

@@ -884,7 +884,7 @@ class RealSwapExecutor {
         log(`⏸️ Lucro estimado $${estimatedProfit.toFixed(4)} - gas $${gasCostEstimated.toFixed(3)} = $${netProfit.toFixed(4)} (min: $${minProfit})`);
         return this._fail(fromToken, toToken, amountUsd, `Lucro líquido não atinge mínimo: $${netProfit.toFixed(4)}`, timestamp);
       }
-      const minVolatileTrade = this.networkKey === "ethereum" ? 5 : 1
+      const minVolatileTrade = this.networkKey === "ethereum" ? 50 : NETWORKS[this.networkKey]?.isTestnet ? 1 : 20
       if (!isTestnet && !isStable(toToken) && amountUsd < minVolatileTrade) {
         log(`⏸️ Trade volátil $${amountUsd.toFixed(2)} abaixo do mínimo $${minVolatileTrade.toFixed(2)}`);
         return this._fail(fromToken, toToken, amountUsd, `Trade mínimo para voláteis é $${minVolatileTrade.toFixed(2)} (tentativa: $${amountUsd.toFixed(2)})`, timestamp);
