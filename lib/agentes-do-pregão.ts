@@ -316,35 +316,68 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       amountUsd = 0
       const localUsdc = isMultiChain ? realSwap.getBalance("USDC") : saldoEfetivo
       pregão.adicionarLog(`⚠️ Saldo USDC baixo: unified $${saldoEfetivo.toFixed(2)} / local $${localUsdc.toFixed(2)} — mínimo $${minTradeSize.toFixed(2)}`)
-      // Auto-reabastecimento: vender posições abertas para liberar USDC
-      const posicoes = positionManager.getOpenPositions()
-      const posVendiveis = posicoes.filter(p => isMultiChain || p.networkKey === redeAtual)
-      if (posVendiveis.length > 0) {
-        pregão.adicionarLog(`🔄 Auto-reabastecimento: ${posVendiveis.length} posição(ões) disponíveis para venda`)
-        for (const pos of posVendiveis) {
-          const sellPar = `${pos.boughtToken}→USDC`
-          for (const nome of ["Cleanup", "ForcarVenda", "MeanReversion"]) {
-            pregão.receberOK({
-              pregueiro: nome,
-              rede: pos.networkKey,
-              par: sellPar,
-              confianca: 90,
-              timestamp: Date.now(),
-              fromToken: pos.boughtToken,
-              toToken: "USDC",
-            })
-          }
-          pregão.adicionarLog(`📢 Auto-sell: ${sellPar} em ${pos.networkKey} — 3 OKs injetados`)
-        }
+      // Força refresh do saldo on-chain (pode estar desatualizado)
+      await realSwap.refreshAllBalances().catch(() => {})
+      const usdcAgora = realSwap.getBalance("USDC")
+      if (usdcAgora >= minTradeSize) {
+        pregão.adicionarLog(`🔄 Após refresh: USDC = $${usdcAgora.toFixed(2)} — saldo suficiente`)
+        // Sai do auto-reabastecimento e segue normalmente
+        amountUsd = Math.min(minTradeSize * 1.2, (usdcAgora * 0.9) / Math.max(1, maxPositions - positionManager.getOpenPositions().length))
       } else {
-        pregão.adicionarLog(`💰 Deposite USDC na wallet ${realSwap.getAddress()} (Polygon) para retomar os trades`)
-      }
-      return {
-        totalPairs: 0,
-        votes: [],
-        agreedPair: null,
-        agreeingAgents: 0,
-        waveCollapsed: false,
+        // Auto-reabastecimento: vender posições abertas ou tokens avulsos
+        const posicoes = positionManager.getOpenPositions()
+        const posVendiveis = posicoes.filter(p => p.networkKey === redeAtual)
+        if (posVendiveis.length > 0) {
+          pregão.adicionarLog(`🔄 Auto-reabastecimento: ${posVendiveis.length} posição(ões) disponíveis para venda`)
+          for (const pos of posVendiveis) {
+            const sellPar = `${pos.boughtToken}→USDC`
+            for (const nome of ["Cleanup", "ForcarVenda", "MeanReversion"]) {
+              pregão.receberOK({
+                pregueiro: nome,
+                rede: pos.networkKey,
+                par: sellPar,
+                confianca: 90,
+                timestamp: Date.now(),
+                fromToken: pos.boughtToken,
+                toToken: "USDC",
+              })
+            }
+            pregão.adicionarLog(`📢 Auto-sell: ${sellPar} em ${pos.networkKey} — 3 OKs injetados`)
+          }
+        } else {
+          // Sem posições: verificar saldo de voláteis na wallet e vender
+          const VOLATEIS_WALLET = ["WMATIC", "WETH", "WBTC", "ARB"]
+          let vendeu = false
+          for (const token of VOLATEIS_WALLET) {
+            const bal = realSwap.getBalance(token as TokenSymbol)
+            if (bal > 0.001) {
+              const sellPar = `${token}→USDC`
+              for (const nome of ["Cleanup", "ForcarVenda", "MeanReversion"]) {
+                pregão.receberOK({
+                  pregueiro: nome,
+                  rede: redeAtual,
+                  par: sellPar,
+                  confianca: 90,
+                  timestamp: Date.now(),
+                  fromToken: token,
+                  toToken: "USDC",
+                })
+              }
+              pregão.adicionarLog(`📢 Auto-sell: ${sellPar} (${bal.toFixed(4)} ${token}) — 3 OKs injetados`)
+              vendeu = true
+            }
+          }
+          if (!vendeu) {
+            pregão.adicionarLog(`💰 Deposite USDC na wallet ${realSwap.getAddress()} (Polygon) para retomar os trades`)
+          }
+        }
+        return {
+          totalPairs: 0,
+          votes: [],
+          agreedPair: null,
+          agreeingAgents: 0,
+          waveCollapsed: false,
+        }
       }
     } else {
       amountUsd = Math.min(minTradeSize * 1.2, (saldoEfetivo * 0.9) / vagas);
