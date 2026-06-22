@@ -275,6 +275,19 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   const redeAtual = networksToScan[0]
   const net = NETWORKS[redeAtual]
   const pairs = TRADING_PAIRS[redeAtual] || []
+  const isArc = redeAtual === "arc" && net?.isTestnet
+
+  // 🔁 Arc: intercepta receberOK de agentes, vira [APRENDIZADO] no log
+  const originalReceberOK = pregão.receberOK.bind(pregão)
+  if (isArc) {
+    pregão.receberOK = (signal) => {
+      if (signal.pregueiro.startsWith("Agente:")) {
+        pregão.adicionarLog(`[APRENDIZADO] ${signal.pregueiro.replace("Agente:", "")} → ${signal.par} (${signal.confianca}%)`)
+        return
+      }
+      originalReceberOK(signal)
+    }
+  }
 
   // Monta lista combinada de pares de todas as redes alvo
   interface PairWithNetwork { net: NetworkKey; from: TokenSymbol; to: TokenSymbol; label: string }
@@ -1338,6 +1351,11 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         toToken: "USDC",
       })
     }
+  }
+
+  // 🔁 Restaura receberOK original (se foi interceptado para Arc)
+  if (isArc) {
+    pregão.receberOK = originalReceberOK
   }
 
   return {

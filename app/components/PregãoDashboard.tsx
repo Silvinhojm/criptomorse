@@ -101,6 +101,10 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
           addLog(`❌ Erro ao preparar ordem: ${e instanceof Error ? e.message : e}`)
         }
       }
+      if (ordem.rede === "arc" && ordem.resultado) {
+        const { registrarResultadoArc } = await import("@/lib/pregao-arc")
+        registrarResultadoArc(ordem.par, ordem.resultado.profit)
+      }
     })
 
     corretor.onTrade(() => {
@@ -222,6 +226,9 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         cicloRef.current = null
       }
       setCicloAtivo(false)
+      if (NETWORKS[redeRef.current as NetworkKey]?.isTestnet) {
+        import("@/lib/pregao-arc").then(m => m.parar())
+      }
       addLog("⏹️ Ciclo dos Pregueiros parado")
       return
     }
@@ -234,6 +241,11 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     resumeFromPanic()
     setTestnetMode(isTestnet)
     pregão.limparOrdensTravadas()
+
+    if (isTestnet) {
+      const { iniciar } = await import("@/lib/pregao-arc")
+      iniciar()
+    }
     addLog(`🔁 Ciclo dos Pregueiros iniciado na rede ${redeRef.current} (a cada ${cicloIntervalo}s)`)
     addLog(`🔄 Circuit breaker resetado — modo ${isTestnet ? 'testnet' : 'mainnet'}`)
     addLog(`🌐 Agentes: ${isTestnet ? `single-network (${redeRef.current})` : 'multi-chain (Base + Polygon + Arbitrum)'}`)
@@ -243,6 +255,10 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")
       await executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`))
       await executarCicloAgentes(agenteRede).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
+      if (isTestnet) {
+        const { executarCiclo } = await import("@/lib/pregao-arc")
+        await executarCiclo()
+      }
     } catch (e) {
       addLog(`❌ Ciclo inicial: ${e instanceof Error ? e.message : e}`)
     }
@@ -252,10 +268,14 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       resumeFromPanic()
       pregão.limparOrdensTravadas()
       try {
-        const { executarCicloPregueiros } = await import("@/lib/pregueiro")
-        const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")
-        await executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`))
-        await executarCicloAgentes(agenteRede).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
+      const { executarCicloPregueiros } = await import("@/lib/pregueiro")
+      const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")
+      await executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`))
+      await executarCicloAgentes(agenteRede).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
+      if (isTestnet) {
+        const { executarCiclo: executarArc } = await import("@/lib/pregao-arc")
+        await executarArc()
+      }
       } catch (e) {
         addLog(`❌ Ciclo: ${e instanceof Error ? e.message : e}`)
       }
@@ -301,6 +321,10 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")
       await executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`))
       await executarCicloAgentes(agenteRede).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
+      if (isTestRede) {
+        const { executarCiclo } = await import("@/lib/pregao-arc")
+        await executarCiclo()
+      }
     } catch (e) {
       addLog(`❌ Ciclo manual: ${e instanceof Error ? e.message : e}`)
     }
