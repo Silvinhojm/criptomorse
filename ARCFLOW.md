@@ -56,11 +56,12 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
        │   ├── quantum-wave.ts           ← "Onda quântica" (preço real agora)
        │   └── agent-voting.ts           ← Votação de agentes
        │
-       ├── PREGÃO (BOLSA)
-       │   ├── pregão.ts                 ← Central de ordens (recebe OKs, gera ordens)
-       │   ├── pregueiro.ts              ← 4 "pregueiros" que analisam mercado
-       │   ├── corretor.ts               ← Executa ordens na blockchain
-       │   └── caixa.ts                  ← Gestão de saldo
+        ├── PREGÃO (BOLSA)
+        │   ├── pregão.ts                 ← Central de ordens (recebe OKs, gera ordens)
+        │   ├── pregueiro.ts              ← 4 "pregueiros" que analisam mercado
+        │   ├── corretor.ts               ← Executa ordens na blockchain
+        │   ├── caixa.ts                  ← Gestão de saldo
+        │   └── pregao-arc.ts             ← Multi-armed bandit p/ Arc (autônomo)
        │
        ├── INTELIGÊNCIA (aprendizado)
        │   ├── pair-price-feed.ts        ← Preço real por par (compartilhado)
@@ -305,6 +306,9 @@ TRADE_SPREAD_PCT = 0.005  // 0.5% base, dinâmico: max(0.001, 0.005 - vol24h × 
 
 // Votos BUY+SELL simultâneos do mesmo agente no mesmo par são removidos (blindagem)
 // Pares com saldo do from-token < $1 são filtrados antes da análise
+
+// Na Arc Testnet: agentes rodam análise mas OKs viram [APRENDIZADO] (não executam)
+// Quem executa na Arc é o pregao-arc.ts (bandit multi-armed)
 ```
 
 ### 4.6 Agent Learning (corretor.ts + accountant.ts)
@@ -370,6 +374,8 @@ MIN_BALANCE_THRESHOLD = 0.50  // $0.50 — saldos abaixo disso são ignorados no
 | `Pregueiros.historico` | Histórico de preços dos pregueiros (recomeça) |
 | `Pregão.sessionStats` | Estatísticas da sessão (trades/wins/losses/profit) — zera no F5 |
 | | Dashboard mostra métricas por sessão + acumuladas lado a lado |
+| `pregao-arc` | Bandit state (pares, pesos, tradeAmount) — zera no F5 |
+| | Na Arc, bandit decide trades; agentes só aprendem |
 
 ### Recuperação pós-F5:
 1. `positionManager` carrega posições abertas do localStorage
@@ -584,7 +590,25 @@ Se for adicionar um novo token, atualizar em **todos** os lugares:
 
 ---
 
-## 15. DIAGNÓSTICO RÁPIDO
+## 15. PREGÃO ARC — Multi-Armed Bandit (Testnet)
+
+`lib/pregao-arc.ts` — sistema autônomo de trading para Arc testnet.
+
+### Funcionamento
+- **Iniciado** quando o ciclo é ativado na Arc (`iniciar()`)
+- **A cada ciclo**: escolhe um par via pesos proporcionais ao lucro acumulado (softmax)
+- **Envia 3 OKs** (`ArcBandit:1/2/3`) ao `pregão` para executar o trade
+- **A cada 10 trades**: recalcula pesos + aumenta trade amount ($5 → $10 → $15... cap $50)
+- **Resultados**: `registrarResultadoArc()` alimenta o aprendizado
+
+### Agentes na Arc
+- Continuam análise completa (votação, consenso, logs)
+- `pregão.receberOK` com prefixo `Agente:` interceptado → vira `[APRENDIZADO]` no log
+- Só o bandit executa trades na Arc
+
+---
+
+## 16. DIAGNÓSTICO RÁPIDO
 
 ### Problema: "Saldo insuficiente de USDC"
 - Verificar se há posição aberta (ETH, MATIC, etc.) que precisa ser vendida
@@ -759,7 +783,7 @@ Se for adicionar um novo token, atualizar em **todos** os lugares:
 
 ---
 
-## 16. COMANDOS ÚTEIS
+## 17. COMANDOS ÚTEIS
 
 ```bash
 npm run dev          # Polygon (porta 3000)
@@ -774,7 +798,7 @@ npx tsc --noEmit     # TypeScript check
 
 ---
 
-## 17. UI/UX — DESIGN SYSTEM E COMPONENTES
+## 18. UI/UX — DESIGN SYSTEM E COMPONENTES
 
 ### 17.1 Design System (`constants/design-system.ts`)
 
@@ -839,7 +863,7 @@ Zona 3 (baixo): ActiveTrades + AgentGrid — posições ativas e ranking
 
 ---
 
-## 18. ORACLE STORK (Arc Testnet)
+## 19. ORACLE STORK (Arc Testnet)
 
 ### 18.1 Integração
 - `pair-price-feed.ts`: suporte ao oracle Stork on-chain na Arc Testnet
