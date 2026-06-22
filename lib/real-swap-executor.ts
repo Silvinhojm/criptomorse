@@ -371,21 +371,37 @@ class RealSwapExecutor {
     const net = NETWORKS[this.networkKey];
     this.tokenBalances.clear();
 
-    await Promise.all(
-      Object.entries(net.tokens).map(async ([symbol, address]) => {
-        try {
-          const contract = new ethers.Contract(address, ERC20_ABI, this.provider!);
-          const [raw, decimals] = await Promise.all([
-            contract.balanceOf(this.userAddress),
-            contract.decimals(),
-          ]);
-          const balance = parseFloat(ethers.formatUnits(raw, decimals));
-          this.tokenBalances.set(symbol, { symbol, balance, address, decimals: Number(decimals) });
-        } catch {
-          this.tokenBalances.set(symbol, { symbol, balance: 0, address, decimals: 6 });
-        }
-      })
-    );
+    const fetchFrom = async (prov: ethers.Provider): Promise<boolean> => {
+      let nonZero = 0
+      await Promise.all(
+        (Object.entries(net.tokens) as [string, string][]).map(async ([symbol, address]) => {
+          try {
+            const contract = new ethers.Contract(address, ERC20_ABI, prov);
+            const [raw, decimals] = await Promise.all([
+              contract.balanceOf(this.userAddress),
+              contract.decimals(),
+            ]);
+            const balance = parseFloat(ethers.formatUnits(raw, decimals));
+            this.tokenBalances.set(symbol, { symbol, balance, address, decimals: Number(decimals) });
+            if (balance > 0.0001) nonZero++
+          } catch {
+            if (!this.tokenBalances.has(symbol)) {
+              this.tokenBalances.set(symbol, { symbol, balance: 0, address, decimals: 6 });
+            }
+          }
+        })
+      );
+      return nonZero > 0
+    }
+
+    const ok = await fetchFrom(this.provider)
+    if (!ok && typeof window !== 'undefined' && (window as any).ethereum) {
+      try {
+        const mmProvider = new ethers.BrowserProvider((window as any).ethereum)
+        const mmOk = await fetchFrom(mmProvider)
+        if (mmOk) console.log('🔁 Balance refresh fallback: MetaMask provider')
+      } catch { /* MetaMask fallback falhou */ }
+    }
 
     return this.tokenBalances;
   }
