@@ -1085,7 +1085,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
 
   if (comprandoVolatil && vagasRestantes <= 0) {
     pregão.adicionarLog(`⏳ ${maxPositions}/${maxPositions} posições ocupadas — ${agreedPair.pair} aguardando vaga`)
-  } else if (comprandoVolatil && !net.isTestnet) {
+  } else if (comprandoVolatil) {
     const pairNet = agreedPair.network
     const gasCost = await gasPriceOracle.getGasCost(pairNet)
     // 🔥 Multi-chain: corretor faz switchNetwork + CCTP bridge se precisar
@@ -1121,7 +1121,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         })
       }
     }
-  } else if (!net.isTestnet && STABLES.has(agreedPair.fromToken) && STABLES.has(agreedPair.toToken)) {
+  } else if (STABLES.has(agreedPair.fromToken) && STABLES.has(agreedPair.toToken)) {
     const pairNet = agreedPair.network
     const gasCost = await gasPriceOracle.getGasCost(pairNet)
     // 🔥 Multi-chain: corretor faz switchNetwork + CCTP bridge se precisar
