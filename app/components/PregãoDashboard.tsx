@@ -345,7 +345,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         return
       }
       contratante.setPrivateKey(pk)
-      addLog("🤖 Contratante iniciado — criando jobs a cada 60s na Arc testnet")
+      addLog("🤖 Contratante iniciado — executando swaps USDC/EURC a cada 60s na Arc testnet")
     } else {
       addLog("⏹️ Contratante parado")
     }
@@ -518,9 +518,9 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 11, color: "#60a5fa", fontWeight: "bold" }}>Contratante — Job Robot</div>
               <div style={{ fontSize: 9, color: "#94a3b8" }}>
-                {contratanteState.jobsCriados > 0
-                  ? `${contratanteState.jobsCriados} jobs criados • ${contratanteState.txCount} transações`
-                  : "Cria jobs ERC-8183 na Arc testnet automaticamente"}
+                {contratanteState.swapsExecutados > 0
+                  ? `${contratanteState.swapsSucesso} swaps OK • ${contratanteState.swapsFalha} falhas • ${contratanteState.totalTxs} transações`
+                  : "Executa swaps USDC/EURC na Arc testnet via Circle App Kit"}
               </div>
             </div>
             <button onClick={alternarContratante} style={{
@@ -539,9 +539,18 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
               )}
             </div>
           )}
-          {contratanteState.ultimoJobId && (
+          {contratanteState.cicloAtual > 0 && (
             <div style={{ fontSize: 8, color: "#6b7280", marginTop: 4 }}>
-              Último job: #{contratanteState.ultimoJobId} • Ciclo: {contratanteState.cicloAtual}
+              Ciclo {contratanteState.cicloAtual} • {contratanteState.swapsSucesso} sucesso / {contratanteState.swapsFalha} falhas
+            </div>
+          )}
+          {contratanteState.reports.length > 0 && (
+            <div style={{ fontSize: 8, color: "#94a3b8", marginTop: 4, maxHeight: 60, overflowY: "auto" }}>
+              {contratanteState.reports.slice(0, 5).map((r, i) => (
+                <div key={i} style={{ color: r.success ? "#22c55e" : "#ef4444", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {r.success ? "✅" : "❌"} {r.pair} ${r.amountIn} {r.txHash ? `• ${r.txHash.slice(0, 8)}` : ""}
+                </div>
+              ))}
             </div>
           )}
         </div>

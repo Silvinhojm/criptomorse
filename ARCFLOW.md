@@ -1313,11 +1313,9 @@ Browser → /api/lifi/quote (GET) → li.quest/v1/quote (server-side)
 - **Dados atualizados a cada 8s via polling do `positionManager`
 
 #### JobRobot (Contratante) — Arc testnet
-- **Novo**: `lib/job-robot.ts` — robô autônomo que cria jobs ERC-8183 na Arc testnet via `ethers.Wallet` (private key, sem MetaMask). Ciclo: createJob → approve + setBudget → fund → submit → complete (5-6 transações por job)
-- **Novo**: `lib/contratante.ts` — gerenciador do ciclo de jobs com estado reativo; notifica dashboard via `onChange()`
-- **Novo**: `PregãoDashboard.tsx` — botão Iniciar/Parar visível só na testnet, mostra jobs criados, transações, último resultado
-- **Descrições**: 8 descrições diferentes rotacionadas a cada ciclo (análise, market making, wave detection, etc.)
-- **Budget**: $0.50 USDC por job (configurável via `contratante.setBudget()`)
+- **Reescrito**: `lib/job-robot.ts` — agora usa `@circle-fin/app-kit` + `createViemAdapterFromPrivateKey` (sem MetaMask). Ciclo: verifica saldo USDC via ethers → executa swap USDC↔EURC via `kit.swap()`. Retry com 30s backoff, 3 tentativas. Alterna entre USDC→EURC e EURC→USDC a cada ciclo.
+- **Reescrito**: `lib/contratante.ts` — gerencia swaps em vez de jobs. Rastreia `swapsExecutados`, `swapsSucesso`, `swapsFalha`, `reports[]` com últimas 10 operações.
+- **Novo**: `PregãoDashboard.tsx` — botão Iniciar/Parar visível só na testnet, mostra swaps OK/falhas, últimas 5 operações com status, par, valor.
 
 #### Outros fixes
 - **jumper-learn.ts**: consulta artigos via `/api/narrator/learn` (proxy) em vez de fetch direto para `jumper.xyz` (CORS).
