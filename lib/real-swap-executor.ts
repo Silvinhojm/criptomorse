@@ -364,6 +364,18 @@ class RealSwapExecutor {
     console.log(`🔀 RealSwapExecutor switch: ${net.name}`);
   }
 
+  // RPCs de backup por rede (usados quando o primário falha)
+  private BACKUP_RPCS: Record<string, string[]> = {
+    polygon: [
+      "https://polygon.llamarpc.com",
+      "https://polygon-rpc.com",
+      "https://rpc-mainnet.maticvigil.com",
+    ],
+    base: [],
+    ethereum: [],
+    arbitrum: [],
+  }
+
   // Atualizar todos os saldos de tokens da rede atual
   async refreshAllBalances(): Promise<Map<TokenSymbol, TokenBalance>> {
     if (!this.provider || !this.userAddress) return this.tokenBalances;
@@ -371,7 +383,7 @@ class RealSwapExecutor {
     const net = NETWORKS[this.networkKey];
     this.tokenBalances.clear();
 
-    const fetchFrom = async (prov: ethers.Provider): Promise<boolean> => {
+    const fetchFrom = async (prov: ethers.Provider): Promise<number> => {
       let nonZero = 0
       await Promise.all(
         (Object.entries(net.tokens) as [string, string][]).map(async ([symbol, address]) => {
@@ -391,15 +403,31 @@ class RealSwapExecutor {
           }
         })
       );
-      return nonZero > 0
+      return nonZero
     }
 
-    const ok = await fetchFrom(this.provider)
-    if (!ok && typeof window !== 'undefined' && (window as any).ethereum) {
+    const nonZero = await fetchFrom(this.provider)
+    if (nonZero > 0) return this.tokenBalances
+
+    // Fallback 1: RPCs de backup
+    const backups = this.BACKUP_RPCS[this.networkKey] ?? []
+    for (const rpc of backups) {
+      try {
+        const bp = new ethers.JsonRpcProvider(rpc)
+        const nz = await fetchFrom(bp)
+        if (nz > 0) {
+          console.log(`🔁 Balance refresh fallback: ${rpc}`)
+          return this.tokenBalances
+        }
+      } catch { continue }
+    }
+
+    // Fallback 2: MetaMask (se disponível)
+    if (typeof window !== 'undefined' && (window as any).ethereum) {
       try {
         const mmProvider = new ethers.BrowserProvider((window as any).ethereum)
         const mmOk = await fetchFrom(mmProvider)
-        if (mmOk) console.log('🔁 Balance refresh fallback: MetaMask provider')
+        if (mmOk > 0) console.log('🔁 Balance refresh fallback: MetaMask provider')
       } catch { /* MetaMask fallback falhou */ }
     }
 
