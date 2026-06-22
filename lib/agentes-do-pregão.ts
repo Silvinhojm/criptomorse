@@ -1214,7 +1214,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   for (const pos of posicoesAbertas) {
     const posNet = pos.networkKey as NetworkKey
     const currentPrice = await positionManager.fetchTokenPrice(pos.boughtToken)
-    const profitPercent = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100
+    let profitPercent = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100
 
     if (profitPercent <= 0) {
       const label = profitPercent < 0 ? `${profitPercent.toFixed(1)}% no prejuízo` : `break-even (0.0%)`
@@ -1233,9 +1233,12 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       continue
     }
 
-    if (profitPercent > 100) {
-      pregão.adicionarLog(`⚠️ ${pos.boughtToken} em ${posNet}: profit ${profitPercent.toFixed(1)}% irreal — entryPrice corrompido ($${pos.entryPrice.toFixed(4)}), pulando venda`)
-      continue
+    if (profitPercent > 100 && pos.amountPaid > 0 && pos.amountBought > 0) {
+      const fixedEntry = pos.amountPaid / pos.amountBought
+      profitPercent = ((currentPrice - fixedEntry) / fixedEntry) * 100
+      pregão.adicionarLog(`⚠️ ${pos.boughtToken}: entryPrice corrompido ($${pos.entryPrice.toFixed(4)}) → corrigido para $${fixedEntry.toFixed(4)} (${profitPercent.toFixed(1)}%) via swap real`)
+      pos.entryPrice = fixedEntry
+      positionManager.savePositions()
     }
 
     const gasCost = await gasPriceOracle.getGasCost(posNet)

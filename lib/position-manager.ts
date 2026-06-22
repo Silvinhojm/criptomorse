@@ -274,7 +274,7 @@ class PositionManager {
 
   // ─── Persistência ───
 
-  private savePositions(): void {
+  public savePositions(): void {
     try {
       const open = this.getOpenPositions();
       localStorage.setItem(POSITIONS_STORAGE_KEY, JSON.stringify(open));
