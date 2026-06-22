@@ -1250,6 +1250,27 @@ Browser → /api/rpc-proxy (POST) → RPC externa (polygon-rpc.com, etc.)
 - `app/api/rpc-proxy/route.ts` — endpoint POST que encaminha chamadas RPC
 - `lib/real-swap-executor.ts` — `_createProxyProvider()` usa fetch para o proxy em vez de ethers.js direto
 
+### 27.11 LI.FI Quote Proxy (CORS Bypass)
+
+O Next.js API route `/api/lifi/quote` atua como proxy para a API de cotação do LI.FI
+(`li.quest/v1/quote`), resolvendo bloqueios de CORS no navegador.
+
+```
+Browser → /api/lifi/quote (GET) → li.quest/v1/quote (server-side)
+  ├── Query params: fromChain, toChain, fromToken, toToken, fromAmount, fromAddress, slippage, integrator
+  ├── Timeout: 15s
+  └── Erro: retorna 502/504 com mensagem
+```
+
+**Uso em `lifi-executor.ts`:**
+- `getQuote()` constrói `URLSearchParams` e faz fetch para `/api/lifi/quote?${searchParams}`
+- Todo o rate limiting e backoff permanece no client-side
+- Evita CORS sem precisar de extensões de navegador
+
+**Arquivos:**
+- `app/api/lifi/quote/route.ts` — endpoint GET que encaminha consultas ao LI.FI
+- `lib/lifi-executor.ts` — `getQuote()` usa `/api/lifi/quote` em vez de `https://li.quest/v1/quote`
+
 ---
 
 ## 28. CHANGELOG
@@ -1276,6 +1297,11 @@ Browser → /api/rpc-proxy (POST) → RPC externa (polygon-rpc.com, etc.)
 #### refreshAllBalances com RPC fallback chain
 - **Modificado**: `lib/real-swap-executor.ts:refreshAllBalances()` — agora cria provider fresco a cada ciclo (`new ethers.JsonRpcProvider(net.rpcUrl)` via proxy), com cascata de RPCs fallback (llamarpc, polygon-rpc, maticvigil) e MetaMask BrowserProvider como último recurso.
 - **CCTP bridge**: usa `caixa.getSaldo()` (cache de 10s) em vez de `unifiedBalance` diretamente, garantindo dados frescos.
+
+#### LI.FI Quote Proxy (CORS)
+- **Novo**: `app/api/lifi/quote/route.ts` — proxy GET para `li.quest/v1/quote`, mesmo padrão do RPC proxy
+- **Modificado**: `lib/lifi-executor.ts:getQuote()` — fetch para `/api/lifi/quote` em vez de `https://li.quest/v1/quote`
+- **Impacto**: Elimina `TypeError: Failed to fetch` em chamadas LI.FI no navegador
 
 #### Outros fixes
 - **jumper-learn.ts**: consulta artigos via `/api/narrator/learn` (proxy) em vez de fetch direto para `jumper.xyz` (CORS).

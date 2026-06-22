@@ -20,17 +20,25 @@ This version has breaking changes — APIs, conventions, and file structure may 
 
 - Ao verificar estado do sistema, commit alterações no ARCFLOW.md e no código e faça push
 
-## Session Summary (21/06/2026)
+## Session Summary (22/06/2026)
 
 ### What's Changed
-1. **Multi-chain volatile-only filter** — `agentes-do-pregão.ts:342`: filtro `VOLATEIS` (WETH, WBTC, WMATIC, ARB, cirBTC, mcirBTC) aplicado em multi-chain mode
-2. **Skip minViableTrade for micro-trades** — `agentes-do-pregão.ts:1009`: pula o cálculo de trade mínimo quando `valorFinal < $5` (gas $0.08 na Polygon é trivial)
-3. **OrdemExecucao carries amountUsd** — `pregão.ts` interfaces `OkSignal` + `OrdemExecucao` ganharam campo `amountUsd?`; `escriturario.ts` usa `ordem.amountUsd` em vez de `saldo * 0.9`; removeu o `$5` fixo duplicado (executeSwap já check com `$2`)
-4. **okAgentes sorted by confidence** — `pregão.ts:160-165`: ordena agentes por confiança decrescente e filtra >= 30% antes de selecionar participantes (evita que BTCTrader 28% + primeiro agente qualquer dê média < 40%)
-5. **Auto-reabastecimento** — `agentes-do-pregão.ts:315-330`: quando `saldoEfetivo < minTradeSize` e existem posições abertas com saldo on-chain, injeta 3 OKs de venda (Cleanup, ForcarVenda, MeanReversion) com 90% de confiança e retorna cedo
+1. **Profit streak não destruído por compras** — `lib/corretor.ts`: `isBuyOpening` skipa `accountant.addReport()` + `processarRecompensa()` + `circuitBreaker.recordTrade()` quando é compra (stable→volátil)
+2. **minViableTrade dinâmico** — `lib/agentes-do-pregão.ts:1098`: `getMinTradeSize(pairNet)` retorna $2 (não-ETH) em vez de hardcoded $5
+3. **Wallet balance priority** — `lib/agentes-do-pregão.ts:328`: `Math.max(walletBalance, unifiedBalance)` quando wallet real > Circle Kit balance
+4. **RPC Proxy** — `app/api/rpc-proxy/route.ts` + `_createProxyProvider()`: todas RPCs via proxy Next.js (CORS)
+5. **LI.FI Quote Proxy** — `app/api/lifi/quote/route.ts`: proxy GET para `li.quest/v1/quote` (CORS)
+6. **refreshAllBalances** — provider fresco + cascata RPC fallback (llamarpc, polygon-rpc, maticvigil, MetaMask)
+7. **CCTP bridge** — usa `caixa.getSaldo()` (cache 10s) em vez de `unifiedBalance` direto
+8. **jumper-learn** — `/api/narrator/learn` proxy (CORS)
+9. **PregãoDashboard** — inline `PREGUEIROS_DISPLAY` (HMR fix)
+10. **caixa.ts** — cache 10s `getSaldo()`
+11. **escriturario** — `switchNetwork()` + unified balance fallback em mainnet
+12. **pregão** — `okAgentes` sorted by confidence >= 30%
 
 ### Current State
-- **Arc testnet**: funcionando (single-network, todos os pares)
-- **Polygon Mainnet**: bot fez 6 trades reais ($18.77 lucro), consumiu todo USDC. Agora com auto-reabastecimento deve vender WMATIC/WETH automaticamente
-- **CCTP Bridge**: ainda não testado com sucesso (RPC rate limiting pode estar bloqueando)
-- **Ver deploy automático no Vercel**
+- **Polygon Mainnet**: wallet zerada ($0.00 USDC, <$0.001 POL). Bot parou de trade por falta de saldo.
+- **Arc Testnet**: rodando mas perdendo $0.015/trade em USDC→EURC (spread come lucro). +19 trades no total.
+- **CCTP Bridge**: ainda não testado com sucesso
+- **LI.FI**: `Failed to fetch` resolvido com proxy `/api/lifi/quote`
+- **Ver deploy automático no Vercel****

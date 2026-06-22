@@ -124,16 +124,17 @@ export async function getQuote(params: SwapParams, retryCount = 0): Promise<Quot
       await new Promise(r => setTimeout(r, delay));
     }
 
-    const url = new URL(`${LI_FI_API}/quote`);
-    url.searchParams.set('fromChain',   params.fromChain.toString());
-    url.searchParams.set('toChain',     params.toChain.toString());
-    url.searchParams.set('fromToken',   params.fromToken);
-    url.searchParams.set('toToken',     params.toToken);
-    url.searchParams.set('fromAmount',  params.fromAmount);
-    url.searchParams.set('fromAddress', params.fromAddress);
-    url.searchParams.set('slippage',    (params.slippage ?? 0.005).toString());
-    url.searchParams.set('integrator',  INTEGRATOR_ID);
-    if (params.toAddress) url.searchParams.set('toAddress', params.toAddress);
+    const searchParams = new URLSearchParams({
+      fromChain:   params.fromChain.toString(),
+      toChain:     params.toChain.toString(),
+      fromToken:   params.fromToken,
+      toToken:     params.toToken,
+      fromAmount:  params.fromAmount,
+      fromAddress: params.fromAddress,
+      slippage:    (params.slippage ?? 0.005).toString(),
+      integrator:  INTEGRATOR_ID,
+    });
+    if (params.toAddress) searchParams.set('toAddress', params.toAddress);
 
     if (!(await rateLimit())) return null;
     console.log(`LI.FI: Buscando cotacao ${params.fromChain} -> ${params.toChain}`);
@@ -141,7 +142,7 @@ export async function getQuote(params: SwapParams, retryCount = 0): Promise<Quot
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
-    const res = await fetch(url.toString(), {
+    const res = await fetch(`/api/lifi/quote?${searchParams.toString()}`, {
       headers: { 'Accept': 'application/json' },
       signal: controller.signal,
     });
