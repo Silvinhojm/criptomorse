@@ -333,8 +333,8 @@ TRADE_SPREAD_PCT = 0.005  // 0.5% base, dinâmico: max(0.001, 0.005 - vol24h × 
 // streak > 0: confidence *= min(1.3, 1 + streak * 0.04)
 // streak ≤ -5: confidence = max(15, confidence) — nunca 0%, pra poder recuperar
 
-// 🏆 Top 3 agents decidem:
-// Ranking do accountant → top 3 têm voto decisivo
+// 🏆 Top 3 agents decidem (por rede ativa):
+// Ranking do accountant, filtrado APENAS por agentes que votaram neste ciclo
 // Se 2 dos 3 concordam no mesmo par → ordem gerada
 // Fallback: qualquer 2+ agentes no mesmo par
 ```

@@ -1049,11 +1049,13 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     pregão.adicionarLog(`🗳️ ${v.agentName} → ${v.pair} (${v.confidence}%)`)
   }
 
-  const ranking = accountant.getRanking().filter(s => s.agentName !== "Grid" && s.agentName !== "GridRef")
+  const ranking = accountant.getRanking()
+    .filter(s => s.agentName !== "Grid" && s.agentName !== "GridRef")
+    .filter(s => votes.some(v => v.agentName === s.agentName))
   const top3Nomes = new Set(ranking.slice(0, 3).map(s => s.agentName))
   const topVotes = votes.filter(v => top3Nomes.has(v.agentName) && v.confidence > 0)
 
-  pregão.adicionarLog(`🏆 Top 3: ${ranking.slice(0, 3).map(s => `${s.agentName}(${s.score.toFixed(0)})`).join(', ')} — ${topVotes.length} votos com confiança > 0`)
+  pregão.adicionarLog(`🏆 Top 3 (${votes.length} votantes): ${ranking.slice(0, 3).map(s => `${s.agentName}(${s.score.toFixed(0)})`).join(', ')} — ${topVotes.length} votos com confiança > 0`)
 
   const pairCount = new Map<string, { votes: AgentPairVote[]; count: number }>()
   for (const v of topVotes) {
