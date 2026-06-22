@@ -1,3 +1,5 @@
+import { accountant } from "./accountant"
+
 export interface OkSignal {
   pregueiro: string
   rede: string
@@ -158,9 +160,15 @@ class Pregão {
       participantes = [okAgentes[0], okPregueiros[0]]
       origem = "🤝 Híbrido"
     } else if (okAgentes.length >= limiarAgentes) {
+      function poderVoto(a: { nome: string; sinal: { confianca: number } }): number {
+        const agentName = a.nome.replace("Agente:", "")
+        const score = accountant.getAgentScore(agentName)
+        const winRate = score ? score.winRate / 100 : 0.5
+        return a.sinal.confianca * winRate
+      }
       const sorted = okAgentes
         .filter(a => a.sinal.confianca >= 30)
-        .sort((a, b) => b.sinal.confianca - a.sinal.confianca)
+        .sort((a, b) => poderVoto(b) - poderVoto(a))
       if (sorted.length >= limiarAgentes) {
         participantes = sorted.slice(0, limiarAgentes)
       }
@@ -172,8 +180,18 @@ class Pregão {
 
     if (participantes.length === 0) return
 
-    // Calcula confiança média
-    const confiancaMedia = Math.round(participantes.reduce((s, p) => s + p.sinal.confianca, 0) / participantes.length)
+    // Calcula confiança média ponderada por winRate
+    const agentPoder = new Map<string, number>()
+    for (const p of participantes) {
+      const agentName = p.nome.replace("Agente:", "")
+      const score = accountant.getAgentScore(agentName)
+      const winRate = score ? score.winRate / 100 : 0.5
+      agentPoder.set(p.nome, winRate)
+    }
+    const pesoTotal = participantes.reduce((s, p) => s + (agentPoder.get(p.nome) ?? 0.5), 0)
+    const confiancaMedia = Math.round(
+      participantes.reduce((s, p) => s + p.sinal.confianca * (agentPoder.get(p.nome) ?? 0.5), 0) / pesoTotal
+    )
 
     // Grid orders bypass confidence minimum
     const MAINNETS = new Set(["polygon", "base", "ethereum", "arbitrum"])

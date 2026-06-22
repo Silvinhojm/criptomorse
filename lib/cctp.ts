@@ -135,6 +135,36 @@ export class CCTPService {
     signer: ethers.Signer;
     onStep?: (step: CCTPStep) => void;
   }): Promise<CCTPTransfer> {
+    const MAX_RETRIES = 3
+    const RETRY_DELAYS = [15000, 30000, 60000]
+    let lastError: string = ''
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt - 1]))
+      }
+      try {
+        return await this._initiateTransferOnce(params)
+      } catch (err: any) {
+        lastError = err.message
+        params.onStep?.({
+          name: 'burn',
+          state: 'error',
+          error: `tentativa ${attempt + 1}/${MAX_RETRIES + 1}: ${err.message.slice(0, 100)}`,
+        })
+      }
+    }
+    throw new Error(`CCTP transfer failed after ${MAX_RETRIES + 1} tentativas: ${lastError}`)
+  }
+
+  private async _initiateTransferOnce(params: {
+    fromChain: string;
+    toChain: string;
+    amount: number;
+    recipient: string;
+    signer: ethers.Signer;
+    onStep?: (step: CCTPStep) => void;
+  }): Promise<CCTPTransfer> {
     const fromConfig = CCTP_CONFIG[params.fromChain as keyof typeof CCTP_CONFIG];
     const toConfig = CCTP_CONFIG[params.toChain as keyof typeof CCTP_CONFIG];
 

@@ -1096,7 +1096,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     const avgConfidence = agreeingAgents.reduce((s: number, v: AgentPairVote) => s + v.confidence, 0) / agreeingAgents.length
 
     const expectedReturn = (avgConfidence / 100) * vol24h
-    const spreadPct = 0.005
+    const spreadPct = Math.max(0.001, 0.005 - vol24h * 0.04)
     const minViableTrade = (getMinProfitReal(pairNet) + gasCost) / Math.max(0.001, expectedReturn - spreadPct)
 
     const minSizeForCheck = getMinTradeSize(pairNet)
@@ -1130,7 +1130,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     const wavePair = wavePairs.find(wp => wp.label === agreedPair.pair && wp.network === agreedPair.network)
     const spreadEsperado = Math.max((wavePair?.amplitude ?? 0.0005), 0.0005)
     const expectedReturn = (agreeingAgents.reduce((s: number, v: AgentPairVote) => s + v.confidence, 0) / agreeingAgents.length / 100) * spreadEsperado
-    const spreadPct = 0.005
+    const spreadPct = Math.max(0.001, 0.005 - spreadEsperado * 0.5)
     const minViableTrade = (getMinProfitReal(pairNet) + gasCost) / Math.max(0.001, expectedReturn - spreadPct)
 
     if (minViableTrade > 0 && valorFinal < minViableTrade) {
@@ -1244,7 +1244,9 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     const gasCost = await gasPriceOracle.getGasCost(posNet)
     const positionValueUSD = pos.amountBought * currentPrice
     const profitUSD = positionValueUSD * (profitPercent / 100)
-    const spreadCost = profitUSD * 0.005
+    const tokenVol = volatilityTracker.getVolatility(pos.boughtToken as TokenSymbol)
+    const spreadPct = Math.max(0.001, 0.005 - tokenVol.vol24h * 0.04)
+    const spreadCost = profitUSD * spreadPct
     // 🔥 Lucro líquido: só fecha se cobre gas + spread + lucro mínimo
     const minProfit = posNet === "ethereum" ? gasCost * 3 : gasCost + spreadCost + getMinProfitReal(posNet)
     if (profitUSD < minProfit && profitPercent > 0) {
