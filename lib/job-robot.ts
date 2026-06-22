@@ -5,9 +5,17 @@
 import { ethers } from 'ethers'
 import { AppKit, SwapChain } from '@circle-fin/app-kit'
 import { createViemAdapterFromPrivateKey } from '@circle-fin/adapter-viem-v2'
+import { defineChain, createWalletClient, createPublicClient, http } from 'viem'
 
 const ARC_RPC = 'https://rpc.testnet.arc.network'
 const ARC_CHAIN_ID = 5042002
+
+const ARC_CHAIN = defineChain({
+  id: ARC_CHAIN_ID,
+  name: 'Arc Testnet',
+  nativeCurrency: { name: 'ARC', symbol: 'ARC', decimals: 18 },
+  rpcUrls: { default: { http: [ARC_RPC] } },
+})
 
 const SWAP_PAIRS: Array<{ tokenIn: string; tokenOut: string; label: string }> = [
   { tokenIn: 'USDC', tokenOut: 'EURC', label: 'USDC→EURC' },
@@ -41,7 +49,11 @@ class JobRobot {
     const provider = new ethers.JsonRpcProvider(ARC_RPC)
     const wallet = new ethers.Wallet(privateKey, provider)
     this.address = wallet.address
-    this.adapter = createViemAdapterFromPrivateKey({ privateKey })
+    this.adapter = createViemAdapterFromPrivateKey({
+      privateKey,
+      getPublicClient: () => createPublicClient({ chain: ARC_CHAIN, transport: http(ARC_RPC) }),
+      getWalletClient: ({ account }) => createWalletClient({ account, chain: ARC_CHAIN, transport: http(ARC_RPC) }),
+    })
     this.kit = new AppKit()
   }
 
