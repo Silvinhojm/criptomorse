@@ -298,7 +298,7 @@ export async function executarCicloPregueiros(rede?: string) {
       }
     }
   }
-  volatilityTracker.collectPrices([...tokensParaColetar]).catch(() => {})
+  volatilityTracker.collectPrices([...tokensParaColetar]).catch(() => { console.warn('[PREGUERO] collectPrices falhou') })
 
   for (const redeAtual of redesParaEscalar) {
     if (!TRADING_PAIRS[redeAtual as NetworkKey]) continue

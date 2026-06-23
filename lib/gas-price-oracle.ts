@@ -7,13 +7,13 @@ import { NETWORKS as NETWORKS_STATIC, type NetworkKey } from "./real-swap-execut
 
 const GAS_COST_ESTIMATE: Record<string, number> = {
   arc: 0.006,
-  base: 0.05,
+  base: 0.003,
   polygon: 0.005,
   ethereum: 1.50,
-  arbitrum: 0.03,
+  arbitrum: 0.02,
 };
 
-const GAS_UNITS_SWAP = 500000;
+const GAS_UNITS_SWAP = 200000;
 
 const STABLECOIN_SYMBOLS = new Set(["USDC", "USDT", "DAI", "EURC", "ARC"]);
 

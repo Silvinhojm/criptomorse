@@ -601,7 +601,10 @@ NVIDIA_API_KEY=
 | cirBTC | `0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF` |
 | mcirBTC | `0x8cad4951192853D14f8Cb813695146b5Ae00EA6d` |
 | Multicall3 | `0xcA11bde05977b3631167028862bE2a173976CA11` |
-| CCTP TokenMessenger | `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA` |
+| CCTP TokenMessenger V2 (testnet) | `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA` |
+| CCTP MessageTransmitter V2 (testnet) | `0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275` |
+| CCTP TokenMessenger V2 (mainnet) | `0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d` |
+| CCTP MessageTransmitter V2 (mainnet) | `0x81D40F21F12A8F0E3252Bccb954D722d4c464B64` |
 | IdentityRegistry (ERC-8004) | `0x8004A818BFB912233c491871b3d84c89A494BD9e` |
 | AgenticCommerce (ERC-8183) | `0x0747EEf0706327138c69792bF28Cd525089e4583` |
 | AgentIdentity (deploy próprio) | `0xaeb95e2532a73a097e03584cb244eeca9b5609a5` |
@@ -1572,12 +1575,11 @@ Browser → /api/lifi/quote (GET) → li.quest/v1/quote (server-side)
 - **RPC Proxy**: implementado — todas as RPCs via `/api/rpc-proxy` (CORS bypass)
 - **LI.FI Quote Proxy**: `/api/lifi/quote` — CORS resolvido
 - **Wallet balance priority**: wallet real tem prioridade sobre unified balance (Circle Kit)
-- **CCTP Bridge**: implementado mas ainda não testado com sucesso (RPC rate limiting)
+- **CCTP Bridge V2**: atualizado para V2 — endereços corretos (TokenMessenger `0x28b5a0e9C...` mainnet, `0x8FE6B999...` testnet), MessageTransmitter (`0x81D40F21...` mainnet, `0xE737e5c...` testnet), ABI com `maxFee`/`minFinalityThreshold`, domainId Arc=26, attestation API V2 (`/v2/messages/{hash}/attestation`)
 - **Grid Trading**: disponível em modo single-chain; desativado em multi-chain
 - **PARÂMETROS AJUSTÁVEIS**: cada robô tem thresholds individuais (professor.ts + parametros-robos.ts)
 - **CALLBACKS MULTI-LISTENER**: subscribe/cleanup pattern em todos os eventos do sistema
-- **MIN_LUCRO_LIQUIDO**: $0.02 fixo para todas as redes (position-manager.ts)
-- **minVolatileTrade**: $0.10 para Polygon/Base/Arb, $50 ETH, $1 testnet
+- **micro-trade optimization (23/06)**: GAS_UNITS_SWAP 500k→200k, GAS_COST_ESTIMATE realistas (Polygon $0.005, Base $0.003, Arb $0.02), feeMonetization removido, MIN_LUCRO_LIQUIDO $0.02→$0.01, getMinProfitReal $0.005→$0.002, MIN_PROFIT_HOLD_MS 60s→30s, getMinProfitThreshold gas*1.5→gas*1.2
 
 ---
 

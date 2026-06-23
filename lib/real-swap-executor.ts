@@ -11,9 +11,10 @@ import { getArcFeeParams } from "./arc-gas";
 import { generateSyntheticQuote, executeDirectSwap } from "./arc-direct-swap";
 import { arcMemo } from "./arc-memo";
 import { transactionMemos } from "./transaction-memos";
-import { CCTPService, CCTP_CONFIG } from "./cctp";
+import { CCTP_CONFIG, cctpService } from "./cctp";
 import { unifiedBalance } from "./unified-balance";
 import { caixa } from "./caixa";
+import { hasDirectDex, getDirectDexQuote, executeDirectDexSwap, calculateAmountOutMin } from "./direct-dex";
 
 // Decimais conhecidos por token (fallback quando tokenBalances não carregou)
 export const TOKEN_DECIMALS: Record<string, number> = {
@@ -24,12 +25,13 @@ export const TOKEN_DECIMALS: Record<string, number> = {
 
 // ─── Redes suportadas ────────────────────────────────────────────────────────
 // Custo estimado de gas em USD por rede (para deducao do lucro)
+// Valores realistas para micro-trades (Base ~$0.003, Polygon ~$0.005, Arb ~$0.02)
 export const GAS_COST_ESTIMATE: Record<string, number> = {
   arc: 0.006,
-  base: 0.05,
-  polygon: 0.08,
+  base: 0.003,
+  polygon: 0.005,
   ethereum: 1.50,
-  arbitrum: 0.03,
+  arbitrum: 0.02,
 };
 
 export const NETWORKS = {
@@ -192,7 +194,7 @@ export function isStable(token: TokenSymbol): boolean {
 async function getMinProfitThreshold(networkKey: NetworkKey): Promise<number> {
   const gasCost = await gasPriceOracle.getGasCost(networkKey);
   if (networkKey === "ethereum") return Math.max(0.01, gasCost * 3);
-  return Math.max(0.001, gasCost * 1.5);
+  return Math.max(0.001, gasCost * 1.2);
 }
 
 const ERC20_ABI = [
@@ -246,10 +248,8 @@ const COIN_IDS: Record<string, string> = {
   ETH: "ethereum", POL: "matic-network", ARC: "usd-coin",
 };
 
-const cctpService = new CCTPService();
-
 const UB_CHAIN: Record<string, string> = {
-  arc: "Arc Testnet",
+  arc: "Arc_Testnet",
   base: "Base",
   polygon: "Polygon",
   ethereum: "Ethereum",
@@ -274,6 +274,7 @@ class RealSwapExecutor {
   private privateKey: string = "";
   private tokenBalances: Map<TokenSymbol, TokenBalance> = new Map();
   private nativeBalanceWei: bigint = 0n;
+  private nativeBalanceUSD: number = 0;
   private nativeBalanceLastUpdated: number = 0;
   private priceCache: Map<TokenSymbol, { price: number; timestamp: number }> = new Map();
   private quoteCache: Map<string, { quote: QuoteResult | null; timestamp: number }> = new Map();
@@ -291,20 +292,23 @@ class RealSwapExecutor {
     const cached = this.priceCache.get(token);
     if (cached && Date.now() - cached.timestamp < 15000) return cached.price;
     const coinId = COIN_IDS[token];
-    if (!coinId) return 1.0;
+    if (!coinId) {
+      if (isStable(token)) return cached?.price ?? 1.0
+      return cached?.price ?? 1.0
+    }
     try {
       const res = await fetch(`/api/price?ids=${coinId}`);
-      if (!res.ok) return this.priceCache.get(token)?.price ?? 1.0;
+      if (!res.ok) return cached?.price ?? (isStable(token) ? 1.0 : 0)
       const body = await res.json();
-      // FIX: /api/price retorna { prices: {...}, change24h: {...} }
       const data = body.prices ?? body;
-      const price = data[coinId] || 1.0;
+      const price = data[coinId] ?? 0;
       if (price > 0) {
         this.priceCache.set(token, { price, timestamp: Date.now() });
+        return price;
       }
-      return price;
+      return cached?.price ?? 0;
     } catch {
-      return this.priceCache.get(token)?.price ?? 1.0;
+      return cached?.price ?? 0;
     }
   }
 
@@ -534,14 +538,15 @@ class RealSwapExecutor {
       const net = NETWORKS[this.networkKey];
       const formatted = parseFloat(ethers.formatEther(this.nativeBalanceWei));
       const nativePrice = await this._fetchNativePrice(net.nativeSymbol);
-      return formatted * nativePrice;
+      this.nativeBalanceUSD = formatted * nativePrice;
+      return this.nativeBalanceUSD;
     } catch {
       return 0;
     }
   }
 
   getNativeBalanceUSD(): number {
-    return 0;
+    return this.nativeBalanceUSD;
   }
 
   // FIX: unpack { prices: {...} } igual ao gas-price-oracle.ts
@@ -549,17 +554,16 @@ class RealSwapExecutor {
   // Agora: (data.prices ?? data)[coinId] → preço real → $0.078 → $6.47 USD
   private async _fetchNativePrice(nativeSymbol: string): Promise<number> {
     const coinId = COIN_IDS[nativeSymbol] || nativeSymbol.toLowerCase();
-    if (!coinId) return 1.0;
+    if (!coinId) return 0;
     try {
       const res = await fetch(`/api/price?ids=${coinId}`);
-      if (!res.ok) return 1.0;
+      if (!res.ok) return 0;
       const body = await res.json();
-      // FIX: /api/price retorna { prices: {...}, change24h: {...} }
       const prices = body.prices ?? body;
-      const price = prices[coinId] ?? 1.0;
-      return price > 0 ? price : 1.0;
+      const price = prices[coinId] ?? 0;
+      return price > 0 ? price : 0;
     } catch {
-      return 1.0;
+      return 0;
     }
   }
 
@@ -801,194 +805,177 @@ class RealSwapExecutor {
       const fromTokenAmount = amountUsd / fromPrice;
       const fromAmountRaw   = toTokenUnits(fromTokenAmount, fromDecimals);
 
-      let quote: QuoteResult | null = null;
-      if (net.isTestnet) {
-        quote = generateSyntheticQuote(fromTokenAddr, toTokenAddr, fromAmountRaw, this.userAddress, net.chainId);
-      } else {
-        log(`🔍 Buscando rota LI.FI: ${fromToken}→${toToken} ($${amountUsd} ≈ ${fromTokenAmount.toFixed(6)} ${fromToken})...`);
-        try {
-          quote = await getQuote({
-            fromChain:   net.chainId,
-            toChain:     net.chainId,
-            fromToken:   fromTokenAddr,
-            toToken:     toTokenAddr,
-            fromAmount:  fromAmountRaw,
-            fromAddress: this.userAddress,
-            toAddress:   this.userAddress,
-            slippage:    0.005,
-          });
-        } catch {
-          quote = null;
-        }
-      }
-
-      if (!quote) {
-        const motivo = isLifiCooldown() ? "LI.FI em cooldown (rate limit)" : "Nenhuma rota disponível";
-        return this._fail(fromToken, toToken, amountUsd, motivo, timestamp);
-      }
-
-      if (quote.tool === 'synthetic-direct') {
-        if (!net.isTestnet) {
-          return this._fail(fromToken, toToken, amountUsd, "LI.FI indisponível — trade adiado", timestamp);
-        }
-        log(`🧪 Modo testnet: swap direto (approve + simulação)`);
-        const result = await executeDirectSwap(
-          this.signer!,
-          fromTokenAddr,
-          toTokenAddr,
-          fromAmountRaw,
-          this.userAddress,
-          net.chainId,
-          (m) => log(m),
-        );
-        if (!result.success) {
-          return this._fail(fromToken, toToken, amountUsd, result.error || "Direct swap falhou", timestamp);
-        }
-        const synthToPrice = await this._getTokenPrice(toToken);
-        const syntheticToAmount = synthToPrice > 0 ? amountUsd / synthToPrice : amountUsd;
-        log(`✅ Swap simulado: ${fromToken}→${toToken} | approve OK ($${amountUsd} → ${syntheticToAmount.toFixed(8)} ${toToken} @ $${synthToPrice})`);
-        return {
-          success: true,
-          txHash: '',
-          explorerUrl: '',
-          fromToken,
-          toToken,
-          fromAmount: amountUsd,
-          toAmount: syntheticToAmount,
-          action: "BUY",
-          message: `✅ ${fromToken}→${toToken} (simulado testnet) | approve OK`,
-          timestamp,
-          confirmed: false,
-          profit: 0,
-        };
-      }
-
-      if (!quote.transactionRequest || !quote.transactionRequest.data) {
-        return this._fail(fromToken, toToken, amountUsd, "Rota LI.FI sem dados de transação", timestamp);
+      // ─── Busca rotas: DEX direto + LI.FI em paralelo, escolhe a melhor ──
+      interface RouteOption {
+        label: string;
+        spender: string;
+        toAmountRaw: bigint;
+        gasEstimate: number;
+        execute: () => Promise<{ success: boolean; txHash?: string; error?: string }>;
       }
 
       const toDecimals = this.tokenBalances.get(toToken)?.decimals ?? TOKEN_DECIMALS[toToken] ?? 6;
-      const toEstimate = parseFloat(quote.toAmount ?? "0") / Math.pow(10, toDecimals);
-      log(`✅ Rota via ${quote.tool} | Estimativa: ${toEstimate.toFixed(6)} ${toToken}`);
-      if (toEstimate <= 0) {
-        if (net.isTestnet) {
-          log(`⚠️ Estimativa zero — testnet: enviando mesmo assim (rota ${quote.tool} pode omitir toAmount)`);
-        } else {
-          return this._fail(fromToken, toToken, amountUsd, `Rota ${quote.tool} retornou estimativa 0 — ${toToken} não disponível`, timestamp);
+      const toPrice = await this._getTokenPrice(toToken);
+      const routes: RouteOption[] = [];
+
+      // DEX direto
+      if (!net.isTestnet && hasDirectDex(this.networkKey)) {
+        const dexQuote = await getDirectDexQuote(this.networkKey, this.provider, fromTokenAddr, toTokenAddr, BigInt(fromAmountRaw));
+        if (dexQuote && dexQuote.amountOut > 0n) {
+          const amountOutMin = calculateAmountOutMin(dexQuote.amountOut, 100);
+          routes.push({
+            label: `DEX ${this.networkKey}`,
+            spender: dexQuote.router,
+            toAmountRaw: dexQuote.amountOut,
+            gasEstimate: dexQuote.estimatedGas,
+            execute: async () => {
+              const tc = new ethers.Contract(fromTokenAddr, ERC20_ABI, this.signer);
+              const al = await tc.allowance(this.userAddress, dexQuote.router);
+              if (al < BigInt(fromAmountRaw)) {
+                log(`🔓 Aprovando ${fromToken} para DEX ${dexQuote.router.slice(0, 10)}...`);
+                const atx = await tc.approve(dexQuote.router, ethers.MaxUint256);
+                await atx.wait();
+              }
+              return executeDirectDexSwap(this.networkKey, this.signer!, this.userAddress,
+                fromTokenAddr, toTokenAddr, BigInt(fromAmountRaw), amountOutMin, 100, (m) => log(m));
+            },
+          });
         }
       }
 
-      const preSwapBalance = this.getBalance(toToken);
+      // LI.FI
+      let lifiQuote: QuoteResult | null = null;
+      if (net.isTestnet) {
+        lifiQuote = generateSyntheticQuote(fromTokenAddr, toTokenAddr, fromAmountRaw, this.userAddress, net.chainId);
+      } else {
+        try {
+          lifiQuote = await getQuote({
+            fromChain: net.chainId, toChain: net.chainId,
+            fromToken: fromTokenAddr, toToken: toTokenAddr,
+            fromAmount: fromAmountRaw, fromAddress: this.userAddress,
+            toAddress: this.userAddress, slippage: 0.005,
+          });
+        } catch { /* LI.FI falhou */ }
+      }
+      if (lifiQuote && lifiQuote.transactionRequest?.data && lifiQuote.transactionRequest?.to) {
+        const lifiToEstimate = parseFloat(lifiQuote.toAmount ?? "0") / Math.pow(10, toDecimals);
+        if (lifiToEstimate > 0) {
+          routes.push({
+            label: `LI.FI ${lifiQuote.tool || 'aggregator'}`,
+            spender: lifiQuote.transactionRequest.to,
+            toAmountRaw: ethers.parseUnits(lifiToEstimate.toFixed(toDecimals), toDecimals),
+            gasEstimate: Number(lifiQuote.estimatedGas ?? 300000),
+            execute: async () => {
+              const tc = new ethers.Contract(fromTokenAddr, ERC20_ABI, this.signer);
+              const al = await tc.allowance(this.userAddress, lifiQuote.transactionRequest!.to);
+              if (al < BigInt(fromAmountRaw)) {
+                log(`🔓 Aprovando ${fromToken} para LI.FI...`);
+                const atx = await tc.approve(lifiQuote.transactionRequest!.to, ethers.MaxUint256);
+                await atx.wait();
+              }
+              const arcFeeParams = net.chainId === 5042002 ? getArcFeeParams() : {};
+              try {
+                const txResp = await this.signer!.sendTransaction({
+                  to: lifiQuote.transactionRequest!.to,
+                  data: lifiQuote.transactionRequest!.data,
+                  value: BigInt(lifiQuote.transactionRequest!.value ?? "0"),
+                  gasLimit: lifiQuote.transactionRequest!.gasLimit ? BigInt(lifiQuote.transactionRequest!.gasLimit) : undefined,
+                  ...arcFeeParams,
+                });
+                log(`🔗 LI.FI TX: ${txResp.hash}`);
+                const receipt = await txResp.wait(1);
+                if (!receipt || receipt.status === 0) return { success: false, error: "LI.FI TX falhou" };
+                return { success: true, txHash: txResp.hash };
+              } catch (e: any) {
+                return { success: false, error: `LI.FI TX: ${e.message.slice(0, 150)}` };
+              }
+            },
+          });
+        }
+      }
 
-      let estimatedProfit = 0;
+      // Escolhe a melhor rota (maior output estimado)
+      if (routes.length === 0) {
+        const motivo = !lifiQuote ? (isLifiCooldown() ? "LI.FI em cooldown" : "Nenhuma rota disponível") : "Rota inválida";
+        return this._fail(fromToken, toToken, amountUsd, motivo, timestamp);
+      }
+
+      const bestRoute = routes.reduce((a, b) => a.toAmountRaw >= b.toAmountRaw ? a : b);
+      log(`🏆 Rota escolhida: ${bestRoute.label} (output: ${ethers.formatUnits(bestRoute.toAmountRaw, toDecimals).slice(0, 10)} ${toToken})`);
+
+      const bestToEstimate = Number(ethers.formatUnits(bestRoute.toAmountRaw, toDecimals));
+      const bestToEstimateUsd = bestToEstimate * toPrice;
+
+      // Profit check
       const gasCostEstimated = await gasPriceOracle.getGasCost(this.networkKey);
-      if (isStable(toToken)) {
-        estimatedProfit = toEstimate - amountUsd;
-      }
-      const netProfit = estimatedProfit - gasCostEstimated;
+      const estimatedProfit = isStable(toToken) ? bestToEstimateUsd - amountUsd : 0;
       const minProfit = await getMinProfitThreshold(this.networkKey);
-      if (!isTestnet && isStable(toToken) && estimatedProfit < minProfit) {
-        log(`⏸️ Lucro estimado $${estimatedProfit.toFixed(4)} - gas $${gasCostEstimated.toFixed(3)} = $${netProfit.toFixed(4)} (min: $${minProfit})`);
-        return this._fail(fromToken, toToken, amountUsd, `Lucro líquido não atinge mínimo: $${netProfit.toFixed(4)}`, timestamp);
+      if (isStable(toToken) && estimatedProfit < minProfit) {
+        return this._fail(fromToken, toToken, amountUsd,
+          `Lucro $${estimatedProfit.toFixed(4)} < min $${minProfit} (rota ${bestRoute.label})`, timestamp);
       }
-      const minVolatileTrade = this.networkKey === "ethereum" ? 50 : NETWORKS[this.networkKey]?.isTestnet ? 1 : (this.networkKey === "polygon" || this.networkKey === "base" || this.networkKey === "arbitrum" ? 0.1 : 20)
-      if (!isTestnet && !isStable(toToken) && amountUsd < minVolatileTrade) {
-        log(`⏸️ Trade volátil $${amountUsd.toFixed(2)} abaixo do mínimo $${minVolatileTrade.toFixed(2)}`);
-        return this._fail(fromToken, toToken, amountUsd, `Trade mínimo para voláteis é $${minVolatileTrade.toFixed(2)} (tentativa: $${amountUsd.toFixed(2)})`, timestamp);
+      const minVolatileTrade = this.networkKey === "ethereum" ? 50 : net.isTestnet ? 1 :
+        (this.networkKey === "polygon" || this.networkKey === "base" || this.networkKey === "arbitrum" ? 0.1 : 20);
+      if (!net.isTestnet && !isStable(toToken) && amountUsd < minVolatileTrade) {
+        return this._fail(fromToken, toToken, amountUsd,
+          `Trade volátil $${amountUsd} < mínimo $${minVolatileTrade}`, timestamp);
       }
 
-      const isBuyingVolatile  = !isStable(toToken) && isStable(fromToken);
+      const isBuyingVolatile = !isStable(toToken) && isStable(fromToken);
       const isSellingForStable = isStable(toToken) && !isStable(fromToken);
       const action: "BUY" | "SELL" | "HOLD" = isBuyingVolatile ? "BUY" : isSellingForStable ? "SELL" : "BUY";
+      const preSwapBalance = this.getBalance(toToken);
 
-      const tx = quote.transactionRequest;
-      const tokenContract = new ethers.Contract(fromTokenAddr, ERC20_ABI, this.signer);
-      const allowance: bigint = await tokenContract.allowance(this.userAddress, tx.to);
+      // Executa a melhor rota
+      log(`🚀 Executando rota ${bestRoute.label}...`);
+      const result = await bestRoute.execute();
 
-      if (allowance < BigInt(fromAmountRaw)) {
-        log(`🔓 Aprovando ${fromToken}...`);
-        const approveTx = await tokenContract.approve(tx.to, ethers.MaxUint256);
-        await approveTx.wait();
-        log(`✅ Aprovação confirmada!`);
+      if (!result.success) {
+        // Se a melhor rota falhou, tenta a outra se existir
+        const fallbackRoute = routes.find(r => r.label !== bestRoute.label);
+        if (fallbackRoute) {
+          log(`⚠️ ${bestRoute.label} falhou, tentando ${fallbackRoute.label}...`);
+          const fallbackResult = await fallbackRoute.execute();
+          if (!fallbackResult.success) {
+            return this._fail(fromToken, toToken, amountUsd,
+              `Ambas rotas falharam: ${bestRoute.label} + ${fallbackRoute.label}`, timestamp);
+          }
+          // Fallback sucedeu — continua abaixo
+          await this.refreshAllBalances();
+          const postSwapBalance = this.getBalance(toToken);
+          const actualToAmount = Math.max(0, postSwapBalance - preSwapBalance);
+          const toAmountUsd = actualToAmount * toPrice;
+          const profit = isStable(toToken) ? actualToAmount - amountUsd : 0;
+          const explorerUrl = `${net.explorer}/tx/${fallbackResult.txHash}`;
+
+          log(`✅ ${fallbackRoute.label} concluído: ${actualToAmount.toFixed(6)} ${toToken} ($${toAmountUsd.toFixed(4)})`);
+          return {
+            success: true, txHash: fallbackResult.txHash || '', explorerUrl,
+            fromToken, toToken, fromAmount: amountUsd, toAmount: actualToAmount,
+            action, message: `✅ ${fromToken}→${toToken} via ${fallbackRoute.label}`,
+            timestamp, confirmed: true, profit,
+          };
+        }
+        return this._fail(fromToken, toToken, amountUsd,
+          `${bestRoute.label} falhou: ${result.error || "erro desconhecido"}`, timestamp);
       }
 
-      log(`📝 Enviando transação na ${net.name}...`);
-      const arcFeeParams = net.chainId === 5042002 ? getArcFeeParams() : {};
-      const txResponse = await this.signer.sendTransaction({
-        to:       tx.to,
-        data:     tx.data,
-        value:    BigInt(tx.value ?? "0"),
-        gasLimit: tx.gasLimit ? BigInt(tx.gasLimit) : undefined,
-        ...arcFeeParams,
-      });
-
-      log(`🔗 TX: ${txResponse.hash}`);
-      log(`⏳ Aguardando confirmação...`);
-
-      const receipt = await txResponse.wait(1);
-      if (!receipt || receipt.status === 0) {
-        recordError("executeSwap", "TX falhou on-chain (status 0)");
-        return this._fail(fromToken, toToken, amountUsd, "TX falhou on-chain (status 0)", timestamp);
-      }
-
-      const explorerUrl = `${net.explorer}/tx/${txResponse.hash}`;
-      log(`✅ Confirmado no bloco ${receipt.blockNumber}!`);
-      log(`🔗 ${explorerUrl}`);
-
+      // Sucesso na melhor rota
       await this.refreshAllBalances();
       const postSwapBalance = this.getBalance(toToken);
-      const actualToAmount  = Math.max(0, postSwapBalance - preSwapBalance);
-      const toPrice         = await this._getTokenPrice(toToken);
-      const toAmountUsd     = actualToAmount * toPrice;
+      const actualToAmount = Math.max(0, postSwapBalance - preSwapBalance);
+      const toAmountUsd = actualToAmount * toPrice;
+      const profit = isStable(toToken) ? actualToAmount - amountUsd : 0;
+      const explorerUrl = `${net.explorer}/tx/${result.txHash}`;
 
-      log(`📊 On-chain: ${actualToAmount.toFixed(6)} ${toToken} ($${toAmountUsd.toFixed(4)}) — saldo anterior: ${preSwapBalance.toFixed(6)} → atual: ${postSwapBalance.toFixed(6)}`);
-
-      let profit = 0;
-      const postGas = await gasPriceOracle.getGasCost(this.networkKey);
-      if (isStable(toToken)) {
-        profit = actualToAmount - amountUsd - postGas;
-      }
-
-      log(`💵 Lucro líquido real (pós-gas): $${profit.toFixed(4)}`);
-
-      let memoTxHash: string | undefined;
-      if (memoRef && this.networkKey === "arc" && this.signer) {
-        try {
-          const tradeMemoId   = transactionMemos.generateMemoId(`swap:${memoRef}`);
-          const tradeMemoData = transactionMemos.encodeMemoData({
-            ref: memoRef,
-            pair: `${fromToken}/${toToken}`,
-            amount: String(amountUsd),
-            profit: String(profit),
-            txHash: txResponse.hash,
-          });
-          memoTxHash = await arcMemo.sendUSDCWithMemo(
-            this.signer,
-            this.userAddress,
-            0,
-            tradeMemoId,
-            tradeMemoData
-          );
-          log(`📝 Memo on-chain: ${memoTxHash.slice(0, 10)}...`);
-        } catch {
-          // memo falhou — não interrompe o trade
-        }
-      }
+      log(`✅ ${bestRoute.label} concluído: ${actualToAmount.toFixed(6)} ${toToken} ($${toAmountUsd.toFixed(4)})`);
+      log(`💵 Lucro líquido real: $${profit.toFixed(4)}`);
 
       return {
-        success: true,
-        txHash: txResponse.hash,
-        explorerUrl,
-        fromToken,
-        toToken,
-        fromAmount: amountUsd,
-        toAmount: actualToAmount,
-        action,
-        message: `✅ ${fromToken}→${toToken} $${amountUsd} → ${actualToAmount.toFixed(6)} ${toToken} | ${txResponse.hash.slice(0, 10)}...`,
-        timestamp,
-        confirmed: true,
-        profit,
-        memoTxHash,
+        success: true, txHash: result.txHash || '', explorerUrl,
+        fromToken, toToken, fromAmount: amountUsd, toAmount: actualToAmount,
+        action, message: `✅ ${fromToken}→${toToken} via ${bestRoute.label}`,
+        timestamp, confirmed: true, profit,
       };
     } catch (err: any) {
       const msg =

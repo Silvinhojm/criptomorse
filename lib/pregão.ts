@@ -62,6 +62,49 @@ class Pregão {
   private onLogCallbacks: Array<(msg: string) => void> = []
   private onCashBoxChangeCallbacks: Array<(state: CashBoxState) => void> = []
   private sessionStats = { trades: 0, wins: 0, losses: 0, profit: 0 }
+  private static ORDENS_KEY = "arcflow_ordens"
+  private static STATS_KEY = "arcflow_session_stats"
+
+  constructor() {
+    this._loadOrdens()
+    this._loadStats()
+  }
+
+  private _saveOrdens(): void {
+    try {
+      const ativas = this.ordens.filter(o => o.status !== "concluido" && o.status !== "falhou")
+      localStorage.setItem(Pregão.ORDENS_KEY, JSON.stringify(ativas))
+    } catch {}
+  }
+
+  private _loadOrdens(): void {
+    try {
+      const raw = localStorage.getItem(Pregão.ORDENS_KEY)
+      if (!raw) return
+      const saved: OrdemExecucao[] = JSON.parse(raw)
+      for (const o of saved) {
+        const exists = this.ordens.some(ex => ex.id === o.id)
+        if (!exists) {
+          this.ordens.push(o)
+        }
+      }
+    } catch {}
+  }
+
+  private _saveStats(): void {
+    try {
+      localStorage.setItem(Pregão.STATS_KEY, JSON.stringify(this.sessionStats))
+    } catch {}
+  }
+
+  private _loadStats(): void {
+    try {
+      const raw = localStorage.getItem(Pregão.STATS_KEY)
+      if (!raw) return
+      const saved = JSON.parse(raw)
+      this.sessionStats = { ...this.sessionStats, ...saved }
+    } catch {}
+  }
 
   onOrdem(cb: (ordem: OrdemExecucao) => void) {
     this.onOrdemCallbacks.push(cb)
@@ -246,6 +289,7 @@ class Pregão {
     }
 
     this.ordens.push(ordem)
+    this._saveOrdens()
     
     // Log detalhado da origem da ordem
     const detalhe = TEM_GRID ? `Grid:${gridOk[0].nome}` :
@@ -294,7 +338,9 @@ class Pregão {
           }
           this.sessionStats.profit += ordem.resultado.profit
         }
+        this._saveStats()
       }
+      this._saveOrdens()
       for (const cb of this.onOrdemCallbacks) cb(ordem)
     }
   }
@@ -306,6 +352,7 @@ class Pregão {
       if (stuck && (o.status === "preparando" || o.status === "pronto" || o.status === "executando")) {
         this.log(`⏰ Ordem ${o.id} expirou (${Math.round((agora - o.timestamp) / 1000)}s em "${o.status}") — marcando como falha`)
         o.status = "falhou"
+        this._saveOrdens()
         for (const cb of this.onOrdemCallbacks) cb(o)
       }
     }
@@ -350,16 +397,20 @@ class Pregão {
 
   limparOrdensTravadas() {
     const agora = Date.now()
+    let mudou = false
     for (const o of this.ordens) {
       if ((o.status === "preparando" || o.status === "pronto") && agora - o.timestamp > 5000) {
         o.status = "falhou"
+        mudou = true
         this.log(`🧹 Ordem ${o.id} travada em "${o.status}" — marcada como falha`)
       }
       if (o.status === "executando" && agora - o.timestamp > 30000) {
         o.status = "falhou"
+        mudou = true
         this.log(`🧹 Ordem ${o.id} travada em "executando" — marcada como falha`)
       }
     }
+    if (mudou) this._saveOrdens()
   }
 
   getStatus(): { ordensAtivas: number; ordensConcluidas: number; oksPendentes: number; sessionTrades: number; sessionWins: number; sessionLosses: number; sessionProfit: number } {

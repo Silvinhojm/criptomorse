@@ -1,41 +1,53 @@
 import { ethers } from 'ethers';
 
+// ─── CCTP V2 — Endereços oficiais Circle / Arc (docs.arc.io) ────────────────
+// Mainnet TokenMessengerV2: 0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d
+// Mainnet MessageTransmitterV2: 0x81D40F21F12A8F0E3252Bccb954D722d4c464B64
+// Mainnet TokenMinterV2: 0xfd78EE919681417d192449715b2594ab58f5D002
+//
+// Arc Testnet:
+//   TokenMessengerV2:    0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA
+//   MessageTransmitterV2: 0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275
+//   TokenMinterV2:       0xb43db544E2c27092c107639Ad201b3dEfAbcF192
+//   MessageV2:           0xbaC0179bB358A8936169a63408C8481D582390C4  ← útil para decode/hash de mensagens
+//
+// V2 Domains: Ethereum=0, Arbitrum=3, Base=6, Polygon=7, Arc=26
 export const CCTP_CONFIG = {
   arc: {
     tokenMessenger: '0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA',
-    messageTransmitter: '0x5e7A2B3c8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8',
+    messageTransmitter: '0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275',
     usdc: '0x3600000000000000000000000000000000000000',
     chainId: 5042002,
-    domainId: 5,
+    domainId: 26,
     rpcUrl: 'https://rpc.testnet.arc.network',
   },
   base: {
-    tokenMessenger: '0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA',
-    messageTransmitter: '0x5e7A2B3c8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8',
+    tokenMessenger: '0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d',
+    messageTransmitter: '0x81D40F21F12A8F0E3252Bccb954D722d4c464B64',
     usdc: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
     chainId: 8453,
     domainId: 6,
     rpcUrl: 'https://mainnet.base.org',
   },
   polygon: {
-    tokenMessenger: '0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA',
-    messageTransmitter: '0x5e7A2B3c8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8',
+    tokenMessenger: '0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d',
+    messageTransmitter: '0x81D40F21F12A8F0E3252Bccb954D722d4c464B64',
     usdc: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
     chainId: 137,
     domainId: 7,
     rpcUrl: 'https://polygon.publicnode.com',
   },
   ethereum: {
-    tokenMessenger: '0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA',
-    messageTransmitter: '0x5e7A2B3c8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8',
-    usdc: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+    tokenMessenger: '0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d',
+    messageTransmitter: '0x81D40F21F12A8F0E3252Bccb954D722d4c464B64',
+    usdc: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
     chainId: 1,
     domainId: 0,
     rpcUrl: 'https://eth.llamarpc.com',
   },
   arbitrum: {
-    tokenMessenger: '0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA',
-    messageTransmitter: '0x5e7A2B3c8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8',
+    tokenMessenger: '0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d',
+    messageTransmitter: '0x81D40F21F12A8F0E3252Bccb954D722d4c464B64',
     usdc: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
     chainId: 42161,
     domainId: 3,
@@ -50,14 +62,13 @@ const CCTP_DOMAIN_IDS: Record<string, number> = {
   base: 6,
   arbitrum: 3,
   optimism: 2,
-  arc: 5,
+  arc: 26,
   solana: 5,
 };
 
 const TOKEN_MESSENGER_ABI = [
-  'function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken) external',
-  'function depositForBurnWithHook(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes hookData) external',
-  'event DepositForBurn(address indexed to, uint256 amount, uint32 dstChainId, bytes32 indexed mintRecipient, bytes32 indexed burnToken)',
+  'function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, uint256 maxFee, uint32 minFinalityThreshold) external',
+  'event DepositForBurn(address indexed from, uint256 amount, uint32 indexed destinationDomain, bytes32 indexed mintRecipient, address burnToken, bytes32 indexed maxFee, bytes extraData)',
   'function MAX_BURN_AMOUNT_PER_MESSAGE() view returns (uint256)',
 ];
 
@@ -73,7 +84,8 @@ const USDC_ABI = [
   'function decimals() view returns (uint8)',
 ];
 
-const ATTESTATION_SERVICE_URL = 'https://iris-api.circle.com/v1/attestations';
+const ATTESTATION_SERVICE_URL = 'https://iris-api.circle.com/v2/messages';
+const ATTESTATION_SERVICE_SANDBOX_URL = 'https://iris-api-sandbox.circle.com/v2/messages';
 
 export interface CCTPTransfer {
   txHash: string;
@@ -207,6 +219,8 @@ export class CCTPService {
         dstDomainId,
         mintRecipient,
         fromConfig.usdc,
+        0n,   // maxFee (0 = sem Forwarding Service)
+        0,    // minFinalityThreshold (0 = dev chain default)
         { gasLimit: 300000 }
       );
       const burnReceipt = await burnTx.wait();
@@ -224,12 +238,13 @@ export class CCTPService {
         throw new Error('DepositForBurn event not found');
       }
 
+      // V2: extraData contém a mensagem codificada; usamos o txHash como messageHash
       const messageHash = burnReceipt.transactionHash;
-      const messageBytes = ethers.concat([
+      const messageBytes = burnEvent.args.extraData || ethers.concat([
         ethers.toBeHex(burnEvent.args.amount, 32),
-        ethers.toBeHex(burnEvent.args.dstChainId, 4),
+        ethers.toBeHex(burnEvent.args.dstDomain || burnEvent.args.destinationDomain, 4),
         burnEvent.args.mintRecipient,
-        burnEvent.args.burnToken,
+        ethers.zeroPadValue(burnEvent.args.burnToken || fromConfig.usdc, 32),
         ethers.toBeHex(0, 32),
       ]);
 
@@ -268,58 +283,64 @@ export class CCTPService {
 
   private async fetchAttestation(messageHash: string, maxRetries = 30, intervalMs = 2000): Promise<string> {
     const cleanHash = messageHash.startsWith('0x') ? messageHash.slice(2) : messageHash;
+    const urls = [
+      `${ATTESTATION_SERVICE_URL}/${cleanHash}/attestation`,
+      `${ATTESTATION_SERVICE_SANDBOX_URL}/${cleanHash}/attestation`,
+      `${ATTESTATION_SERVICE_URL}/${cleanHash}`,
+      `${ATTESTATION_SERVICE_SANDBOX_URL}/${cleanHash}`,
+    ];
     
     for (let i = 0; i < maxRetries; i++) {
-      try {
-        const response = await fetch(`${ATTESTATION_SERVICE_URL}/${cleanHash}`);
-        if (response.ok) {
-          const data = await response.json();
-          if (data.attestation) {
-            return data.attestation;
+      for (const url of urls) {
+        try {
+          const response = await fetch(url);
+          if (response.ok) {
+            const data = await response.json();
+            if (data.attestation) {
+              return data.attestation;
+            }
           }
+        } catch (err) {
+          console.debug(`Attestation fetch failed for ${url}:`, err);
         }
-      } catch (err) {
-        console.debug('Attestation fetch attempt failed:', err);
       }
       await new Promise(resolve => setTimeout(resolve, intervalMs));
     }
     throw new Error('Attestation not available after maximum retries');
   }
 
-  async trackTransfer(messageHash: string, fromChain: string): Promise<CCTPTransfer | null> {
+  async trackTransfer(txHash: string, fromChain: string): Promise<CCTPTransfer | null> {
     const fromConfig = CCTP_CONFIG[fromChain as keyof typeof CCTP_CONFIG];
     if (!fromConfig) {
       throw new Error(`Unsupported chain: ${fromChain}`);
     }
 
     const provider = this.providers[fromChain];
-    const tokenMessenger = new ethers.Contract(fromConfig.tokenMessenger, TOKEN_MESSENGER_ABI, provider);
 
     try {
-      const logs = await provider.getLogs({
-        address: fromConfig.tokenMessenger,
-        topics: [ethers.id('DepositForBurn(address,uint256,uint32,bytes32,bytes32)')],
-        fromBlock: 0,
-        toBlock: 'latest',
-      });
+      const receipt = await provider.getTransactionReceipt(txHash);
+      if (!receipt) return null;
 
-      for (const log of logs) {
-        const parsedLog = tokenMessenger.interface.parseLog(log);
-        if (parsedLog && parsedLog.args[4] === messageHash) {
-          return {
-            txHash: messageHash,
-            amount: Number(ethers.formatUnits(parsedLog.args[1], 6)),
-            fromChain: fromChain,
-            toChain: this.getChainByDomainId(parsedLog.args[2]),
-            recipient: parsedLog.args[3],
-            status: 'completed',
-            timestamp: Date.now(),
-            messageHash,
-          };
-        }
-      }
+      const tokenMessenger = new ethers.Contract(fromConfig.tokenMessenger, TOKEN_MESSENGER_ABI, provider);
+      const event = receipt.logs
+        .map((log: any) => {
+          try { return tokenMessenger.interface.parseLog(log); }
+          catch { return null; }
+        })
+        .find((log: any) => log?.name === 'DepositForBurn');
 
-      return null;
+      if (!event) return null;
+
+      return {
+        txHash,
+        amount: Number(ethers.formatUnits(event.args.amount, 6)),
+        fromChain,
+        toChain: this.getChainByDomainId(event.args.destinationDomain),
+        recipient: ethers.dataSlice(event.args.mintRecipient, 12),
+        status: 'completed',
+        timestamp: Date.now(),
+        messageHash: txHash,
+      };
     } catch (err) {
       console.error('Error tracking CCTP transfer:', err);
       return null;

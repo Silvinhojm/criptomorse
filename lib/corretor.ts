@@ -3,8 +3,8 @@ import { pairProfitability } from "./pair-profitability"
 import { pregão, type OrdemExecucao } from "./pregão"
 import { blockIfPanicked, recordTradeResult } from "./circuit-breaker"
 import { positionManager } from "./position-manager"
-import { feeMonetization } from "./fee-monetization"
-import { transactionMemos } from "./transaction-memos"
+// feeMonetization removido — taxa fantasma que só encolhe o trade sem beneficiar ninguém
+
 import { accountant } from "./accountant"
 import { nanopaymentSystem } from "./nanopayment-system"
 
@@ -55,25 +55,14 @@ class Corretor {
     }
 
     try {
-      const fee = feeMonetization.calculateFee(
-        `${ordem.fromToken}_${ordem.toToken}`,
-        valorTrade
-      )
-      const valorLiquido = fee.netAmount
+      this.log(`💱 Executando: ${ordem.fromToken}→${ordem.toToken} $${valorTrade.toFixed(2)}`)
 
-      this.log(`💱 Executando: ${ordem.fromToken}→${ordem.toToken} $${valorLiquido.toFixed(2)} (fee: $${fee.fee.toFixed(4)})`)
-
-      const resultado = await realSwap.executeSwap(fromKey, toKey, valorLiquido, (msg) => this.log(msg), ordem.id)
+      const resultado = await realSwap.executeSwap(fromKey, toKey, valorTrade, (msg) => this.log(msg), ordem.id)
 
       if (resultado.success) {
-        const memo = transactionMemos.createTradeMemo(
-          ordem.id,
-          "Corretor",
-          { par: ordem.par, fee: fee.fee.toFixed(4) }
-        )
-        this.log(`📝 Memo: ${memo.hex.slice(0, 30)}...`)
+        this.log(`📝 Trade concluído: ${ordem.par}`)
 
-        let profit = (resultado.profit ?? 0) - fee.fee
+        let profit = (resultado.profit ?? 0)
         const isStableTo = ["USDC", "USDT", "DAI", "EURC"].includes(ordem.toToken)
         const isStableFrom = ["USDC", "USDT", "DAI", "EURC"].includes(ordem.fromToken)
         const netConf = NETWORKS[ordem.rede as NetworkKey]

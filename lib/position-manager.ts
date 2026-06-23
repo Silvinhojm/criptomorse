@@ -35,11 +35,11 @@ const STALE_NO_PROFIT_MS = 4 * 60 * 60 * 1000;
 const STALE_FORCE_CLOSE_MS = 30 * 60 * 1000; // 30min sem lucro → força fechamento
 
 // Tempo mínimo antes de considerar fechamento com lucro
-const MIN_PROFIT_HOLD_MS = 60 * 1000; // 1 minuto
+const MIN_PROFIT_HOLD_MS = 30 * 1000; // 30 segundos — flip mais rápido em micro-trades
 // Lucro mínimo real desejado (já descontado gas + spread na abertura)
-// Valor fixo de $0.02 — cobre taxas + spread em qualquer rede
-// Se lucro líquido < $0.02, a posição não é fechada (evita prejuízo disfarçado)
-const MIN_LUCRO_LIQUIDO_USD = 0.02
+// $0.01 é suficiente com gas realista (Polygon $0.005, Base $0.003) e spread ~$0.005
+// Permite lucrar com movimentos de $0.01-0.02 em trades de $2-5
+const MIN_LUCRO_LIQUIDO_USD = 0.01
 
 class PositionManager {
   private positions: Map<string, OpenPosition> = new Map();
