@@ -279,54 +279,60 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   const pairs = TRADING_PAIRS[redeAtual] || []
   const isArc = redeAtual === "arc" && net?.isTestnet
 
-  // 🔁 Arc: intercepta receberOK de agentes
-  // Os robôs analisam pares de TODAS as redes usando dados quânticos da Arc
+  // 🔁 Aprendizado: intercepta receberOK de agentes em TODAS as redes
   // Cada voto vira:
-  //   1. [APRENDIZADO] no log
+  //   1. [APRENDIZADO] no log (só em testnet, mainnet vai pro Pregão)
   //   2. Palpite pro Professor (avalia após 5 min)
   //   3. Avaliação no PairSector (categorizada por rede alvo)
+  // Regra: só registra palpite se o par pertence à rede atual (evita conflitos
+  // cross-network onde WMATIC da Polygon seria avaliado contra preço da Arc)
   const originalReceberOK = pregão.receberOK.bind(pregão)
-  if (isArc) {
-    pregão.receberOK = (signal) => {
-      if (signal.pregueiro.startsWith("Agente:")) {
-        const nomeRobo = signal.pregueiro.replace("Agente:", "")
+  pregão.receberOK = (signal) => {
+    if (signal.pregueiro.startsWith("Agente:")) {
+      const nomeRobo = signal.pregueiro.replace("Agente:", "")
+      if (isArc) {
         pregão.adicionarLog(`[APRENDIZADO] ${nomeRobo} → ${signal.par} (${signal.confianca}%) na ${signal.rede}`)
-        if (signal.direcao && signal.precoNoPalpite) {
-          // Ignora palpites em tokens sem price feed (cirBTC, mcirBTC na testnet)
-          // pra não criar espiral de streak negativo com avaliações falsas
-          const coinIds = { WETH: 1, WMATIC: 1, ARB: 1, WBTC: 1, SOL: 1, USDC: 1, EURC: 1 }
-          const tokenVolatil = signal.direcao === "buy" ? signal.toToken : signal.fromToken
-          if (!coinIds[tokenVolatil as keyof typeof coinIds]) {
-            pregão.adicionarLog(`[APRENDIZADO] ${nomeRobo} → ${signal.par} — pulando avaliação (${tokenVolatil} sem price feed)`)
-            return
-          }
-          professor.registrarPalpite({
-            roboNome: nomeRobo,
-            rede: signal.rede,
-            par: signal.par,
-            fromToken: signal.fromToken,
-            toToken: signal.toToken,
-            direcao: signal.direcao,
-            confianca: signal.confianca,
-            precoNoPalpite: signal.precoNoPalpite,
-            timestamp: Date.now(),
-          })
-          pairSector.registrarAvaliacao({
-            par: signal.par,
-            rede: signal.rede as NetworkKey,
-            fromToken: signal.fromToken as TokenSymbol,
-            toToken: signal.toToken as TokenSymbol,
-            roboNome: nomeRobo,
-            direcao: signal.direcao,
-            confianca: signal.confianca,
-            precoNoPalpite: signal.precoNoPalpite,
-            timestamp: Date.now(),
-          })
-        }
-        return
       }
-      originalReceberOK(signal)
+      if (signal.direcao && signal.precoNoPalpite) {
+        // Só avalia pares da rede atual — cross-network cria avaliações falsas
+        if (signal.rede !== redeAtual) {
+          if (isArc) pregão.adicionarLog(`[APRENDIZADO] ${nomeRobo} → ${signal.par} — pulando (rede ${signal.rede} ≠ atual ${redeAtual})`)
+          return
+        }
+        // Ignora palpites em tokens sem price feed (cirBTC, mcirBTC na testnet)
+        // pra não criar espiral de streak negativo com avaliações falsas
+        const coinIds: Record<string, number> = { WETH: 1, WMATIC: 1, ARB: 1, WBTC: 1, SOL: 1, USDC: 1, EURC: 1 }
+        const tokenVolatil = signal.direcao === "buy" ? signal.toToken : signal.fromToken
+        if (!coinIds[tokenVolatil]) {
+          if (isArc) pregão.adicionarLog(`[APRENDIZADO] ${nomeRobo} → ${signal.par} — pulando avaliação (${tokenVolatil} sem price feed)`)
+          return
+        }
+        professor.registrarPalpite({
+          roboNome: nomeRobo,
+          rede: signal.rede,
+          par: signal.par,
+          fromToken: signal.fromToken,
+          toToken: signal.toToken,
+          direcao: signal.direcao,
+          confianca: signal.confianca,
+          precoNoPalpite: signal.precoNoPalpite,
+          timestamp: Date.now(),
+        })
+        pairSector.registrarAvaliacao({
+          par: signal.par,
+          rede: signal.rede as NetworkKey,
+          fromToken: signal.fromToken as TokenSymbol,
+          toToken: signal.toToken as TokenSymbol,
+          roboNome: nomeRobo,
+          direcao: signal.direcao,
+          confianca: signal.confianca,
+          precoNoPalpite: signal.precoNoPalpite,
+          timestamp: Date.now(),
+        })
+      }
+      return
     }
+    originalReceberOK(signal)
   }
 
   // Monta lista combinada de pares de todas as redes alvo
@@ -361,6 +367,9 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
 
   // 📚 Professor avalia palpites pendentes (a cada 5 min)
   await professor.avaliarPalpites()
+
+  // 🧹 Remove avaliações antigas de tokens sem price feed (cirBTC, mcirBTC etc.)
+  pairSector.limparInvalidos()
 
   for (const nome of ["Grid", "GridRef"]) {
     accountant.removeAgent(nome)

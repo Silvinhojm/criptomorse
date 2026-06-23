@@ -105,6 +105,21 @@ class PairSector {
     this.avaliacoes = []
     try { localStorage.removeItem(STORAGE_KEY) } catch {}
   }
+
+  // Remove avaliações de tokens sem price feed real (cirBTC, mcirBTC, etc.)
+  // que foram registradas antes do filtro coinIds ser adicionado
+  limparInvalidos() {
+    const VALID_TOKENS = new Set(["WETH", "WMATIC", "ARB", "WBTC", "SOL", "USDC", "EURC"])
+    const antes = this.avaliacoes.length
+    this.avaliacoes = this.avaliacoes.filter(a => {
+      const tokenV = a.direcao === "buy" ? a.toToken : a.fromToken
+      return VALID_TOKENS.has(tokenV)
+    })
+    if (this.avaliacoes.length < antes) {
+      console.log(`[PAIR_SECTOR] Limpeza: removidas ${antes - this.avaliacoes.length} avaliações inválidas`)
+      this._salvar()
+    }
+  }
 }
 
 export const pairSector = new PairSector()

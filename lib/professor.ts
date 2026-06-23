@@ -108,6 +108,14 @@ class Professor {
 
   private async _avaliar(palpite: PalpiteRobo) {
     const tokenVolatil = palpite.direcao === "buy" ? palpite.toToken : palpite.fromToken
+    // Pula tokens sem price feed real (CoinGecko) — evita streak negativo falso
+    // de tokens testnet como cirBTC/mcirBTC que sempre retornam $1.0 de fallback
+    const COIN_IDS: Record<string, string> = {
+      WETH: "ethereum", WMATIC: "matic-network", ARB: "arbitrum",
+      WBTC: "bitcoin", SOL: "solana",
+    }
+    if (!COIN_IDS[tokenVolatil]) return
+
     const precoAtual = await positionManager.fetchTokenPrice(tokenVolatil as TokenSymbol)
     if (!precoAtual || precoAtual <= 0) return
 
