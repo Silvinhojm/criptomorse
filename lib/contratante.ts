@@ -4,6 +4,7 @@
 
 import { jobRobot } from './job-robot'
 import { narrador } from './narrator'
+import { escolaRobos } from './escola-robos'
 
 export interface SwapReport {
   pair: string
@@ -36,6 +37,7 @@ class Contratante {
   private _totalTxs = 0
   private _cicloAtual = 0
   private _privateKey = ''
+  private _executando = false // guard contra overlap
   private _reports: SwapReport[] = []
 
   private listeners: Array<() => void> = []
@@ -60,6 +62,7 @@ class Contratante {
 
   onChange(cb: () => void) {
     this.listeners.push(cb)
+    return () => { this.listeners = this.listeners.filter(c => c !== cb) }
   }
 
   private notify() {
@@ -68,65 +71,75 @@ class Contratante {
 
   /** Tenta executar um ciclo de swap na Arc testnet */
   async tryExecuteCycle(): Promise<{ ok: boolean; msg: string }> {
+    if (this._executando) {
+      return { ok: false, msg: '⏳ Contratante: ciclo anterior ainda executando' }
+    }
+    this._executando = true
     if (!this._privateKey) {
+      this._executando = false
       return { ok: false, msg: '❌ Contratante: private key não configurada' }
     }
 
-    if (!jobRobot.isReady()) {
-      try {
-        jobRobot.initialize(this._privateKey)
-      } catch (e: any) {
-        this._ultimoError = e.message
-        this.notify()
-        return { ok: false, msg: `❌ Contratante: falha ao inicializar: ${e.message}` }
+    try {
+      if (!jobRobot.isReady()) {
+        try {
+          jobRobot.initialize(this._privateKey)
+        } catch (e: any) {
+          this._ultimoError = e.message
+          this.notify()
+          return { ok: false, msg: `❌ Contratante: falha ao inicializar: ${e.message}` }
+        }
       }
-    }
 
-    if (!jobRobot.isReady()) {
-      return { ok: false, msg: '❌ Contratante: wallet não inicializada' }
-    }
+      if (!jobRobot.isReady()) {
+        return { ok: false, msg: '❌ Contratante: wallet não inicializada' }
+      }
 
-    // Verificar saldo antes
-    const bal = await jobRobot.checkBalance()
-    if (bal < 0.5) {
-      const msg = `⚠️ Contratante: saldo baixo ($${bal.toFixed(2)} USDC) — aguardando...`
-      this._ultimoResultado = msg
+      // Verificar saldo antes
+      const bal = await jobRobot.checkBalance()
+      if (bal < 0.5) {
+        const msg = `⚠️ Contratante: saldo baixo ($${bal.toFixed(2)} USDC) — aguardando...`
+        this._ultimoResultado = msg
+        this.notify()
+        return { ok: false, msg }
+      }
+
+      this._cicloAtual++
+      const amount = Math.min(1.0, Math.max(0.50, bal * 0.1)).toFixed(2)
+      this._ultimoResultado = `🤖 Swap #${this._cicloAtual} ($${amount} USDC)...`
       this.notify()
-      return { ok: false, msg }
-    }
 
-    this._cicloAtual++
-    const amount = Math.min(1.0, Math.max(0.50, bal * 0.1)).toFixed(2)
-    this._ultimoResultado = `🤖 Swap #${this._cicloAtual} ($${amount} USDC)...`
-    this.notify()
+      const shiftState = escolaRobos.getShiftState()
+      const roboNome = shiftState.robosAtivos[0] ?? "Contratante"
+      const result = await jobRobot.executeSwap(amount, roboNome)
 
-    const result = await jobRobot.executeSwap(amount)
-
-    this._swapsExecutados++
-    this._totalTxs++
-    const report: SwapReport = {
-      pair: result.pair ?? 'desconhecido',
-      amountIn: result.amountIn ?? amount,
-      txHash: result.txHash ?? '',
-      timestamp: Date.now(),
-      success: result.success,
-      error: result.error,
-    }
-    this._reports.push(report)
+      this._swapsExecutados++
+      this._totalTxs++
+      const report: SwapReport = {
+        pair: result.pair ?? 'desconhecido',
+        amountIn: result.amountIn ?? amount,
+        txHash: result.txHash ?? '',
+        timestamp: Date.now(),
+        success: result.success,
+        error: result.error,
+      }
+      this._reports.push(report)
 
     if (result.success) {
       this._swapsSucesso++
-      const msg = `✅ Swap #${this._cicloAtual} concluído: ${result.pair} ($${amount} → ${result.amountOut ?? '?'})`
+      // Registra job como prova para os robôs em turno ativo
+      for (const nomeRobo of shiftState.robosAtivos) {
+        const contratoId = result.contractAddress ?? result.txHash ?? ''
+        escolaRobos.registrarJob(nomeRobo, true, contratoId)
+        narrador.jobConcluido(nomeRobo, result.pair ?? "USDC→EURC", amount)
+      }
+      const contratoMsg = result.contractAddress ? ` | 📜 ${result.contractAddress.slice(0, 10)}...` : ''
+      const amountOut = result.amountOut && result.amountOut !== "0" ? `$${result.amountOut}` : 'deploy'
+      const msg = `✅ Swap #${this._cicloAtual} concluído: ${result.pair} ($${amount} → ${amountOut})${contratoMsg}`
       this._ultimoResultado = `${msg} | tx: ${result.txHash?.slice(0, 10)}...`
       this._ultimoError = null
       this.notify()
-      narrador.adicionarEvento({
-        tipo: 'info',
-        mensagem: `Contratante: ${result.pair} $${
-          result.amountIn ?? amount
-        } concluído na Arc testnet`,
-        timestamp: Date.now(),
-      })
+      narrador.manual(`Contratante: ${result.pair} $${result.amountIn ?? amount} concluído na Arc testnet${contratoMsg}`, "info")
       return { ok: true, msg }
     } else {
       this._swapsFalha++
@@ -134,6 +147,9 @@ class Contratante {
       this._ultimoResultado = `❌ Swap #${this._cicloAtual} falhou: ${result.error?.slice(0, 100)}`
       this.notify()
       return { ok: false, msg: `❌ Swap falhou: ${result.error?.slice(0, 100)}` }
+    }
+    } finally {
+      this._executando = false
     }
   }
 }

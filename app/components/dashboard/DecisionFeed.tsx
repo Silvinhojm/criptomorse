@@ -26,7 +26,7 @@ export default function DecisionFeed() {
   }, [])
 
   useEffect(() => {
-    pregão.onLog((msg) => {
+    const unsubLog = pregão.onLog((msg) => {
       const item = traduzirLog(msg)
       if (item) setItems(prev => [item, ...prev].slice(0, 30))
     })
@@ -36,7 +36,10 @@ export default function DecisionFeed() {
       setTop3(ranking)
     }, 5000)
 
-    return () => clearInterval(t)
+    return () => {
+      unsubLog()
+      clearInterval(t)
+    }
   }, [])
 
   useEffect(() => {

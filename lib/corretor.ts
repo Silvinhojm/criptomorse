@@ -16,20 +16,22 @@ const AGENTES_CONHECIDOS = new Set([
 ])
 
 class Corretor {
-  private onLogCallback: ((msg: string) => void) | null = null
-  private onTradeCallback: ((ordem: OrdemExecucao) => void) | null = null
+  private onLogCallbacks: Array<(msg: string) => void> = []
+  private onTradeCallbacks: Array<(ordem: OrdemExecucao) => void> = []
 
   onLog(cb: (msg: string) => void) {
-    this.onLogCallback = cb
+    this.onLogCallbacks.push(cb)
+    return () => { this.onLogCallbacks = this.onLogCallbacks.filter(c => c !== cb) }
   }
 
   onTrade(cb: (ordem: OrdemExecucao) => void) {
-    this.onTradeCallback = cb
+    this.onTradeCallbacks.push(cb)
+    return () => { this.onTradeCallbacks = this.onTradeCallbacks.filter(c => c !== cb) }
   }
 
   private log(msg: string) {
     console.log(`[CORRETOR] ${msg}`)
-    this.onLogCallback?.(msg)
+    for (const cb of this.onLogCallbacks) cb(msg)
   }
 
   async executar(ordem: OrdemExecucao, valorTrade: number) {
@@ -185,7 +187,7 @@ class Corretor {
         })
 
         this.log(`✅ ORDEM CONCLUÍDA: ${ordem.par} | TX: ${resultado.txHash.slice(0, 10)}... | Lucro: $${profit.toFixed(4)}`)
-        this.onTradeCallback?.(ordem)
+        for (const cb of this.onTradeCallbacks) cb(ordem)
       } else {
         this.log(`❌ Falha na execução: ${resultado.message}`)
         pregão.atualizarOrdem(ordem.id, { status: "falhou" })

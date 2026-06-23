@@ -1,4 +1,6 @@
 import { accountant } from "./accountant"
+import { escolaRobos } from "./escola-robos"
+import { isStable } from "./real-swap-executor"
 
 export interface OkSignal {
   pregueiro: string
@@ -9,6 +11,8 @@ export interface OkSignal {
   fromToken: string
   toToken: string
   amountUsd?: number
+  direcao?: "buy" | "sell"
+  precoNoPalpite?: number
 }
 
 export interface OrdemExecucao {
@@ -54,30 +58,33 @@ class Pregão {
   private LIMIAR_OK = 2
   private JANELA_MS = 30_000
   private ORDEM_TIMEOUT_MS = 120_000 // 2 min — trava em "preparando" = falha
-  private onOrdemCallback: ((ordem: OrdemExecucao) => void) | null = null
-  private onLogCallback: ((msg: string) => void) | null = null
-  private onCashBoxChangeCallback: ((state: CashBoxState) => void) | null = null
+  private onOrdemCallbacks: Array<(ordem: OrdemExecucao) => void> = []
+  private onLogCallbacks: Array<(msg: string) => void> = []
+  private onCashBoxChangeCallbacks: Array<(state: CashBoxState) => void> = []
   private sessionStats = { trades: 0, wins: 0, losses: 0, profit: 0 }
 
   onOrdem(cb: (ordem: OrdemExecucao) => void) {
-    this.onOrdemCallback = cb
+    this.onOrdemCallbacks.push(cb)
+    return () => { this.onOrdemCallbacks = this.onOrdemCallbacks.filter(c => c !== cb) }
   }
 
   onLog(cb: (msg: string) => void) {
-    this.onLogCallback = cb
+    this.onLogCallbacks.push(cb)
+    return () => { this.onLogCallbacks = this.onLogCallbacks.filter(c => c !== cb) }
   }
 
   onCashBoxChange(cb: (state: CashBoxState) => void) {
-    this.onCashBoxChangeCallback = cb
+    this.onCashBoxChangeCallbacks.push(cb)
+    return () => { this.onCashBoxChangeCallbacks = this.onCashBoxChangeCallbacks.filter(c => c !== cb) }
   }
 
   adicionarLog(msg: string) {
-    this.onLogCallback?.(msg)
+    for (const cb of this.onLogCallbacks) cb(msg)
   }
 
   private log(msg: string) {
     console.log(`[PREGÃO] ${msg}`)
-    this.onLogCallback?.(msg)
+    for (const cb of this.onLogCallbacks) cb(msg)
   }
 
   registrarCashBox(
@@ -86,13 +93,13 @@ class Pregão {
     unifiedBalance?: { totalUSD: number; porRede: Record<string, number> }
   ) {
     this.cashBox = { saldoUSDC, saldosPorRede, ultimaAtualizacao: Date.now(), unifiedBalance }
-    this.onCashBoxChangeCallback?.(this.cashBox)
+    for (const cb of this.onCashBoxChangeCallbacks) cb(this.cashBox)
   }
 
   atualizarUnifiedBalance(totalUSD: number, porRede: Record<string, number>) {
     this.cashBox.unifiedBalance = { totalUSD, porRede }
     this.cashBox.ultimaAtualizacao = Date.now()
-    this.onCashBoxChangeCallback?.(this.cashBox)
+    for (const cb of this.onCashBoxChangeCallbacks) cb(this.cashBox)
   }
 
   getCashBox(): CashBoxState {
@@ -135,6 +142,13 @@ class Pregão {
     const okAgentes = okValidos.filter(p => p.nome.startsWith("Agente:"))
     const okPregueiros = okValidos.filter(p => !p.nome.startsWith("Agente:") && !p.nome.startsWith("Grid:"))
 
+    // 🎓 Verifica se o sinal vem de um robô em turno ativo E verificado (jobs como prova)
+    // 🏆 Ou robô promovido pelo Professor (avaliação de pares consistente)
+    const nomeAgente = signal.pregueiro.startsWith("Agente:") ? signal.pregueiro.replace("Agente:", "") : ""
+    const isVerified = nomeAgente !== "" && escolaRobos.isOnShift(nomeAgente) && escolaRobos.isVerified(nomeAgente)
+    const isPromovido = nomeAgente !== "" && escolaRobos.isOnShift(nomeAgente) && escolaRobos.isPromovido(nomeAgente)
+    const isOnShiftUnverified = nomeAgente !== "" && escolaRobos.isOnShift(nomeAgente) && !escolaRobos.isVerified(nomeAgente) && !escolaRobos.isPromovido(nomeAgente)
+
     // 🔥 Consenso Híbrido: 1 agente + 1 pregueiro = ORDEM
     const TEM_LIMIAR_HIBRIDO = okAgentes.length >= 1 && okPregueiros.length >= 1
     
@@ -142,8 +156,8 @@ class Pregão {
     const gridOk = okValidos.filter(p => p.nome.startsWith("Grid:"))
     const TEM_GRID = gridOk.length >= 1
 
-    // Verifica se tem consenso
-    const temConsenso = TEM_GRID || TEM_LIMIAR_HIBRIDO || okAgentes.length >= limiarAgentes || okPregueiros.length >= 3
+    // Verifica se tem consenso (robô verificado ou promovido em turno não precisa de consenso)
+    const temConsenso = isVerified || isPromovido || TEM_GRID || TEM_LIMIAR_HIBRIDO || okAgentes.length >= limiarAgentes || okPregueiros.length >= 3
 
     if (!temConsenso) {
       return
@@ -153,7 +167,17 @@ class Pregão {
     let participantes: { nome: string; sinal: OkSignal }[] = []
     let origem = "🏛️"
 
-    if (TEM_GRID) {
+    if (isPromovido) {
+      participantes = [{ nome: signal.pregueiro, sinal: signal }]
+      origem = "🏆 Promovido"
+      this.log(`🏆 Ordem de robô promovido: ${nomeAgente} → ${signal.par} em ${rede}`)
+    } else if (isVerified) {
+      participantes = [{ nome: signal.pregueiro, sinal: signal }]
+      origem = "🎓 Verificado"
+      this.log(`🎓 Ordem de robô verificado: ${nomeAgente} → ${signal.par} em ${rede}`)
+    } else if (isOnShiftUnverified) {
+      this.log(`📚 ${nomeAgente} em turno mas ainda precisa de ${Math.max(0, 3 - escolaRobos.getRobo(nomeAgente).jobsCompletos)} jobs para ser verificado`)
+    } else if (TEM_GRID) {
       participantes = gridOk.slice(0, 1)
       origem = "📐 Grid"
     } else if (TEM_LIMIAR_HIBRIDO) {
@@ -229,7 +253,7 @@ class Pregão {
                     `${participantes.length} agentes`
     this.log(`${origem} ORDEM GERADA: ${par} na ${rede} (${detalhe}) conf=${confiancaMedia}%`)
 
-    this.onOrdemCallback?.(ordem)
+    for (const cb of this.onOrdemCallbacks) cb(ordem)
 
     // Remove os OKs usados
     for (const p of participantes) {
@@ -260,15 +284,18 @@ class Pregão {
       const wasCompleted = ordem.status === "concluido"
       Object.assign(ordem, update)
       if (ordem.status === "concluido" && ordem.resultado && !wasCompleted) {
-        this.sessionStats.trades++
-        if (ordem.resultado.profit > 0) {
-          this.sessionStats.wins++
-        } else {
-          this.sessionStats.losses++
+        const isBuyOpening = isStable(ordem.fromToken as any) && !isStable(ordem.toToken as any)
+        if (!isBuyOpening) {
+          this.sessionStats.trades++
+          if (ordem.resultado.profit > 0) {
+            this.sessionStats.wins++
+          } else {
+            this.sessionStats.losses++
+          }
+          this.sessionStats.profit += ordem.resultado.profit
         }
-        this.sessionStats.profit += ordem.resultado.profit
       }
-      this.onOrdemCallback?.(ordem)
+      for (const cb of this.onOrdemCallbacks) cb(ordem)
     }
   }
 
@@ -279,7 +306,7 @@ class Pregão {
       if (stuck && (o.status === "preparando" || o.status === "pronto" || o.status === "executando")) {
         this.log(`⏰ Ordem ${o.id} expirou (${Math.round((agora - o.timestamp) / 1000)}s em "${o.status}") — marcando como falha`)
         o.status = "falhou"
-        this.onOrdemCallback?.(o)
+        for (const cb of this.onOrdemCallbacks) cb(o)
       }
     }
     return this.ordens.filter(o => o.status !== "concluido" && o.status !== "falhou")
@@ -345,6 +372,10 @@ class Pregão {
       sessionLosses: this.sessionStats.losses,
       sessionProfit: this.sessionStats.profit
     }
+  }
+
+  verificarShiftRotacao(): boolean {
+    return escolaRobos.verificarRotacao()
   }
 }
 

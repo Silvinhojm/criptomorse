@@ -50,8 +50,8 @@ class RealAutomatedTrader {
   private initialized = false;
   private lastAction = "Aguardando...";
   private persistEnabled = true;
-  private onTradeCallback: ((trade: TradeRecord) => void) | null = null;
-  private onLogCallback: ((msg: string) => void) | null = null;
+  private onTradeCallbacks: Array<(trade: TradeRecord) => void> = [];
+  private onLogCallbacks: Array<(msg: string) => void> = [];
   private autoSignMode = false;
 
   setAutoSignMode(enabled: boolean) {
@@ -90,16 +90,22 @@ class RealAutomatedTrader {
   }
 
   onTrade(cb: (trade: TradeRecord) => void) {
-    this.onTradeCallback = cb;
+    this.onTradeCallbacks.push(cb);
+    return () => { this.onTradeCallbacks = this.onTradeCallbacks.filter(c => c !== cb) };
   }
 
   onLog(cb: (msg: string) => void) {
-    this.onLogCallback = cb;
+    this.onLogCallbacks.push(cb);
+    return () => { this.onLogCallbacks = this.onLogCallbacks.filter(c => c !== cb) };
   }
 
   private log(msg: string) {
     console.log(msg);
-    this.onLogCallback?.(msg);
+    for (const cb of this.onLogCallbacks) cb(msg);
+  }
+
+  private notifyTrade(record: TradeRecord) {
+    for (const cb of this.onTradeCallbacks) cb(record);
   }
 
   async getBalances(): Promise<{ usdc: number; eurc: number }> {
@@ -148,7 +154,7 @@ class RealAutomatedTrader {
       this.totalProfit += profit;
       this.lastAction = `${best.pair.from}->${best.pair.to} $${adjustedTrade.netAmount}`;
       const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: adjustedTrade.netAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: `${result.message} | fee: $${adjustedTrade.fee.toFixed(4)}`, timestamp, confirmed: result.confirmed, networkKey: this.networkKey };
-      this.tradeHistory.push(record); this._persist(); this.onTradeCallback?.(record);
+      this.tradeHistory.push(record); this._persist(); this.notifyTrade(record);
       return record;
     }
 
@@ -172,7 +178,7 @@ class RealAutomatedTrader {
       this.totalProfit += profit;
       this.lastAction = `BUY $${tradeAmount} ${best.pair.to} (posicao)`;
       const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: tradeAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: result.message, timestamp, confirmed: result.confirmed ?? false, networkKey: this.networkKey };
-      this.tradeHistory.push(record); this._persist(); this.onTradeCallback?.(record);
+      this.tradeHistory.push(record); this._persist(); this.notifyTrade(record);
       return record;
     }
 
@@ -191,7 +197,7 @@ class RealAutomatedTrader {
       this.totalProfit += profit;
       this.lastAction = `CLOSE ${best.pair.from}→${best.pair.to}`;
       const record: TradeRecord = { id, action: "SELL", fromToken: result.fromToken, toToken: result.toToken, fromAmount: tradeAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: result.message, timestamp, confirmed: result.confirmed ?? false, networkKey: this.networkKey };
-      this.tradeHistory.push(record); this._persist(); this.onTradeCallback?.(record);
+      this.tradeHistory.push(record); this._persist(); this.notifyTrade(record);
       return record;
     }
 
@@ -218,7 +224,7 @@ class RealAutomatedTrader {
         positionManager.openPosition(this.networkKey, target, stable, result.toAmount, amount, targetPrice);
         this.log(`Posicao ${target} aberta: ${result.toAmount.toFixed(6)} @ $${targetPrice.toFixed(2)}`);
         const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: amount, toAmount: result.toAmount, profit: 0, txHash: result.txHash, explorerUrl: result.explorerUrl, message: `${target} position @ $${targetPrice.toFixed(2)}`, timestamp, confirmed: result.confirmed ?? false, networkKey: this.networkKey };
-        this.tradeHistory.push(record); this._persist(); this.onTradeCallback?.(record);
+        this.tradeHistory.push(record); this._persist(); this.notifyTrade(record);
         bought = true;
         break;
       }
@@ -372,7 +378,7 @@ class RealAutomatedTrader {
 
     this.tradeHistory.push(record);
     this._persist();
-    this.onTradeCallback?.(record);
+    this.notifyTrade(record);
     return record;
   }
 

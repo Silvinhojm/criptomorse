@@ -41,13 +41,15 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
   ├── app/components/*.tsx    ← 21 componentes React de UI
   ├── app/api/*               ← 17 rotas de API (Next.js API routes)
   │
-  └── lib/                    ← Núcleo do sistema (66 módulos)
+  └── lib/                    ← Núcleo do sistema (72 módulos)
        ├── SISTEMA PRINCIPAL
        │   ├── real-swap-executor.ts     ← Executor de swaps (LI.FI + direto)
        │   ├── automated-trader.ts       ← Trading automático clássico
        │   ├── real-automated-trader.ts  ← Trading automático real
        │   ├── arc-micro-trader.ts       ← Micro-trades na Arc
-       │   └── lifi-executor.ts          ← Integração LI.FI
+       │   ├── lifi-executor.ts          ← Integração LI.FI
+       │   ├── job-robot.ts              ← Robô autônomo de swaps na Arc testnet
+       │   └── contratante.ts            ← Ciclo de swaps (JobRobot orchestrator)
        │
        ├── SISTEMA DE AGENTES
         │   ├── agentes-do-pregão.ts      ← 13 agentes de trading (VOTAM AQUI)
@@ -58,23 +60,29 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
        │
         ├── PREGÃO (BOLSA)
         │   ├── pregão.ts                 ← Central de ordens (recebe OKs, gera ordens)
-        │   ├── pregueiro.ts              ← 4 "pregueiros" que analisam mercado
-        │   ├── corretor.ts               ← Executa ordens na blockchain
-        │   ├── caixa.ts                  ← Gestão de saldo
-        │   └── pregao-arc.ts             ← Multi-armed bandit p/ Arc (autônomo)
+       │   ├── pregueiro.ts              ← 4 "pregueiros" que analisam mercado
+       │   ├── corretor.ts               ← Executa ordens na blockchain
+       │   ├── caixa.ts                  ← Gestão de saldo
+       │   └── pregao-arc.ts             ← Multi-armed bandit p/ Arc (autônomo)
        │
        ├── INTELIGÊNCIA (aprendizado)
        │   ├── pair-price-feed.ts        ← Preço real por par (compartilhado)
        │   ├── volatility-tracker.ts     ← Aprende volatilidade de cada token
-       │   └── position-manager.ts       ← Gerencia posições + staircase
+       │   ├── position-manager.ts       ← Gerencia posições + staircase
+       │   ├── narrator.ts               ← Sistema de eventos e notificações
+       │   ├── pair-sector.ts            ← Setor de moedas avaliadas (performance por par)
+       │   ├── professor.ts              ← Avalia palpites, gerencia promoções
+       │   ├── escola-robos.ts           ← Escola de robôs (turnos, verificação, jobs)
+       │   └── parametros-robos.ts       ← Parâmetros ajustáveis por robô
        │
         ├── SUPORTE
         │   ├── persistence.ts            ← localStorage
-        │   ├── circuit-breaker.ts        ← Parada de emergência
-        │   ├── fee-monetization.ts       ← Taxas
-        │   ├── gas-price-oracle.ts       ← Preço do gás
-        │   ├── provao-ranking.ts         ← Sistema de competição (provão, bônus, poder de voto)
-        │   └── networks.ts / real-swap-executor.ts ← Config de redes
+       │   ├── circuit-breaker.ts        ← Parada de emergência
+       │   ├── fee-monetization.ts       ← Taxas
+       │   ├── gas-price-oracle.ts       ← Preço do gás
+       │   ├── provao-ranking.ts         ← Sistema de competição (provão, bônus, poder de voto)
+       │   ├── contracts.ts              ← Bytecode + ABI JobProof (deploy on-chain)
+       │   └── networks.ts / real-swap-executor.ts ← Config de redes
        │
        └── AGENTES DE MERCADO (dados)
            ├── coingecko-agent.ts
@@ -218,6 +226,11 @@ MAX_LOSS_PERCENT = -15
 
 dropSteps = 2
 // Quantos degraus abaixo do pico antes de fechar
+
+MIN_LUCRO_LIQUIDO_USD = 0.02
+// Valor fixo para todas as redes (substituiu getMinProfitUsd dinâmico)
+// Só fecha posição se lucro líquido (descontado gas + spread) >= $0.02
+// ETH mainnet: mesma regra (antes era $0.05)
 ```
 
 ### 4.2 VolatilityTracker (volatility-tracker.ts)
@@ -277,6 +290,14 @@ GAS_UNITS_SWAP = 500000  // 280k → 500k para swaps complexos LI.FI (jun/2026)
 // Usado por agentes (agentes-do-pregão.ts):
 // - Venda: profitUSD >= gasCost × 3
 // - Compra mainnet: aborta se gasCost > 50% do trade
+
+// TOKEN_DECIMALS (real-swap-executor.ts) — fallback quando tokenBalances não carregou:
+// USDC/EURC: 6, DAI/WETH/WMATIC/ARB: 18, WBTC/cirBTC/mcirBTC: 8, SOL: 9
+
+// minVolatileTrade por rede:
+// - Ethereum: $50
+// - Polygon/Base/Arbitrum: $0.10
+// - Testnet: $1
 ```
 
 ### 4.5 Pregão (pregão.ts + agentes-do-pregão.ts)
@@ -304,11 +325,25 @@ MIN_PROFIT_REAL = 0.05  // Lucro mínimo real desejado por trade (USD)
 MIN_TRADE_SIZE = 20     // $ mínimo por trade em mainnet (Polygon/Base/Arb); $50 em ETH; $2 em testnet
 TRADE_SPREAD_PCT = 0.005  // 0.5% base, dinâmico: max(0.001, 0.005 - vol24h × 0.04)
 
-// Votos BUY+SELL simultâneos do mesmo agente no mesmo par são removidos (blindagem)
+// Interface OkSignal agora tem campos opcionais:
+// - direcao: "buy" | "sell" — para Professor registrar palpite
+// - precoNoPalpite: number — preço do token volátil no momento do voto
+
+// okAgentes é ordenado por confiança decrescente e filtrado >= 30%
+// antes de selecionar participantes da ordem
+
+// Votos BUY+SELL simultâneos do MESMO agente no MESMO par são removidos (blindagem)
+// Pares invertidos (BUY USDC→WMATIC + SELL WMATIC→USDC) são complementares, NÃO conflito
 // Pares com saldo do from-token < $1 são filtrados antes da análise
 
 // Na Arc Testnet: agentes rodam análise mas OKs viram [APRENDIZADO] (não executam)
 // Quem executa na Arc é o pregao-arc.ts (bandit multi-armed)
+
+// 🎓 Robôs verificados/promovidos (Escola de Robôs): bypassam consenso
+// - isVerified: robô em turno ativo com 3+ jobs completos → ordem aceita direta
+// - isPromovido: robô promovido pelo Professor (50+ palpites, 60%+ acerto, 500+ pts) → ordem aceita direta
+// - isOnShiftUnverified: robô em turno mas ainda não verificado → log informativo, não executa
+// Consenso normal só aplica se nenhum desses casos for verdadeiro
 ```
 
 ### 4.6 Agent Learning (corretor.ts + accountant.ts)
@@ -363,6 +398,12 @@ MIN_BALANCE_THRESHOLD = 0.50  // $0.50 — saldos abaixo disso são ignorados no
 | `arcflow_trader_state` | Estado do trader | persistence.ts |
 | `arcflow_accountant_reports` | Relatórios de trade + scores dos agentes | accountant.ts |
 | `arcflow_provao` | Estado do sistema de competição (provão, bônus, poder de voto) | provao-ranking.ts |
+| `arcflow_escola` | Dados da escola de robôs (pontos, histórico, status) | escola-robos.ts |
+| `arcflow_escola_shift` | Turno atual (robôs ativos, expiração, número) | escola-robos.ts |
+| `arcflow_escola_ultimas` | Últimas 20 avaliações por robô | escola-robos.ts |
+| `arcflow_professor_palpites` | Palpites pendentes e avaliados | professor.ts |
+| `arcflow_parametros_robos` | Parâmetros ajustados por robô | parametros-robos.ts |
+| `arcflow_pair_sector` | Avaliações de pares por rede | pair-sector.ts |
 
 ### O que é perdido no F5 (volátil):
 
@@ -405,6 +446,13 @@ Cada agente vota com confiança 0-90% (cap. removemos os tetos quebrados):
 | **MomentumTrader** | Volatilidade × momentum | `pairPriceFeed` |
 | **NVIDIAgent** | LLM NIM (probability × liquidity) | `pairPriceFeed` |
 | **Synthesis** | Combina votos, decide | `pairScores` |
+
+### Parâmetros individuais por robô (parametros-robos.ts)
+Agentes consultam `parametrosRobos.get(nome)` para thresholds dinâmicos:
+- **MomentumTrader**: `thresholdEntrada` em vez de hardcoded
+- **NVIDIAgent**: `thresholdProbabilidade` em vez de `> 10`
+- **Synthesis**: `confiancaMinima` em vez de `>= 30`
+- Professor ajusta automaticamente conforme desempenho (acertos/erros consecutivos)
 
 ### Ajustes de confiança (ordem de aplicação):
 1. **VolatilityTracker**: `getConfidenceMultiplier(tokenVolatil)` — reduz se vol está subindo
@@ -608,7 +656,7 @@ Se for adicionar um novo token, atualizar em **todos** os lugares:
 
 ---
 
-## 16. DIAGNÓSTICO RÁPIDO
+
 
 ### Problema: "Saldo insuficiente de USDC"
 - Verificar se há posição aberta (ETH, MATIC, etc.) que precisa ser vendida
@@ -1432,13 +1480,221 @@ Browser → /api/lifi/quote (GET) → li.quest/v1/quote (server-side)
 - Log atualizado: `"🔍 Analisando USDC→WETH — Quantum, Technical, TrendFollower..."`
 - Cada par tem de 2 a 7 especialistas dedicados (antes eram todos os 13 agentes em todo par)
 
-### Estado atual (22/06/2026)
-- **Polygon Mainnet**: ativo — bot fez 6 trades reais (+$0.19 acumulado), consumiu todo USDC
+### 23/06/2026 — Escola de Robôs, JobRobot, Callbacks Multi-Listener
+
+#### Novo: Escola de Robôs + Professor + PairSector
+- **Novo**: `lib/escola-robos.ts` — sistema completo de educação de robôs:
+  - Turnos de 10min: top 3 robôs por pontuação ficam ativos e têm ordens aceitas sem consenso
+  - Verificação: robô precisa completar 3 jobs na Arc testnet para ser verificado
+  - Promoção: 50+ palpites, 60%+ acerto, 500+ pontos → status "promovido"
+  - Rebaixamento: promovido com <50% nas últimas 20 avaliações → volta a aprendiz
+  - `registrarJob()` — registra prova on-chain (deploy JobProof contract) como requisito para verificação
+- **Novo**: `lib/professor.ts` — avalia palpites dos robôs:
+  - A cada 5min, busca preço atual e compara com palpite
+  - Acertou: `+confiança * 0.3` pts; Errou: `-confiança * 0.3` pts
+  - Ajuste automático de parâmetros: acertos consecutivos afrouxam thresholds, erros consecutivos endurecem
+  - Gera feedback textual personalizado por nível de confiança
+  - Overload de `getPairSectorReport(rede?)` para performance por par
+- **Novo**: `lib/pair-sector.ts` — centraliza avaliações de pares:
+  - `registrarAvaliacao()` — cada voto de agente vira uma avaliação com par, rede, robô, direção
+  - `getPerformancePorPar(rede)` — taxa de acerto por par, melhores robôs em cada par
+  - Usado pelo PregãoDashboard para exibir "Setor de Pares"
+- **Novo**: `lib/parametros-robos.ts` — parâmetros ajustáveis individualmente por robô:
+  - `confiancaMinima` (default 30), `thresholdEntrada` (default 0.005), `thresholdSpread`, `thresholdLiquidez`, `thresholdProbabilidade`, `rsiCompra`, `rsiVenda`
+  - Agentes consultam `parametrosRobos.get(nome)` em vez de hardcoded
+  - `MomentumTrader`: usa `thresholdEntrada` em vez de hardcoded
+  - `NVIDIAgent`: usa `thresholdProbabilidade` em vez de hardcoded `> 10`
+  - `Synthesis`: usa `confiancaMinima` em vez de hardcoded `>= 30`
+  - Persiste em `arcflow_parametros_robos`
+
+#### Novo: JobRobot + Contratante com Fallback JobProof
+- **Reescrito**: `lib/job-robot.ts` — swap autônomo na Arc testnet:
+  - `_swapWithTimeout()` — executa swap com timeout de 30s (Promise.race)
+  - `deployJobProof(robotName, jobNumber)` — deploy do contrato `JobProof` na Arc como prova on-chain quando swap falha
+  - `executeSwap(amount, robotName)` — retry 3x com 10s backoff; se falhar, deploy do JobProof como fallback
+  - Ciclo alterna USDC→EURC / EURC→USDC
+  - `getKitKey()` — lê kit key do localStorage
+- **Modificado**: `lib/contratante.ts`:
+  - Guard `_executando` contra overlap de ciclos
+  - Registra jobs como prova para robôs em turno ativo via `escolaRobos.registrarJob()`
+  - Notifica `narrador.jobConcluido()` a cada swap bem-sucedido
+  - Retorna `contractAddress` no swap report quando deploy de JobProof é usado
+- **Novo**: `lib/contracts.ts` — `JOB_PROOF_BYTECODE` + `JOB_PROOF_ABI` para deploy do contrato JobProof
+- **Novo**: `contracts/JobProof.sol` — contrato Solidity que registra robotName + jobNumber + deployer + timestamp
+
+#### Callbacks Refatorados: Single → Multi-Listener
+- **Modificado**: `caixa.ts`, `corretor.ts`, `escriturario.ts`, `pregão.ts`, `position-manager.ts`, `real-automated-trader.ts`
+- Callbacks `onLog`/`onTrade`/`onOrdem`/`onClose`/`onCashBoxChange` agora suportam múltiplos listeners
+- Retornam função de cleanup (`return () => { ... filter(c !== cb) }`)
+- Evita perda de callbacks quando múltiplos componentes subscribem ao mesmo evento
+
+#### Fix: Blindagem de Votos BUY+SELL
+- **Corrigido**: `lib/agentes-do-pregão.ts` — blindagem agora verifica **exato mesmo par** (USDC→WMATIC BUY + USDC→WMATIC SELL), não mais pares invertidos (BUY USDC→WMATIC + SELL WMATIC→USDC são complementares, não conflito)
+- Log atualizado: `"votaram BUY+SELL no exato par"`
+
+#### Fix: LI.FI Quote — toAmount via estimate.toAmount
+- **Corrigido**: `lib/lifi-executor.ts` — LI.FI v1 coloca `toAmount` em `estimate.toAmount`, não no top-level
+- `rawToAmount = data.estimate?.toAmount ?? data.toAmount ?? params.fromAmount`
+- Rota "fly" com `rawToAmount === "0"` usa `params.fromAmount` como fallback
+
+#### Fix: Position Manager — Preço Irreal Ignorado
+- **Corrigido**: `lib/position-manager.ts` — `checkStaircase()`:
+  - Verifica se preço é irreal: `profitPercent < -99 && entryPrice > 0.01` → retorna "hold"
+  - `closePosition()`: valida se preços são coerentes (`Math.abs(closePrice - entryPrice) / Math.max(closePrice, entryPrice) < 0.999`), senão zera profit para evitar lucro fantasma
+  - `fetchTokenPrice()`: fallback usa `entryPrice` de posição aberta quando coinId não existe
+
+#### Fix: MIN_LUCRO_LIQUIDO_USD = $0.02 (Fixo)
+- **Corrigido**: `lib/position-manager.ts` — removeu `getMinProfitUsd()` dinâmico por rede
+- `MIN_LUCRO_LIQUIDO_USD = 0.02` fixo para todas as redes
+- Só fecha posição se lucro líquido (descontado gas + spread) >= $0.02
+
+#### Fix: minVolatileTrade Reduzido
+- **Corrigido**: `lib/real-swap-executor.ts` — `minVolatileTrade` para Polygon/Base/Arb: `$0.10` (antes `$20`)
+- ETH mainnet continua `$50`, testnet `$1`
+
+#### Fix: Compra (stable→volátil) não conta como trade na sessão
+- **Corrigido**: `lib/pregão.ts` — `atualizarOrdem()`: quando `isBuyOpening` true, não incrementa `sessionStats.trades/wins/losses/profit`
+- Apenas vendas (volátil→stable) contam para estatísticas da sessão
+
+#### Fix: okAgentes ordenados por confiança
+- **Corrigido**: `lib/pregão.ts` — `verificarOrdem()` ordena OKs de agentes por confiança decrescente e filtra >= 30%
+- Garante que os agentes mais confiantes sejam selecionados para a ordem
+
+#### TOKEN_DECIMALS constante
+- **Novo**: `lib/real-swap-executor.ts` — `TOKEN_DECIMALS` mapa com decimais conhecidos por token
+- Fallback quando `tokenBalances` não carregou: `TOKEN_DECIMALS[pair.from] ?? 6`
+- Usado em `swapPair()` e `executeSwap()` para evitar decimais incorretos
+
+### Estado atual (23/06/2026)
+- **Polygon Mainnet**: ativo — 25 trades executados, $116.95 bruto / ~$18.77 líquido
+- **Escola de Robôs**: ativa na Arc testnet — robôs aprendem com palpites, turnos de 10min, Professor avalia a cada 5min
+- **JobRobot (Contratante)**: rodando na Arc testnet — swaps USDC/EURC com retry 3x + deploy JobProof como fallback
 - **RPC Proxy**: implementado — todas as RPCs via `/api/rpc-proxy` (CORS bypass)
-- **Auto-reabastecimento**: quando saldo < minTradeSize e existem posições abertas, injeta 3 OKs de venda (Cleanup, ForcarVenda, MeanReversion) com 90% de confiança
+- **LI.FI Quote Proxy**: `/api/lifi/quote` — CORS resolvido
 - **Wallet balance priority**: wallet real tem prioridade sobre unified balance (Circle Kit)
-- **CCTP Bridge**: implementado mas ainda não testado com sucesso (RPC rate limiting pode estar bloqueando)
+- **CCTP Bridge**: implementado mas ainda não testado com sucesso (RPC rate limiting)
 - **Grid Trading**: disponível em modo single-chain; desativado em multi-chain
-- **Streaks se recuperando**: streaks entre -2 e -6 (após bug das compras); Quantum 57%, TrendFollower 50%, Technical 50%, MeanReversion 50%
-- **WMATIC**: volatilidade 24h no piso de 0.5%, retorno esperado (0.13%) menor que spread (0.5%), bloqueando minViableTrade
+- **PARÂMETROS AJUSTÁVEIS**: cada robô tem thresholds individuais (professor.ts + parametros-robos.ts)
+- **CALLBACKS MULTI-LISTENER**: subscribe/cleanup pattern em todos os eventos do sistema
+- **MIN_LUCRO_LIQUIDO**: $0.02 fixo para todas as redes (position-manager.ts)
+- **minVolatileTrade**: $0.10 para Polygon/Base/Arb, $50 ETH, $1 testnet
+
+---
+
+## 27. ESCOLA DE ROBÔS — SISTEMA DE EDUCAÇÃO E PROMOÇÃO
+
+### 27.1 Visão Geral
+
+Sistema de escola/avaliação onde os robôs aprendem analisando pares de TODAS as redes simultaneamente na Arc Testnet, recebem notas de um "Professor", acumulam pontos, e quando atingem nota suficiente são promovidos a robôs autorizados — cujas decisões o Pregão aceita sem questionar, apenas verificando viabilidade na rede alvo.
+
+```
+Arc Testnet
+│
+├── Robôs analisam pares de TODAS as redes (polygon, base, ethereum...)
+│   usando dados quânticos da Arc como ambiente de simulação
+│
+├── Cada voto → Professor registra como palpite com preço atual
+│
+├── 5 minutos depois → Professor busca preço real da rede alvo
+│   ├── Acertou → +pontos + feedback positivo
+│   └── Errou   → -pontos + sugestão de melhoria
+│
+├── Robô com 50+ palpites, 60%+ acerto, 500+ pontos → PROMOVIDO
+│
+└── Robô promovido → Pregão aceita ordem direta sem segundo agente
+    └── Pregão só verifica: tem saldo? gas comporta? spread viável?
+        └── Sim → executa imediatamente (trade mais rápido e certeiro)
+```
+
+### 27.2 Módulos
+
+| Arquivo | Função |
+|---------|--------|
+| `lib/professor.ts` | Classe Professor: registra palpites, avalia a cada 5 min, gera feedback, persiste em `arcflow_professor_palpites` |
+| `lib/escola-robos.ts` | Gerencia pontuação, promoção, rebaixamento. Persiste em `arcflow_escola` + `arcflow_escola_ultimas` |
+| `lib/pair-sector.ts` | Setor de pares avaliados — centraliza avaliações por rede, calcula performance por par, consultado pelo PregãoDashboard |
+
+### 27.3 Interface PalpiteRobo
+
+```typescript
+{
+  roboNome: string
+  rede: string
+  par: string
+  fromToken: string
+  toToken: string
+  direcao: "buy" | "sell"
+  confianca: number
+  precoNoPalpite: number
+  timestamp: number
+}
+```
+
+### 27.4 Regras de Pontuação
+
+- **Acerto com movimento relevante (>0.1%)**: `+pontos = confianca * 0.3` (mínimo 1)
+- **Erro**: `-pontos = confianca * 0.3` (mínimo 1, mais confiante = mais penalidade)
+- **Acerto com alta confiança (>70%)**: "Continue nesta direção — seu modelo de momentum está calibrado"
+- **Acerto com baixa confiança (<40%)**: "Acertou mas estava inseguro — confie mais nos sinais fortes"
+- **Erro com alta confiança (>70%)**: "Estava muito confiante e errou — revise o threshold de entrada"
+- **Erro com baixa confiança (<40%)**: "Erro esperado — continue explorando este par"
+
+### 27.5 Critérios de Promoção
+
+| Critério | Mínimo |
+|----------|--------|
+| Palpites avaliados | 50 |
+| Taxa de acerto | >= 60% |
+| Pontos | >= 500 |
+
+### 27.6 Critérios de Rebaixamento
+
+- Se promovido e taxa de acerto cair abaixo de 50% nas últimas 20 avaliações → volta a aprendiz
+
+### 27.7 Modificações no Código
+
+| Arquivo | O que mudou |
+|---------|-------------|
+| `lib/agentes-do-pregão.ts` | Import `professor` + `parametrosRobos`. No `isArc` block, registra palpite cada voto de agente. `professor.avaliarPalpites()` a cada ciclo. Agentes consultam `parametrosRobos.get(nome)` para thresholds ajustáveis. |
+| `lib/pregão.ts` | Import `escolaRobos`. Em `verificarOrdem`, checa `isOnShift` — robô em turno ativo bypassa consenso. Método `verificarShiftRotacao()` delegado ao `escolaRobos`. |
+| `lib/pregão.ts` (interface `OkSignal`) | Campos opcionais `direcao` e `precoNoPalpite`. |
+| `app/components/PregãoDashboard.tsx` | Seção "📚 Escola de Robôs" com turno atual, robôs em turno destacados, barra de progresso, último feedback. `pregão.verificarShiftRotacao()` no polling. |
+| `app/components/PregãoDashboard.tsx` | Seção "📊 Setor de Pares" exibe `professor.getPairSectorReport(rede)` com performance por par (acertos, taxa, melhores robôs). Importa `pairSector` + `professor`. |
+
+### 27.8 Fluxo de Rotação (Turnos de 10 min)
+
+1. **Pregão** pergunta ao **Professor**: "quais os 3 melhores robôs agora?"
+2. **Professor** seleciona top 3 por pontuação positiva → ativos por 10 min
+3. Durante o turno: ordens desses robôs são aceitas **sem consenso**
+4. Após 10 min: **Pregão** pede nova rotação → Professor seleciona os próximos 3
+5. Robôs podem repetir turno se continuarem com boa pontuação
+
+### 27.9 Ajuste Automático de Parâmetros
+
+O Professor ajusta automaticamente os parâmetros dos robôs com base no desempenho:
+
+| Situação | Ajuste |
+|----------|--------|
+| 5+ acertos consecutivos | `confiancaMinima -3`, `thresholdEntrada -0.0005` (mais permissivo) |
+| Erro confiante isolado (>70%) | `confiancaMinima +5` (mais seletivo) |
+| 2+ erros confiantes em série | `thresholdEntrada ×2`, `confiancaMinima +8` (endurece entrada) |
+| 3+ erros consecutivos | `confiancaMinima +5`, `thresholdEntrada +0.002` |
+
+Parâmetros ajustáveis por robô em `lib/parametros-robos.ts`:
+- `confiancaMinima` (default 30) — confiança mínima para votar
+- `thresholdEntrada` (default 0.005) — momentum/amplitude mínimo
+- `thresholdSpread` (default 0.001) — spread mínimo
+- `thresholdLiquidez` (default 0.1) — liquidez mínima
+- `thresholdProbabilidade` (default 10) — probabilidade mínima (NVIDIAgent)
+- `rsiCompra` (default 35) / `rsiVenda` (default 65) — thresholds RSI
+
+### 27.10 Persistência
+
+| Chave | Conteúdo |
+|-------|----------|
+| `arcflow_escola` | Dados de todos os robôs (pontos, histórico) |
+| `arcflow_escola_shift` | Estado do turno atual (robôs ativos, expiração, número do turno) |
+| `arcflow_escola_ultimas` | Últimas 20 avaliações por robô |
+| `arcflow_professor_palpites` | Palpites pendentes e avaliados |
+| `arcflow_parametros_robos` | Parâmetros ajustados por robô |
 

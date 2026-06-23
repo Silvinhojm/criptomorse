@@ -146,6 +146,61 @@ class Narrador {
       type,
     })
   }
+
+  // 📚 Escola de Robôs
+  roboVerificado(nome: string, pontos: number, jobs: number) {
+    this.emit({
+      icon: "🎓",
+      text: `🎓 ${nome} completou ${jobs} jobs e está VERIFICADO (${pontos}pts) — apto para mainnet!`,
+      timestamp: Date.now(),
+      type: "success",
+    })
+  }
+
+  roboEmTurno(nome: string) {
+    this.emit({
+      icon: "📋",
+      text: `📋 ${nome} entrou em turno — realizando jobs como prova para verificação.`,
+      timestamp: Date.now(),
+      type: "info",
+    })
+  }
+
+  jobConcluido(robo: string, par: string, amount: string) {
+    this.emit({
+      icon: "✅",
+      text: `✅ Job concluído: ${robo} swap ${par} $${amount} na Arc testnet.`,
+      timestamp: Date.now(),
+      type: "success",
+    })
+  }
+
+  professorAvaliacao(robo: string, acertou: boolean, pontos: number) {
+    if (acertou) {
+      this.emit({
+        icon: "📚",
+        text: `📚 Professor aprovou ${robo} (+${pontos}pts) — continue assim!`,
+        timestamp: Date.now(),
+        type: "success",
+      })
+    } else {
+      this.emit({
+        icon: "📚",
+        text: `📚 Professor reprovou ${robo} (${pontos}pts) — ajustando parâmetros...`,
+        timestamp: Date.now(),
+        type: "warn",
+      })
+    }
+  }
+
+  shiftRotacionado(novos: string[]) {
+    this.emit({
+      icon: "🔄",
+      text: `🔄 Turno rotacionado — novos robôs em ação: ${novos.join(", ")}.`,
+      timestamp: Date.now(),
+      type: "info",
+    })
+  }
 }
 
 export const narrador = new Narrador()

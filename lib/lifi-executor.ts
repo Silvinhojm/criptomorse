@@ -168,18 +168,21 @@ export async function getQuote(params: SwapParams, retryCount = 0): Promise<Quot
       return null;
     }
 
-    // LI.FI as vezes retorna toAmount undefined para rotas "fly" em testnet.
-    // Estimar toAmount a partir de fromAmount (mesma chain, mesmo decimal).
-    if (data.tool === 'fly' && !data.toAmount) {
-      data.toAmount = params.fromAmount;
+    // LI.FI v1 coloca toAmount em estimate.toAmount (não no top-level).
+    // Algumas rotas "fly" retornam "0" ou undefined.
+    const rawToAmount = data.estimate?.toAmount ?? data.toAmount ?? params.fromAmount;
+
+    if (data.tool === 'fly' && (!rawToAmount || rawToAmount === '0')) {
       console.warn(`LI.FI: "fly" sem toAmount — usando fromAmount como estimativa`);
     }
 
-    console.log(`LI.FI cotacao via ${data.tool} | saida: ${data.toAmount}`);
+    const toAmount = rawToAmount === '0' ? params.fromAmount : rawToAmount;
+
+    console.log(`LI.FI cotacao via ${data.tool} | saida: ${toAmount}`);
 
     return {
       fromAmount:          data.fromAmount,
-      toAmount:            data.toAmount ?? params.fromAmount,
+      toAmount,
       tool:                data.tool ?? 'unknown',
       estimatedGas:        data.estimate?.gasCosts?.[0]?.amount ?? '0',
       expectedTime:        data.estimate?.executionDuration ?? 30,

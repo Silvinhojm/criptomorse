@@ -26,6 +26,10 @@ import newsAgent from "../lib/news-agent";
 
 import { jobMarketplace, type JobData } from "../lib/job-marketplace";
 
+// Module-level refs for window.ethereum listener cleanup (prevents leak across re-connects)
+let _accountsChangedListener: ((accts: string[]) => void) | null = null
+let _chainChangedListener: (() => void) | null = null
+
 declare global {
   interface Window { ethereum?: any; }
 }
@@ -692,15 +696,20 @@ export default function Home() {
       const scores = [quantumAgent.getScore(), technicalAgent.getScore(), newsAgent.getScore(), marketAgent.getScore(), volumeAgent.getScore(), synthesisAgent.getScore()];
       setAgentScores(scores);
 
-      // Auto-refresh on account/chain change
-      window.ethereum.on("accountsChanged", (accts: string[]) => {
+      // Auto-refresh on account/chain change — limpa listeners antigos primeiro
+      if (_accountsChangedListener) window.ethereum.removeListener("accountsChanged", _accountsChangedListener)
+      if (_chainChangedListener) window.ethereum.removeListener("chainChanged", _chainChangedListener)
+
+      _accountsChangedListener = (accts: string[]) => {
         if (accts.length === 0) { setAccount(""); setPortfolios([]); return; }
         setAccount(accts[0]);
         loadAllBalances(accts[0]);
-      });
-      window.ethereum.on("chainChanged", () => {
+      }
+      _chainChangedListener = () => {
         if (account) loadAllBalances(account);
-      });
+      }
+      window.ethereum.on("accountsChanged", _accountsChangedListener)
+      window.ethereum.on("chainChanged", _chainChangedListener)
     } catch (error: any) {
       console.error("Erro ao conectar:", error);
       toast.error(error?.message?.slice(0, 80) || "Erro ao conectar");

@@ -15,6 +15,13 @@ import { CCTPService, CCTP_CONFIG } from "./cctp";
 import { unifiedBalance } from "./unified-balance";
 import { caixa } from "./caixa";
 
+// Decimais conhecidos por token (fallback quando tokenBalances não carregou)
+export const TOKEN_DECIMALS: Record<string, number> = {
+  USDC: 6, EURC: 6, DAI: 18,
+  WETH: 18, WMATIC: 18, WBTC: 8, ARB: 18,
+  cirBTC: 8, mcirBTC: 8, SOL: 9,
+}
+
 // ─── Redes suportadas ────────────────────────────────────────────────────────
 // Custo estimado de gas em USD por rede (para deducao do lucro)
 export const GAS_COST_ESTIMATE: Record<string, number> = {
@@ -577,7 +584,7 @@ class RealSwapExecutor {
         const actualAmount = Math.min(amountUsd, fromBalanceUsd * 0.95);
         if (actualAmount < 0.5) continue;
 
-        const fromDecimals    = this.tokenBalances.get(pair.from)?.decimals ?? 6;
+        const fromDecimals    = this.tokenBalances.get(pair.from)?.decimals ?? TOKEN_DECIMALS[pair.from] ?? 6;
         const fromTokenAmount = actualAmount / fromPrice;
         const fromAmountRaw   = toTokenUnits(fromTokenAmount, fromDecimals);
 
@@ -790,7 +797,7 @@ class RealSwapExecutor {
         return this._fail(fromToken, toToken, amountUsd, `Token ${toToken} não configurado na rede ${this.networkKey}`, timestamp);
       }
 
-      const fromDecimals    = this.tokenBalances.get(fromToken)?.decimals ?? 6;
+      const fromDecimals    = this.tokenBalances.get(fromToken)?.decimals ?? TOKEN_DECIMALS[fromToken] ?? 6;
       const fromTokenAmount = amountUsd / fromPrice;
       const fromAmountRaw   = toTokenUnits(fromTokenAmount, fromDecimals);
 
@@ -860,7 +867,7 @@ class RealSwapExecutor {
         return this._fail(fromToken, toToken, amountUsd, "Rota LI.FI sem dados de transação", timestamp);
       }
 
-      const toDecimals = this.tokenBalances.get(toToken)?.decimals ?? 6;
+      const toDecimals = this.tokenBalances.get(toToken)?.decimals ?? TOKEN_DECIMALS[toToken] ?? 6;
       const toEstimate = parseFloat(quote.toAmount ?? "0") / Math.pow(10, toDecimals);
       log(`✅ Rota via ${quote.tool} | Estimativa: ${toEstimate.toFixed(6)} ${toToken}`);
       if (toEstimate <= 0) {
@@ -884,7 +891,7 @@ class RealSwapExecutor {
         log(`⏸️ Lucro estimado $${estimatedProfit.toFixed(4)} - gas $${gasCostEstimated.toFixed(3)} = $${netProfit.toFixed(4)} (min: $${minProfit})`);
         return this._fail(fromToken, toToken, amountUsd, `Lucro líquido não atinge mínimo: $${netProfit.toFixed(4)}`, timestamp);
       }
-      const minVolatileTrade = this.networkKey === "ethereum" ? 50 : NETWORKS[this.networkKey]?.isTestnet ? 1 : 20
+      const minVolatileTrade = this.networkKey === "ethereum" ? 50 : NETWORKS[this.networkKey]?.isTestnet ? 1 : (this.networkKey === "polygon" || this.networkKey === "base" || this.networkKey === "arbitrum" ? 0.1 : 20)
       if (!isTestnet && !isStable(toToken) && amountUsd < minVolatileTrade) {
         log(`⏸️ Trade volátil $${amountUsd.toFixed(2)} abaixo do mínimo $${minVolatileTrade.toFixed(2)}`);
         return this._fail(fromToken, toToken, amountUsd, `Trade mínimo para voláteis é $${minVolatileTrade.toFixed(2)} (tentativa: $${amountUsd.toFixed(2)})`, timestamp);

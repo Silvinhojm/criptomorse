@@ -7,15 +7,16 @@ import { caixa } from "./caixa"
 const VALOR_PADRAO_TRADE = 5
 
 class Escriturário {
-  private onLogCallback: ((msg: string) => void) | null = null
+  private onLogCallbacks: Array<(msg: string) => void> = []
 
   onLog(cb: (msg: string) => void) {
-    this.onLogCallback = cb
+    this.onLogCallbacks.push(cb)
+    return () => { this.onLogCallbacks = this.onLogCallbacks.filter(c => c !== cb) }
   }
 
   private log(msg: string) {
     console.log(`[ESCRITURÁRIO] ${msg}`)
-    this.onLogCallback?.(msg)
+    for (const cb of this.onLogCallbacks) cb(msg)
   }
 
   private async fetchTokenPrice(token: string): Promise<number> {

@@ -22,10 +22,22 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
   const [logs, setLogs] = useState<string[]>([]);
   const [tradeAmount, setTradeAmount] = useState(5);
   const [intervalSec, setIntervalSec] = useState(30);
-  const [privateKey, setPrivateKey] = useState("");
+  const [privateKey, setPrivateKey] = useState(() => {
+    if (typeof window !== "undefined") return localStorage.getItem("arcflow_private_key") ?? ""
+    return ""
+  });
   const [showPkInput, setShowPkInput] = useState(false);
   const [usingPkMode, setUsingPkMode] = useState(false);
   const logsRef = useRef<HTMLDivElement>(null);
+
+  // Sync private key to localStorage for other components (Contratante)
+  useEffect(() => {
+    if (privateKey) {
+      localStorage.setItem("arcflow_private_key", privateKey)
+    } else {
+      localStorage.removeItem("arcflow_private_key")
+    }
+  }, [privateKey])
 
   const net = NETWORKS[currentNetwork];
   const isMainnet = currentNetwork !== "arc";
@@ -50,6 +62,8 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
   };
 
   // Inicializar trader: private key local > server auto-sign > MetaMask
+  const unsubRef = useRef<Array<() => void>>([])
+
   const handleInit = async () => {
     setIsInitializing(true);
 
@@ -66,8 +80,8 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
         setUsingPkMode(true);
         const ok = await realAutomatedTrader.initialize(address, currentNetwork, wallet);
         if (ok) {
-          realAutomatedTrader.onLog(addLog);
-          realAutomatedTrader.onTrade(() => refreshStats());
+          unsubRef.current.push(realAutomatedTrader.onLog(addLog));
+          unsubRef.current.push(realAutomatedTrader.onTrade(() => refreshStats()));
           setInitialized(true);
           addLog(`✅ Auto-sign local ativo na ${net.name}`);
           await refreshStats();
@@ -89,8 +103,8 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
         realAutomatedTrader.setAutoSignMode(true);
         const ok = await realAutomatedTrader.initialize(account, currentNetwork);
         if (ok) {
-          realAutomatedTrader.onLog(addLog);
-          realAutomatedTrader.onTrade(() => refreshStats());
+          unsubRef.current.push(realAutomatedTrader.onLog(addLog));
+          unsubRef.current.push(realAutomatedTrader.onTrade(() => refreshStats()));
           setInitialized(true);
           addLog(`✅ Auto-sign ativo na ${net.name} — wallet: ${account?.slice(0, 6)}...${account?.slice(-4)}`);
           await refreshStats();
@@ -119,8 +133,8 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
 
     const ok = await realAutomatedTrader.initialize(account, currentNetwork, externalSigner);
     if (ok) {
-      realAutomatedTrader.onLog(addLog);
-      realAutomatedTrader.onTrade(() => refreshStats());
+      unsubRef.current.push(realAutomatedTrader.onLog(addLog));
+      unsubRef.current.push(realAutomatedTrader.onTrade(() => refreshStats()));
       setInitialized(true);
       addLog(`✅ Conectado à ${net.name} — wallet: ${account?.slice(0, 6)}...${account?.slice(-4)}`);
       await refreshStats();
@@ -130,11 +144,20 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
     setIsInitializing(false);
   };
 
+  useEffect(() => {
+    return () => {
+      for (const unsub of unsubRef.current) unsub()
+      unsubRef.current = []
+    }
+  }, [])
+
   const handleDisconnect = () => {
     realAutomatedTrader.stopAutomatedTrading();
     setInitialized(false);
     setIsRunning(false);
     setUsingPkMode(false);
+    for (const unsub of unsubRef.current) unsub()
+    unsubRef.current = []
     addLog("🔌 Desconectado");
   };
 

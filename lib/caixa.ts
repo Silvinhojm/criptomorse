@@ -81,24 +81,26 @@ function isKitError(err: any): boolean {
 class Caixa {
   private kit: UnifiedBalanceKit | null = null
   private initialized = false
-  private onLogCallback: ((msg: string) => void) | null = null
-  private onCashBoxUpdateCallback: (() => void) | null = null
+  private onLogCallbacks: Array<(msg: string) => void> = []
+  private onCashBoxUpdateCallbacks: Array<() => void> = []
 
   onLog(cb: (msg: string) => void) {
-    this.onLogCallback = cb
+    this.onLogCallbacks.push(cb)
+    return () => { this.onLogCallbacks = this.onLogCallbacks.filter(c => c !== cb) }
   }
 
   onCashBoxUpdate(cb: () => void) {
-    this.onCashBoxUpdateCallback = cb
+    this.onCashBoxUpdateCallbacks.push(cb)
+    return () => { this.onCashBoxUpdateCallbacks = this.onCashBoxUpdateCallbacks.filter(c => c !== cb) }
   }
 
   private log(msg: string) {
     console.log(`[CAIXA] ${msg}`)
-    this.onLogCallback?.(msg)
+    for (const cb of this.onLogCallbacks) cb(msg)
   }
 
   updatePregãoCashBox() {
-    this.onCashBoxUpdateCallback?.()
+    for (const cb of this.onCashBoxUpdateCallbacks) cb()
   }
 
   async initBrowser(): Promise<boolean> {

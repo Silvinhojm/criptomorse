@@ -37,28 +37,28 @@ const STALE_FORCE_CLOSE_MS = 30 * 60 * 1000; // 30min sem lucro → força fecha
 // Tempo mínimo antes de considerar fechamento com lucro
 const MIN_PROFIT_HOLD_MS = 60 * 1000; // 1 minuto
 // Lucro mínimo real desejado (já descontado gas + spread na abertura)
-// ETH: conservador ($0.05) | Demais redes: micro-trades ($0.002)
-function getMinProfitUsd(networkKey: NetworkKey): number {
-  if (networkKey === "ethereum") return 0.05
-  return 0.002
-}
+// Valor fixo de $0.02 — cobre taxas + spread em qualquer rede
+// Se lucro líquido < $0.02, a posição não é fechada (evita prejuízo disfarçado)
+const MIN_LUCRO_LIQUIDO_USD = 0.02
 
 class PositionManager {
   private positions: Map<string, OpenPosition> = new Map();
   private priceCache: Map<string, { price: number; timestamp: number }> = new Map();
-  private onCloseCallback: ((position: OpenPosition) => void) | null = null;
-  private onStaircaseCloseCallback: ((position: OpenPosition) => void) | null = null;
+  private onCloseCallbacks: Array<(position: OpenPosition) => void> = [];
+  private onStaircaseCloseCallbacks: Array<(position: OpenPosition) => void> = [];
 
   constructor() {
     this.loadPositions();
   }
 
   onClose(cb: (position: OpenPosition) => void) {
-    this.onCloseCallback = cb;
+    this.onCloseCallbacks.push(cb);
+    return () => { this.onCloseCallbacks = this.onCloseCallbacks.filter(c => c !== cb) };
   }
 
   onStaircaseClose(cb: (position: OpenPosition) => void) {
-    this.onStaircaseCloseCallback = cb;
+    this.onStaircaseCloseCallbacks.push(cb);
+    return () => { this.onStaircaseCloseCallbacks = this.onStaircaseCloseCallbacks.filter(c => c !== cb) };
   }
 
   // Abrir posicao apos comprar token volatil (ex: USDC -> WETH)
@@ -99,9 +99,16 @@ class PositionManager {
     pos.status = "closed";
     pos.closePrice = closePrice;
     pos.closeTimestamp = Date.now();
-    pos.profitPercent = ((closePrice - pos.entryPrice) / pos.entryPrice) * 100;
-    pos.profitUsd = (closePrice - pos.entryPrice) * pos.amountBought;
-    this.onCloseCallback?.(pos);
+    const priceOk = closePrice > 0 && pos.entryPrice > 0
+      && Math.abs(closePrice - pos.entryPrice) / Math.max(closePrice, pos.entryPrice) < 0.999
+    if (priceOk) {
+      pos.profitPercent = ((closePrice - pos.entryPrice) / pos.entryPrice) * 100;
+      pos.profitUsd = (closePrice - pos.entryPrice) * pos.amountBought;
+    } else {
+      pos.profitPercent = 0;
+      pos.profitUsd = 0;
+    }
+    for (const cb of this.onCloseCallbacks) cb(pos);
     this.savePositions();
     console.log(`Posicao FECHADA: ${pos.boughtToken} lucro ${pos.profitPercent.toFixed(2)}% ($${pos.profitUsd.toFixed(4)})`);
     return pos;
@@ -116,6 +123,10 @@ class PositionManager {
     pos.currentPrice = currentPrice;
     const profitPercent = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
     pos.currentProfitPercent = profitPercent;
+
+    // Preço irreal (unknown token na testnet, fallback=1.0) — não fecha via staircase
+    const priceUnreliable = currentPrice <= 0 || (profitPercent < -99 && pos.entryPrice > 0.01)
+    if (priceUnreliable) return "hold";
 
     if (currentPrice > pos.highestPrice) {
       pos.highestPrice = currentPrice;
@@ -148,18 +159,17 @@ class PositionManager {
       return "close";
     }
 
-    // 🔒 Só fecha se lucro bruto cobrir gas da venda + spread + lucro mínimo
-    // Evita fechar no prejuízo por causa de custos de transação
-    const minProfitUsd = getMinProfitUsd(pos.networkKey)
+    // 🔒 Só fecha se lucro líquido >= $0.02 (cobre gas + spread + margem)
+    // O Pregão é o único com autoridade de abrir/fechar posições
     if (age >= MIN_PROFIT_HOLD_MS && currentProfitUsd > 0) {
       const sellGasCost = await gasPriceOracle.getGasCost(pos.networkKey)
       const sellSpread = currentProfitUsd * 0.005
       const custoTotalVenda = sellGasCost + sellSpread
       const lucroLiquido = currentProfitUsd - custoTotalVenda
 
-      if (lucroLiquido >= minProfitUsd) {
-        pregão.adicionarLog(`✅ ${pos.boughtToken}: lucro bruto $${currentProfitUsd.toFixed(4)} - custos (gas $${sellGasCost.toFixed(4)} + spread $${sellSpread.toFixed(4)}) = líquido $${lucroLiquido.toFixed(4)} — fechando`)
-        this.onStaircaseCloseCallback?.(pos);
+      if (lucroLiquido >= MIN_LUCRO_LIQUIDO_USD) {
+        pregão.adicionarLog(`✅ ${pos.boughtToken}: lucro bruto $${currentProfitUsd.toFixed(4)} - custos (gas $${sellGasCost.toFixed(4)} + spread $${sellSpread.toFixed(4)}) = líquido $${lucroLiquido.toFixed(4)} — fechando (mín $${MIN_LUCRO_LIQUIDO_USD.toFixed(2)})`)
+        for (const cb of this.onStaircaseCloseCallbacks) cb(pos);
         return "close";
       }
     }
@@ -195,7 +205,16 @@ class PositionManager {
       WBTC: "bitcoin", SOL: "solana",
     };
     const coinId = coinIds[token];
-    if (!coinId) return 1.0;
+    if (!coinId) {
+      // Fallback: usa entryPrice de posição aberta como preço real
+      for (const pos of this.positions.values()) {
+        if (pos.boughtToken === token && pos.entryPrice > 0 && pos.status === "open") {
+          this.priceCache.set(token, { price: pos.entryPrice, timestamp: Date.now() })
+          return pos.entryPrice
+        }
+      }
+      return 1.0;
+    }
 
     try {
       const res = await fetch(`/api/price?ids=${coinId}`);

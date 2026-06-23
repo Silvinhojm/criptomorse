@@ -18,6 +18,9 @@ import { AGENTES_NOMES, AGENTE_CORES, getPregãoAllowedBalance, setPregãoAllowe
 import { positionManager } from "@/lib/position-manager"
 import { narrador } from "@/lib/narrator"
 import { contratante } from "@/lib/contratante"
+import { escolaRobos, MIN_JOBS_PROVA, type RoboEscolar } from "@/lib/escola-robos"
+import { professor } from "@/lib/professor"
+import { pairSector } from "@/lib/pair-sector"
 
 const COR_PREGÃO = "#d4a574"
 const COR_FUNDO = "#0f172a"
@@ -59,9 +62,16 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
   const [recentTrades, setRecentTrades] = useState<ReturnType<typeof positionManager.getRecentTrades>>([])
   const [contratanteState, setContratanteState] = useState(contratante.getState())
   const [contratanteAtivo, setContratanteAtivo] = useState(false)
+  const [kitKey, setKitKey] = useState(() => {
+    if (typeof window !== "undefined") return localStorage.getItem("arcflow_kit_key") ?? ""
+    return ""
+  })
   const contratanteTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [escolaRobosData, setEscolaRobosData] = useState<RoboEscolar[]>([])
+  const [professorStats, setProfessorStats] = useState({ totalPalpites: 0, pendentes: 0, ultimaAvaliacao: 0 })
   const redeRef = useRef(rede)
   const balanceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const processedArcTrades = useRef<Set<string>>(new Set())
 
   const addLog = useCallback((msg: string) => {
     setLogs(prev => [...prev.slice(-99), `[${new Date().toLocaleTimeString()}] ${msg}`])
@@ -86,11 +96,11 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
   }, [logs])
 
   useEffect(() => {
-    pregão.onLog(addLog)
-    escriturário.onLog(addLog)
-    corretor.onLog(addLog)
+    const unsubLog1 = pregão.onLog(addLog)
+    const unsubLog2 = escriturário.onLog(addLog)
+    const unsubLog3 = corretor.onLog(addLog)
 
-    pregão.onOrdem(async (ordem) => {
+    const unsubOrdem = pregão.onOrdem(async (ordem) => {
       setOrdens([...pregão.getTodasOrdens()])
       setStatus(pregão.getStatus())
       if (ordem.status === "preparando") {
@@ -101,20 +111,30 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
           addLog(`❌ Erro ao preparar ordem: ${e instanceof Error ? e.message : e}`)
         }
       }
-      if (ordem.rede === "arc" && ordem.resultado) {
+      if (ordem.rede === "arc" && ordem.resultado && !processedArcTrades.current.has(ordem.id)) {
+        processedArcTrades.current.add(ordem.id)
         const { registrarResultadoArc } = await import("@/lib/pregao-arc")
         registrarResultadoArc(ordem.par, ordem.resultado.profit)
       }
     })
 
-    corretor.onTrade(() => {
+    const unsubTrade = corretor.onTrade(() => {
       setOrdens([...pregão.getTodasOrdens()])
       setStatus(pregão.getStatus())
     })
 
-    pregão.onCashBoxChange((state) => {
+    const unsubCashBox = pregão.onCashBoxChange((state) => {
       setCashBox(state)
     })
+
+    return () => {
+      unsubLog1()
+      unsubLog2()
+      unsubLog3()
+      unsubOrdem()
+      unsubTrade()
+      unsubCashBox()
+    }
   }, [addLog])
 
   const atualizarCaixaSaldo = useCallback(async () => {
@@ -123,13 +143,15 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     pregão.atualizarUnifiedBalance(saldo.totalUSD, saldo.porRede)
   }, [])
 
+  const caixaUnsubRef = useRef<Array<() => void>>([])
+
   const initCaixa = useCallback(async () => {
     const ok = await caixa.initBrowser()
     setCaixaAtiva(ok)
     if (ok) {
       addLog("🏦 Caixa Livre (Unified Balance) conectada ao navegador")
-      caixa.onLog(addLog)
-      caixa.onCashBoxUpdate(atualizarCaixaSaldo)
+      caixaUnsubRef.current.push(caixa.onLog(addLog))
+      caixaUnsubRef.current.push(caixa.onCashBoxUpdate(atualizarCaixaSaldo))
       await atualizarCaixaSaldo()
     } else {
       addLog("ℹ️ Caixa Unified Balance não disponível — usando saldo local da wallet")
@@ -164,27 +186,52 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     setCashBox(pregão.getCashBox())
     addLog(`💼 Saldos registrados: $${walletUsdc_.toFixed(2)} USDC, €${walletEurc.toFixed(2)} EURC`)
 
-    if (balanceTimerRef.current) clearInterval(balanceTimerRef.current)
-    balanceTimerRef.current = setInterval(async () => {
-      await realSwap.refreshAllBalances()
-      const usdc = realSwap.getBalance("USDC")
-      setWalletBalance(usdc)
-      if (usdc > 0) setDepositAmount(Math.floor(usdc).toString())
-      setOpenPositions(positionManager.getOpenPositions().length)
-      setOpenPositionsData(positionManager.getOpenPositions())
-      setRecentTrades(positionManager.getRecentTrades(5))
-      const nativeUsd = await realSwap.refreshNativeBalance()
-      setNativeBalance(nativeUsd)
-      if (nativeUsd < 0.05 && nativeUsd > 0 && !netConf.isTestnet) {
-        narrador.gasAlto(netConf.name, nativeUsd)
+    const startBalanceTimer = () => {
+      if (balanceTimerRef.current) clearInterval(balanceTimerRef.current)
+      balanceTimerRef.current = setInterval(async () => {
+        await realSwap.refreshAllBalances()
+        const usdc = realSwap.getBalance("USDC")
+        setWalletBalance(usdc)
+        if (usdc > 0) setDepositAmount(Math.floor(usdc).toString())
+        setOpenPositions(positionManager.getOpenPositions().length)
+        setOpenPositionsData(positionManager.getOpenPositions())
+        setRecentTrades(positionManager.getRecentTrades(5))
+        const nativeUsd = await realSwap.refreshNativeBalance()
+        setNativeBalance(nativeUsd)
+        if (nativeUsd < 0.05 && nativeUsd > 0 && !netConf.isTestnet) {
+          narrador.gasAlto(netConf.name, nativeUsd)
+        }
+        if (nativeUsd < 0.01 && !netConf.isTestnet) {
+          narrador.saldoBaixo(`${netConf.name} (${netConf.nativeSymbol})`)
+        }
+        // 📚 Atualiza dados da escola de robôs + rodízio de turno
+        pregão.verificarShiftRotacao()
+        setEscolaRobosData(escolaRobos.getAll())
+        setProfessorStats(professor.getStats())
+      }, 8000)
+    }
+
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        if (balanceTimerRef.current) {
+          clearInterval(balanceTimerRef.current)
+          balanceTimerRef.current = null
+        }
+      } else {
+        startBalanceTimer()
       }
-      if (nativeUsd < 0.01 && !netConf.isTestnet) {
-        narrador.saldoBaixo(`${netConf.name} (${netConf.nativeSymbol})`)
-      }
-    }, 8000)
+    }
+
+    startBalanceTimer()
+    document.addEventListener("visibilitychange", onVisibilityChange)
 
     initCaixa()
-    return () => { if (balanceTimerRef.current) clearInterval(balanceTimerRef.current) }
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange)
+      if (balanceTimerRef.current) clearInterval(balanceTimerRef.current)
+      for (const unsub of caixaUnsubRef.current) unsub()
+      caixaUnsubRef.current = []
+    }
   }, [rede, addLog, initCaixa])
 
   const depositarCaixa = async () => {
@@ -219,11 +266,17 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     setCashBox(pregão.getCashBox())
   }, [])
 
+  const cicloVisRef = useRef<(() => void) | null>(null)
+
   const alternarCiclo = async () => {
     if (cicloAtivo) {
       if (cicloRef.current) {
         clearInterval(cicloRef.current)
         cicloRef.current = null
+      }
+      if (cicloVisRef.current) {
+        cicloVisRef.current()
+        cicloVisRef.current = null
       }
       setCicloAtivo(false)
       if (NETWORKS[redeRef.current as NetworkKey]?.isTestnet) {
@@ -264,7 +317,8 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     }
     atualizarTudo()
 
-    cicloRef.current = setInterval(async () => {
+    const runCycle = async () => {
+      if (document.hidden) return
       resumeFromPanic()
       pregão.limparOrdensTravadas()
       try {
@@ -280,7 +334,19 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         addLog(`❌ Ciclo: ${e instanceof Error ? e.message : e}`)
       }
       atualizarTudo()
-    }, cicloIntervalo * 1000)
+    }
+
+    cicloRef.current = setInterval(runCycle, cicloIntervalo * 1000)
+    const onVisChange = () => {
+      if (document.hidden && cicloRef.current) {
+        clearInterval(cicloRef.current)
+        cicloRef.current = null
+      } else if (!document.hidden && !cicloRef.current && cicloAtivo) {
+        cicloRef.current = setInterval(runCycle, cicloIntervalo * 1000)
+      }
+    }
+    document.addEventListener("visibilitychange", onVisChange)
+    cicloVisRef.current = () => document.removeEventListener("visibilitychange", onVisChange)
   }
 
   const fecharPosicao = async () => {
@@ -331,10 +397,21 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     atualizarTudo()
   }
 
-  // ─── Contratante (JobRobot) ─────────────────────────────
+  // ─── Contratante (JobRobot) — auto-inicia na testnet ──
   useEffect(() => {
-    contratante.onChange(() => setContratanteState(contratante.getState()))
-  }, [])
+    const unsub = contratante.onChange(() => setContratanteState(contratante.getState()))
+    // Auto-iniciar na testnet se houver private key
+    const netRede = NETWORKS[redeRef.current as NetworkKey]
+    if (netRede?.isTestnet) {
+      const pk = localStorage.getItem("arcflow_private_key")
+      if (pk) {
+        contratante.setPrivateKey(pk)
+        setContratanteAtivo(true)
+        addLog("🤖 Contratante auto-iniciado — executando jobs na Arc testnet")
+      }
+    }
+    return () => unsub()
+  }, [addLog])
 
   useEffect(() => {
     if (!contratanteAtivo) {
@@ -348,12 +425,25 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       return
     }
     const run = async () => {
+      if (document.hidden) return
       const { ok, msg } = await contratante.tryExecuteCycle()
       addLog(msg)
     }
     run()
     contratanteTimerRef.current = setInterval(run, 60000)
-    return () => { if (contratanteTimerRef.current) clearInterval(contratanteTimerRef.current) }
+    const onVis = () => {
+      if (document.hidden && contratanteTimerRef.current) {
+        clearInterval(contratanteTimerRef.current)
+        contratanteTimerRef.current = null
+      } else if (!document.hidden && !contratanteTimerRef.current) {
+        contratanteTimerRef.current = setInterval(run, 60000)
+      }
+    }
+    document.addEventListener("visibilitychange", onVis)
+    return () => {
+      document.removeEventListener("visibilitychange", onVis)
+      if (contratanteTimerRef.current) clearInterval(contratanteTimerRef.current)
+    }
   }, [contratanteAtivo, rede])
 
   const alternarContratante = () => {
@@ -583,6 +673,22 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
               )}
             </div>
           )}
+          <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center" }}>
+            <span style={{ fontSize: 9, color: "#64748b", whiteSpace: "nowrap" }}>🔑 Kit Key</span>
+            <input
+              type="password"
+              value={kitKey}
+              onChange={(e) => {
+                setKitKey(e.target.value)
+                localStorage.setItem("arcflow_kit_key", e.target.value)
+              }}
+              placeholder="KIT_KEY:keyId:keySecret"
+              style={{ flex: 1, background: "#0f172a", border: "1px solid #1e293b", borderRadius: 6, padding: "4px 8px", color: "#e2e8f0", fontSize: 10, fontFamily: "monospace" }}
+            />
+            {kitKey && (
+              <button onClick={() => { setKitKey(""); localStorage.removeItem("arcflow_kit_key") }} style={{ background: "none", border: "none", color: "#64748b", cursor: "pointer", fontSize: 10 }}>✕</button>
+            )}
+          </div>
           {contratanteState.cicloAtual > 0 && (
             <div style={{ fontSize: 8, color: "#6b7280", marginTop: 4 }}>
               Ciclo {contratanteState.cicloAtual} • {contratanteState.swapsSucesso} sucesso / {contratanteState.swapsFalha} falhas
@@ -685,6 +791,206 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
             })
           )}
         </div>
+      </div>
+
+      {/* 📚 Prova de Jobs — Contratante como avaliador prático */}
+      {NETWORKS[redeRef.current as NetworkKey]?.isTestnet && (
+        <div style={{ marginBottom: 12, background: "rgba(59,130,246,0.05)", borderRadius: 12, padding: 12, border: "1px solid rgba(59,130,246,0.15)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <span style={{ fontSize: 20 }}>📋</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, color: "#60a5fa", fontWeight: "bold" }}>Prova de Jobs — Contratante</div>
+              <div style={{ fontSize: 9, color: "#94a3b8" }}>
+                {contratanteState.swapsExecutados > 0
+                  ? `${contratanteState.swapsSucesso} jobs concluídos · ${contratanteState.swapsFalha} falhas`
+                  : "Robôs precisam completar jobs como prova para serem verificados em mainnet"}
+              </div>
+            </div>
+            <button onClick={alternarContratante} style={{
+              padding: "6px 12px", fontSize: 10, fontWeight: "bold",
+              background: contratanteAtivo ? "#ef4444" : "#3b82f6", color: "#fff",
+              border: "none", borderRadius: 6, cursor: "pointer"
+            }}>
+              {contratanteAtivo ? "⏹️ Parar" : "▶️ Iniciar"}
+            </button>
+          </div>
+          {contratanteState.ultimoResultado && (
+            <div style={{ fontSize: 9, color: contratanteState.ultimoError ? "#ef4444" : "#94a3b8", padding: "4px 8px", background: "rgba(0,0,0,0.3)", borderRadius: 6 }}>
+              {contratanteState.ultimoResultado}
+            </div>
+          )}
+          {escolaRobos.getCandidatosProva().length > 0 && (
+            <div style={{ fontSize: 8, color: "#6b7280", marginTop: 4 }}>
+              🎯 Candidatos: {escolaRobos.getCandidatosProva().map(r => `${r.nome} (${r.jobsCompletos}/${MIN_JOBS_PROVA} jobs)`).join(", ")}
+            </div>
+          )}
+          {escolaRobos.getAll().filter(r => r.jobsCompletos >= MIN_JOBS_PROVA).length > 0 && (
+            <div style={{ fontSize: 8, color: "#22c55e", marginTop: 2 }}>
+              ✅ Verificados: {escolaRobos.getAll().filter(r => r.jobsCompletos >= MIN_JOBS_PROVA).map(r => r.nome).join(", ")}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 📚 Escola de Robôs — Turnos + Promoção via Professor */}
+      <div style={{ marginBottom: 12, background: "rgba(34,197,94,0.05)", borderRadius: 12, padding: 12, border: "1px solid rgba(34,197,94,0.15)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <span style={{ fontSize: 20 }}>📚</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 11, color: "#22c55e", fontWeight: "bold" }}>Escola de Robôs — Turno {escolaRobos.getShiftState().turno}</div>
+            <div style={{ fontSize: 9, color: "#94a3b8" }}>
+              {professorStats.pendentes > 0
+                ? `${professorStats.pendentes} palpites aguardando avaliação`
+                : `${escolaRobosData.filter(r => r.pontos > 0).length} robôs com pontuação · ${escolaRobosData.filter(r => r.status === "promovido").length} promovidos · ${escolaRobosData.filter(r => r.jobsCompletos >= MIN_JOBS_PROVA).length} verificados`}
+            </div>
+          </div>
+        </div>
+        {/* Turno atual */}
+        {escolaRobos.getShiftState().robosAtivos.length > 0 && (
+          <div style={{ marginBottom: 10, padding: "6px 10px", background: "rgba(34,197,94,0.1)", borderRadius: 8, border: "1px solid rgba(34,197,94,0.2)" }}>
+            <div style={{ fontSize: 9, color: "#22c55e", fontWeight: "bold", marginBottom: 4 }}>
+              🎓 EM TURNO AGORA ({escolaRobos.getShiftState().robosAtivos.length}/3)
+            </div>
+            <div style={{ display: "flex", gap: 8, fontSize: 10, flexWrap: "wrap" }}>
+              {escolaRobos.getShiftState().robosAtivos.map(nome => {
+                const robo = escolaRobos.getRobo(nome)
+                const promovido = robo.status === "promovido"
+                const verified = robo.jobsCompletos >= MIN_JOBS_PROVA
+                const badge = promovido ? "🏆" : verified ? "🎓" : "📚"
+                const cor = promovido ? "#FFD700" : verified ? "#22c55e" : "#fff"
+                return (
+                  <span key={nome} style={{
+                    background: promovido ? "rgba(255,215,0,0.2)" : verified ? "rgba(34,197,94,0.2)" : "rgba(255,255,255,0.1)",
+                    padding: "2px 8px", borderRadius: 12, color: cor
+                  }}>
+                    {badge} {nome} ({robo.pontos}pts)
+                  </span>
+                )
+              })}
+            </div>
+            <div style={{ fontSize: 8, color: "#6b7280", marginTop: 4 }}>
+              Expira em {Math.max(0, Math.floor((escolaRobos.getShiftState().expira - Date.now()) / 60000))}min
+            </div>
+          </div>
+        )}
+        {escolaRobosData.length === 0 ? (
+          <div style={{ fontSize: 9, color: "#6b7280", padding: "8px 0", textAlign: "center" }}>
+            ⏳ Aguardando robôs acumularem palpites para avaliação do Professor...
+          </div>
+        ) : (
+          escolaRobosData.map((robo, i) => {
+            const noTurno = escolaRobos.isOnShift(robo.nome)
+            const promovido = robo.status === "promovido"
+            const verified = robo.jobsCompletos >= MIN_JOBS_PROVA
+            const badge = promovido ? "🏆" : verified ? "🎓" : noTurno ? "📋" : "📚"
+            const corBorda = promovido ? "#FFD700" : verified ? "#22c55e" : noTurno ? "#d4a574" : "#6b7280"
+            const ultimoFeedback = robo.historicoFeedback.length > 0 ? robo.historicoFeedback[robo.historicoFeedback.length - 1] : ""
+            // Barra de progresso para promoção
+            const progPalpites = Math.min(100, (robo.palpitesTotal / 50) * 100)
+            const progTaxa = Math.min(100, (robo.taxaAcerto / 60) * 100)
+            const progPontos = Math.min(100, (robo.pontos / 500) * 100)
+            return (
+              <div key={robo.nome} style={{
+                background: "rgba(0,0,0,0.3)", borderRadius: 8, padding: "8px 10px", marginBottom: 4,
+                borderLeft: `3px solid ${corBorda}`
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span>{badge}</span>
+                    <span style={{ color: "#fff", fontWeight: "bold", fontSize: 11 }}>{robo.nome}</span>
+                    {promovido && <span style={{ fontSize: 8, color: "#FFD700", background: "rgba(255,215,0,0.2)", padding: "1px 5px", borderRadius: 8 }}>promovido</span>}
+                    {verified && !promovido && <span style={{ fontSize: 8, color: "#22c55e", background: "rgba(34,197,94,0.2)", padding: "1px 5px", borderRadius: 8 }}>verificado</span>}
+                    {noTurno && !verified && !promovido && <span style={{ fontSize: 8, color: "#d4a574", background: "rgba(212,165,116,0.2)", padding: "1px 5px", borderRadius: 8 }}>em prova</span>}
+                  </div>
+                  <span style={{ color: promovido ? "#FFD700" : "#22c55e", fontWeight: "bold", fontSize: 11 }}>
+                    {robo.pontos}pts
+                  </span>
+                </div>
+                <div style={{ display: "flex", gap: 16, marginTop: 4, fontSize: 9, color: "#94a3b8" }}>
+                  <span>✅ {robo.acertos}/{robo.palpitesTotal} ({robo.taxaAcerto.toFixed(0)}%)</span>
+                  {!promovido && <span>📋 jobs {robo.jobsCompletos}/{MIN_JOBS_PROVA}</span>}
+                </div>
+                {!promovido && (
+                  <div style={{ marginTop: 4, display: "flex", gap: 8, alignItems: "center" }}>
+                    <div style={{ flex: 1, background: "rgba(255,255,255,0.1)", borderRadius: 4, height: 3 }}>
+                      <div style={{ width: `${progPalpites}%`, height: 3, borderRadius: 4, background: "#60a5fa", transition: "width 0.5s" }} />
+                    </div>
+                    <div style={{ flex: 1, background: "rgba(255,255,255,0.1)", borderRadius: 4, height: 3 }}>
+                      <div style={{ width: `${progTaxa}%`, height: 3, borderRadius: 4, background: "#22c55e", transition: "width 0.5s" }} />
+                    </div>
+                    <div style={{ flex: 1, background: "rgba(255,255,255,0.1)", borderRadius: 4, height: 3 }}>
+                      <div style={{ width: `${progPontos}%`, height: 3, borderRadius: 4, background: "#FFD700", transition: "width 0.5s" }} />
+                    </div>
+                    <span style={{ fontSize: 7, color: "#6b7280" }}>palp/taxa/pts</span>
+                  </div>
+                )}
+                {ultimoFeedback && (
+                  <div style={{ fontSize: 8, color: "#6b7280", marginTop: 4, fontStyle: "italic" }}>
+                    💬 {ultimoFeedback}
+                  </div>
+                )}
+              </div>
+            )
+          })
+        )}
+      </div>
+
+      {/* 📊 Relatório Pair-Sector — desempenho por rede */}
+      <div style={{ marginBottom: 12, background: "rgba(139,92,246,0.05)", borderRadius: 12, padding: 12, border: "1px solid rgba(139,92,246,0.15)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <span style={{ fontSize: 20 }}>📊</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 11, color: "#a78bfa", fontWeight: "bold" }}>Setor de Pares — por rede</div>
+            <div style={{ fontSize: 9, color: "#94a3b8" }}>
+              {pairSector.getStats().totalAvaliacoes > 0
+                ? `${pairSector.getStats().totalAvaliacoes} avaliações • ${Object.keys(pairSector.getStats().porRede).length} redes`
+                : "Aguardando palpites dos robôs para avaliar pares"}
+            </div>
+          </div>
+        </div>
+        {Object.entries(pairSector.getStats().porRede).length > 0 ? (
+          (Object.entries(pairSector.getStats().porRede) as [string, { total: number; avaliadas: number }][]).map(([rede, info]) => {
+            const pares = professor.getPairSectorReport(rede as NetworkKey)
+            return (
+              <div key={rede} style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: "#a78bfa", fontWeight: "bold", marginBottom: 4, textTransform: "uppercase" }}>
+                  🌐 {NETWORKS[rede as NetworkKey]?.name || rede} ({info.total} avals, {info.avaliadas} avaliadas)
+                </div>
+                {pares.length === 0 ? (
+                  <div style={{ fontSize: 9, color: "#6b7280", padding: "2px 8px" }}>
+                    Nenhum par avaliado ainda nesta rede
+                  </div>
+                ) : (
+                  pares.slice(0, 5).map((par, i) => (
+                    <div key={i} style={{
+                      display: "flex", justifyContent: "space-between", alignItems: "center",
+                      padding: "5px 8px", marginBottom: 2,
+                      background: par.taxaAcerto >= 60 ? "rgba(34,197,94,0.08)" : par.taxaAcerto >= 40 ? "rgba(251,191,36,0.08)" : "rgba(239,68,68,0.05)",
+                      borderRadius: 6, fontSize: 9
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ color: "#fff", fontWeight: "bold" }}>{par.par}</span>
+                        <span style={{ color: par.taxaAcerto >= 60 ? "#22c55e" : par.taxaAcerto >= 40 ? "#fbbf24" : "#ef4444", fontWeight: "bold" }}>
+                          {par.taxaAcerto.toFixed(0)}%
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#6b7280" }}>
+                        <span>{par.acertos}/{par.totalAvaliacoes}</span>
+                        {par.melhoresRobos.length > 0 && (
+                          <span>🏆 {par.melhoresRobos.slice(0, 2).map(r => r.nome).join(", ")}</span>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )
+          })
+        ) : (
+          <div style={{ fontSize: 9, color: "#6b7280", padding: "8px 0", textAlign: "center" }}>
+            ⏳ Nenhuma avaliação registrada ainda — os dados aparecerão após o primeiro ciclo de palpites
+          </div>
+        )}
       </div>
 
       {oksAtivos.length > 0 && (
