@@ -1,9 +1,18 @@
 ﻿// app/api/stress-test/route.ts
 import { NextResponse } from "next/server"
 import { ethers } from "ethers"
-import { realSwap } from "@/lib/real-swap-executor"
 
 const ARC_RPC_URL = "https://rpc.testnet.arc.io"
+const LI_FI_API = "https://li.quest/v1/quote"
+const USDC_ARC = "0x3600000000000000000000000000000000000000"
+const EURC_ARC = "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a"
+
+async function getLifiQuote(fromToken: string, toToken: string, amount: string, fromAddress: string) {
+  const url = `${LI_FI_API}?fromChain=5042002&toChain=5042002&fromToken=${fromToken}&toToken=${toToken}&fromAmount=${amount}&fromAddress=${fromAddress}&toAddress=${fromAddress}&slippage=0.005`
+  const res = await fetch(url, { headers: { Accept: "application/json" } })
+  if (!res.ok) return null
+  return res.json()
+}
 
 export async function POST(req: Request) {
   try {
@@ -17,9 +26,7 @@ export async function POST(req: Request) {
       )
     }
 
-    // Cria provider diretamente para a Arc Testnet
     const provider = new ethers.JsonRpcProvider(ARC_RPC_URL)
-    
     const signer = new ethers.Wallet(privateKey, provider)
     const address = await signer.getAddress()
     console.log(`🔑 Stress Test signer: ${address}`)
@@ -34,16 +41,28 @@ export async function POST(req: Request) {
         let result
         switch (op) {
           case "swap_USDC_EURC": {
-            // Simula swap (Arc testnet não tem DEX real)
-            result = { success: false, txHash: "", error: "Arc Testnet: sem DEX real disponivel" }
+            const quote = await getLifiQuote(USDC_ARC, EURC_ARC, "1000000", address)
+            if (quote?.transactionRequest) {
+              const tx = await signer.sendTransaction(quote.transactionRequest)
+              const receipt = await tx.wait()
+              result = { success: true, txHash: receipt?.hash || tx.hash }
+            } else {
+              result = { success: false, txHash: "", error: "LI.FI sem rota para USDC→EURC na Arc" }
+            }
             break
           }
           case "swap_EURC_USDC": {
-            result = { success: false, txHash: "", error: "Arc Testnet: sem DEX real disponivel" }
+            const quote = await getLifiQuote(EURC_ARC, USDC_ARC, "1000000", address)
+            if (quote?.transactionRequest) {
+              const tx = await signer.sendTransaction(quote.transactionRequest)
+              const receipt = await tx.wait()
+              result = { success: true, txHash: receipt?.hash || tx.hash }
+            } else {
+              result = { success: false, txHash: "", error: "LI.FI sem rota para EURC→USDC na Arc" }
+            }
             break
           }
           case "transfer_memo": {
-            // Transferência simples
             const tx = await signer.sendTransaction({
               to: address,
               value: 0,
