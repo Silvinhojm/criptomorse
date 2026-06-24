@@ -850,20 +850,14 @@ class RealSwapExecutor {
 
       // LI.FI
       let lifiQuote: QuoteResult | null = null;
-      if (net.isTestnet) {
-        // Arc Testnet: sem DEX real — swaps revertiam sempre (synthetic-direct com data vazio)
-        // Trades na Arc desabilitados; usar apenas para Jobs e aprendizado
-        return this._fail(fromToken, toToken, amountUsd, "Arc Testnet: sem DEX real disponivel — use Polygon para trades", timestamp);
-      } else {
-        try {
-          lifiQuote = await getQuote({
-            fromChain: net.chainId, toChain: net.chainId,
-            fromToken: fromTokenAddr, toToken: toTokenAddr,
-            fromAmount: fromAmountRaw, fromAddress: this.userAddress,
-            toAddress: this.userAddress, slippage: 0.005,
-          });
-        } catch { /* LI.FI falhou */ }
-      }
+      try {
+        lifiQuote = await getQuote({
+          fromChain: net.chainId, toChain: net.chainId,
+          fromToken: fromTokenAddr, toToken: toTokenAddr,
+          fromAmount: fromAmountRaw, fromAddress: this.userAddress,
+          toAddress: this.userAddress, slippage: 0.005,
+        });
+      } catch { /* LI.FI falhou */ }
       if (lifiQuote && lifiQuote.transactionRequest?.data && lifiQuote.transactionRequest?.to) {
         const lifiToEstimate = parseFloat(lifiQuote.toAmount ?? "0") / Math.pow(10, toDecimals);
         if (lifiToEstimate > 0) {
