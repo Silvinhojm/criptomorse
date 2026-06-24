@@ -3,7 +3,9 @@ import { positionManager } from "./position-manager"
 import { parametrosRobos } from "./parametros-robos"
 import { narrador } from "./narrator"
 import { pairSector, type ParPerformance } from "./pair-sector"
-import type { TokenSymbol, NetworkKey } from "./real-swap-executor"
+import { accountant } from "./accountant"
+import { setorPacotes, type TradeIntent } from "./setor-pacotes"
+import { TRADING_PAIRS, NETWORKS, realSwap, type TokenSymbol, type NetworkKey } from "./real-swap-executor"
 
 export interface PalpiteRobo {
   roboNome: string
@@ -109,10 +111,9 @@ class Professor {
   private async _avaliar(palpite: PalpiteRobo) {
     const tokenVolatil = palpite.direcao === "buy" ? palpite.toToken : palpite.fromToken
     // Pula tokens sem price feed real (CoinGecko) — evita streak negativo falso
-    // de tokens testnet como cirBTC/mcirBTC que sempre retornam $1.0 de fallback
     const COIN_IDS: Record<string, string> = {
       WETH: "ethereum", WMATIC: "matic-network", ARB: "arbitrum",
-      WBTC: "bitcoin", SOL: "solana",
+      WBTC: "bitcoin", SOL: "solana", cirBTC: "bitcoin",
     }
     if (!COIN_IDS[tokenVolatil]) return
 
@@ -238,6 +239,95 @@ class Professor {
       totalPalpites: this.palpites.length,
       pendentes: this.getPalpitesPendentes(),
       ultimaAvaliacao: this.ultimaAvaliacao,
+    }
+  }
+
+  async gerarPacotes(): Promise<void> {
+    const ranking = accountant.getRanking()
+    if (ranking.length === 0) return
+
+    const topAgents = ranking
+      .filter(a => a.totalTrades >= 3 && a.winRate >= 50 && a.score > 0)
+      .slice(0, 5)
+
+    if (topAgents.length === 0) return
+
+    const networksToScan = Object.keys(TRADING_PAIRS).filter(k => {
+      const net = NETWORKS[k as NetworkKey]
+      return net && !net.isTestnet
+    }) as NetworkKey[]
+
+    if (networksToScan.length === 0) return
+
+    for (const rede of networksToScan) {
+      const paresRede = TRADING_PAIRS[rede]
+      if (!paresRede || paresRede.length === 0) continue
+
+      const performance = pairSector.getPerformancePorPar(rede)
+      const topPares = performance
+        .filter(p => p.totalAvaliacoes >= 2 && p.taxaAcerto >= 50)
+        .sort((a, b) => b.taxaAcerto - a.taxaAcerto)
+        .slice(0, 5)
+
+      if (topPares.length === 0) continue
+
+      const trades: TradeIntent[] = []
+      const agentesUsados = new Set<string>()
+      let totalAmount = 0
+
+      for (const par of topPares) {
+        const pairDef = paresRede.find(p => p.label === par.par)
+        if (!pairDef) continue
+        if (totalAmount >= 15) break
+
+        const agenteNome = par.melhoresRobos[0]?.nome
+        if (!agenteNome) continue
+        const agente = topAgents.find(a => a.agentName === agenteNome)
+        if (!agente) continue
+        agentesUsados.add(agenteNome)
+
+        const precoAtual = await positionManager.fetchTokenPrice(pairDef.to)
+        if (!precoAtual || precoAtual <= 0) continue
+
+        const confiancaAjustada = Math.round(Math.min(95, agente.winRate * 0.4 + par.taxaAcerto * 0.6))
+
+        const netConf = NETWORKS[rede]
+        const saldoUSDC = realSwap.getBalance("USDC")
+        const amount = Math.min(saldoUSDC * 0.25, 5.0)
+        if (amount < 2.0) continue
+
+        totalAmount += amount
+
+        // Lucro esperado realista: 0.3% de retorno × confiança
+        const expectedProfit = amount * (confiancaAjustada / 100) * 0.003
+
+        trades.push({
+          fromToken: pairDef.from,
+          toToken: pairDef.to,
+          amount,
+          agentes: [agenteNome],
+          confianca: confiancaAjustada,
+          expectedProfit,
+        })
+      }
+
+      if (trades.length === 0) continue
+      if (trades.length < 2) continue // mínimo 2 trades por pacote
+
+      const profitTotal = trades.reduce((s, t) => s + t.expectedProfit, 0)
+      const confMedia = Math.round(trades.reduce((s, t) => s + t.confianca, 0) / trades.length)
+
+      setorPacotes.registrarPacote({
+        id: `pacote_prof_${rede}_${Date.now()}`,
+        rede,
+        trades,
+        expectedProfitTotal: profitTotal,
+        confiancaMedia: confMedia,
+        timestamp: Date.now(),
+        expiraEm: Date.now() + 30_000,
+      })
+
+      console.log(`[PROFESSOR] 📦 Pacote gerado: ${trades.length} trades em ${rede} | total: $${totalAmount.toFixed(2)} | lucro esp.: $${profitTotal.toFixed(4)} | conf: ${confMedia}%`)
     }
   }
 

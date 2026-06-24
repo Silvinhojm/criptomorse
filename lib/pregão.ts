@@ -1,6 +1,27 @@
 import { accountant } from "./accountant"
 import { escolaRobos } from "./escola-robos"
 import { isStable } from "./real-swap-executor"
+import { setorPacotes, type TradeIntent } from "./setor-pacotes"
+import { batchApprove, executeBatch } from "./ultraflash"
+import { realSwap, NETWORKS, type NetworkKey, type TokenSymbol, TOKEN_DECIMALS } from "./real-swap-executor"
+import { hasDirectDex, getDirectDexQuote, calculateAmountOutMin } from "./direct-dex"
+import { getQuote } from "./lifi-executor"
+import { ethers } from "ethers"
+import { gasPriceOracle } from "./gas-price-oracle"
+
+export interface PackageResult {
+  id: string
+  rede: NetworkKey
+  totalTrades: number
+  tradesSucesso: number
+  totalInvested: number
+  totalReturned: number
+  gasCost: number
+  profit: number
+  status: 'executando' | 'parcial' | 'concluido' | 'falhou'
+  timestamp: number
+  txHash?: string
+}
 
 export interface OkSignal {
   pregueiro: string
@@ -47,6 +68,7 @@ export interface CashBoxState {
 
 type OkIndex = Map<string, Map<string, OkSignal[]>>
 
+import { batchExecutor } from "./batch-executor";
 class Pregão {
   private oks: OkIndex = new Map()
   private ordens: OrdemExecucao[] = []
@@ -64,10 +86,30 @@ class Pregão {
   private sessionStats = { trades: 0, wins: 0, losses: 0, profit: 0 }
   private static ORDENS_KEY = "arcflow_ordens"
   private static STATS_KEY = "arcflow_session_stats"
+  private static PACOTES_KEY = "arcflow_pacotes_results"
+  private packageResults: PackageResult[] = []
 
   constructor() {
     this._loadOrdens()
     this._loadStats()
+    this._loadPackageResults()
+  }
+
+  private _loadPackageResults(): void {
+    try {
+      const raw = localStorage.getItem(Pregão.PACOTES_KEY)
+      if (raw) this.packageResults = JSON.parse(raw)
+    } catch {}
+  }
+
+  private _savePackageResults(): void {
+    try {
+      localStorage.setItem(Pregão.PACOTES_KEY, JSON.stringify(this.packageResults.slice(-50)))
+    } catch {}
+  }
+
+  getPackageResults(): PackageResult[] {
+    return [...this.packageResults].reverse()
   }
 
   private _saveOrdens(): void {
@@ -411,6 +453,250 @@ class Pregão {
       }
     }
     if (mudou) this._saveOrdens()
+  }
+
+  private _quoteWithTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T | null> {
+    return Promise.race([
+      promise,
+      new Promise<null>((_, reject) =>
+        setTimeout(() => reject(new Error(`${label} timeout (${ms}ms)`)), ms)
+      ),
+    ]).catch(err => {
+      this.log(`[PREGÃO] ⏰ ${err.message}`)
+      return null
+    })
+  }
+
+  private async _quoteTrade(
+    trade: TradeIntent,
+    net: any,
+    redeKey: NetworkKey,
+  ): Promise<import("./ultraflash").UltraFlashSwap | null> {
+    const fromDecimals = TOKEN_DECIMALS[trade.fromToken] ?? 6
+    const toDecimals = TOKEN_DECIMALS[trade.toToken] ?? 6
+    const fromTokenAddr = (net.tokens as any)[trade.fromToken]
+    const toTokenAddr = (net.tokens as any)[trade.toToken]
+    if (!fromTokenAddr || !toTokenAddr) return null
+
+    const fromPrice = await realSwap.fetchTokenPrice(trade.fromToken).catch(() => 1)
+    const fromAmountRaw = ethers.parseUnits((trade.amount / fromPrice).toFixed(fromDecimals), fromDecimals)
+
+    const [dexQuote, lifiQuote] = await Promise.all([
+      hasDirectDex(redeKey)
+        ? this._quoteWithTimeout(
+            getDirectDexQuote(redeKey, realSwap.getProvider()!, fromTokenAddr, toTokenAddr, fromAmountRaw),
+            5000, `DEX ${trade.fromToken}→${trade.toToken}`
+          )
+        : Promise.resolve(null),
+      this._quoteWithTimeout(
+        getQuote({
+          fromChain: net.chainId, toChain: net.chainId,
+          fromToken: fromTokenAddr, toToken: toTokenAddr,
+          fromAmount: fromAmountRaw.toString(),
+          fromAddress: realSwap.getAddress(),
+          toAddress: realSwap.getAddress(), slippage: 0.005,
+        }),
+        5000, `LI.FI ${trade.fromToken}→${trade.toToken}`
+      ),
+    ])
+
+    const dexOut = dexQuote && dexQuote.amountOut > 0n
+      ? Number(ethers.formatUnits(dexQuote.amountOut, toDecimals))
+      : 0
+    const lifiOut = lifiQuote?.transactionRequest?.data && lifiQuote?.transactionRequest?.to
+      ? parseFloat(lifiQuote.toAmount ?? "0") / Math.pow(10, toDecimals)
+      : 0
+
+    if (dexOut >= lifiOut && dexOut > 0) {
+      const amountOutMin = calculateAmountOutMin(dexQuote.amountOut, 100)
+      const deadline = Math.floor(Date.now() / 1000) + 600
+      const iface = new ethers.Interface([
+        "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)",
+      ])
+      return {
+        fromToken: trade.fromToken, toToken: trade.toToken,
+        amountRaw: fromAmountRaw, amountUsd: trade.amount,
+        target: dexQuote.router,
+        calldata: iface.encodeFunctionData("swapExactTokensForTokens", [
+          fromAmountRaw, amountOutMin, dexQuote.path, realSwap.getAddress(), deadline,
+        ]),
+        value: 0n, spender: dexQuote.router,
+        expectedToAmount: dexOut, network: redeKey,
+      }
+    }
+
+    if (lifiOut > 0) {
+      return {
+        fromToken: trade.fromToken, toToken: trade.toToken,
+        amountRaw: fromAmountRaw, amountUsd: trade.amount,
+        target: lifiQuote.transactionRequest.to,
+        calldata: lifiQuote.transactionRequest.data,
+        value: BigInt(lifiQuote.transactionRequest.value ?? "0"),
+        spender: lifiQuote.transactionRequest.to,
+        expectedToAmount: lifiOut, network: redeKey,
+      }
+    }
+
+    return null
+  }
+
+  async executarPacotes(): Promise<void> {
+    const redeAtual = realSwap.getNetworkKey()
+    if (!redeAtual) return
+
+    const pacote = setorPacotes.getPacotePorRede(redeAtual)
+    if (!pacote) return
+
+    pacote.attempts = (pacote.attempts || 0) + 1
+    const isUltimaTentativa = pacote.attempts >= 3
+
+    // ─── 1. Threshold relaxa progressivamente: 0.5% → 0.3% → 0.1% ──
+    const pctThreshold = isUltimaTentativa ? 0.001 : Math.max(0.005 - (pacote.attempts - 1) * 0.002, 0.001)
+    const thresholdPorTrade = pacote.trades.map(t => Math.max(t.amount * pctThreshold, 0.002))
+    const lucroMinimoTotal = thresholdPorTrade.reduce((s, v) => s + v, 0)
+
+    if (pacote.expectedProfitTotal < lucroMinimoTotal && !isUltimaTentativa) {
+      this.log(`⏳ Pacote ${pacote.id} tentativa #${pacote.attempts}: lucro esp. $${pacote.expectedProfitTotal.toFixed(4)} < $${lucroMinimoTotal.toFixed(4)} (${(pctThreshold*100).toFixed(1)}%/trade)`)
+      setorPacotes.registrarPacote(pacote)
+      return
+    }
+
+    const net = NETWORKS[pacote.rede]
+    if (!net) return
+
+    const currentNet = realSwap.getNetworkKey()
+    if (currentNet !== pacote.rede) {
+      this.log(`[PREGÃO] 🔀 Alternando rede: ${currentNet} → ${pacote.rede}`)
+      await realSwap.switchNetwork(pacote.rede)
+    }
+
+    // ─── 2. Quoting paralelo para TODOS os trades de uma vez ──
+    const results = await Promise.all(
+      pacote.trades.map(trade => this._quoteTrade(trade, net, pacote.rede))
+    )
+
+    const swaps = results.filter(Boolean) as import("./ultraflash").UltraFlashSwap[]
+    const erros = results.filter(r => r === null).length
+
+    if (swaps.length === 0) {
+      this.log(`[PREGÃO] ❌ Nenhum swap válido no pacote ${pacote.id} (${erros} erros)`)
+      return
+    }
+
+    if (erros > 0) {
+      this.log(`[PREGÃO] ⚠️ ${erros}/${pacote.trades.length} trades sem rota — prosseguindo com ${swaps.length}`)
+    }
+
+    // ─── 3. Gas-aware threshold (relaxa na última tentativa) ──
+    const lucroRealEsperado = swaps.reduce((s, sw) => s + sw.expectedToAmount, 0) - swaps.reduce((s, sw) => s + sw.amountUsd, 0)
+    const gasCost = await gasPriceOracle.getGasCost(pacote.rede).catch(() => 0.05)
+    const estimatedGasTotal = gasCost * (1 + swaps.length * 0.3)
+    const gasMultiplier = isUltimaTentativa ? 1.0 : 2.0
+
+    if (lucroRealEsperado < lucroMinimoTotal && !isUltimaTentativa) {
+      this.log(`[PREGÃO] ⏳ Lucro real $${lucroRealEsperado.toFixed(4)} < mínimo $${lucroMinimoTotal.toFixed(4)} — requote rejeitado (attempt #${pacote.attempts})`)
+      return
+    }
+
+    if (lucroRealEsperado < estimatedGasTotal * gasMultiplier && !isUltimaTentativa) {
+      this.log(`[PREGÃO] ⏳ Lucro $${lucroRealEsperado.toFixed(4)} < ${gasMultiplier}x gas $${(estimatedGasTotal * gasMultiplier).toFixed(4)} — aguardando (attempt #${pacote.attempts})`)
+      return
+    }
+
+    const pkgResult: PackageResult = {
+      id: pacote.id,
+      rede: pacote.rede,
+      totalTrades: swaps.length,
+      tradesSucesso: 0,
+      totalInvested: swaps.reduce((s, sw) => s + sw.amountUsd, 0),
+      totalReturned: 0,
+      gasCost: estimatedGasTotal,
+      profit: 0,
+      status: 'executando',
+      timestamp: Date.now(),
+    }
+    this.packageResults.push(pkgResult)
+
+    this.log(`[PREGÃO] 🚀 Pacote ${pacote.id}: ${swaps.length} swaps em ${pacote.rede} | lucro esp.: $${lucroRealEsperado.toFixed(4)} | gas: $${estimatedGasTotal.toFixed(4)}`)
+
+    try {
+      await batchApprove(realSwap.getSigner()!, realSwap.getAddress(), pacote.rede as NetworkKey, swaps, (m) => this.log(`[PREGÃO] ${m}`))
+      const batchResult = await executeBatch(realSwap.getSigner()!, pacote.rede as NetworkKey, swaps, (m) => this.log(`[PREGÃO] ${m}`))
+
+      if (!batchResult.success) {
+        this.log(`[PREGÃO] ❌ Batch UltraFlash falhou em ${pacote.rede}`)
+        pkgResult.status = 'falhou'
+        this._savePackageResults()
+        for (const trade of pacote.trades) {
+          if (trade.ordemId) this.atualizarOrdem(trade.ordemId, { status: "falhou" })
+        }
+        return
+      }
+
+      let totalReturned = 0
+      let tradesOk = 0
+
+      for (let i = 0; i < batchResult.results.length; i++) {
+        const r = batchResult.results[i]
+        const trade = pacote.trades[i]
+        if (!trade) continue
+
+        if (!r.success) {
+          this.log(`[PREGÃO] ❌ Swap ${trade.fromToken}→${trade.toToken} falhou no batch`)
+          if (trade.ordemId) this.atualizarOrdem(trade.ordemId, { status: "falhou" })
+          continue
+        }
+
+        totalReturned += r.swap.expectedToAmount
+        tradesOk++
+
+        if (trade.ordemId) {
+          this.atualizarOrdem(trade.ordemId, {
+            status: "concluido",
+            resultado: {
+              txHash: batchResult.txHash ?? "",
+              explorerUrl: `${(net as any).explorerUrl || (net as any).explorer || ""}/tx/${batchResult.txHash}`,
+              fromAmount: trade.amount,
+              toAmount: r.swap.expectedToAmount,
+              profit: r.swap.expectedToAmount - trade.amount,
+            },
+          })
+        }
+
+        // Se comprou volátil → abre posição com packageId
+        const isStableTo = ["USDC", "USDT", "DAI", "EURC"].includes(trade.toToken)
+        if (!isStableTo) {
+          const { positionManager } = await import("./position-manager")
+          positionManager.openPosition(
+            pacote.rede,
+            trade.toToken as TokenSymbol,
+            trade.fromToken as TokenSymbol,
+            r.swap.expectedToAmount,
+            trade.amount,
+            trade.amount / Math.max(1, r.swap.expectedToAmount),
+          )
+        }
+
+        this.log(`[PREGÃO] ✅ ${trade.fromToken}→${trade.toToken} via ${r.swap.network}: $${trade.amount} → $${r.swap.expectedToAmount.toFixed(4)} (${(r.swap.expectedToAmount > trade.amount ? '+' : '')}${((r.swap.expectedToAmount / trade.amount - 1) * 100).toFixed(2)}%)`)
+      }
+
+      const profitReal = totalReturned - pkgResult.totalInvested
+      pkgResult.tradesSucesso = tradesOk
+      pkgResult.totalReturned = totalReturned
+      pkgResult.profit = profitReal - (batchResult.totalGasUsed ? estimatedGasTotal : 0)
+      pkgResult.txHash = batchResult.txHash
+      pkgResult.status = tradesOk === pkgResult.totalTrades ? 'concluido' : 'parcial'
+      this._savePackageResults()
+
+      this.log(`[PREGÃO] ✅ Pacote ${pacote.id}: ${tradesOk}/${batchResult.results.length} sucesso | investido: $${pkgResult.totalInvested.toFixed(2)} | retorno: $${totalReturned.toFixed(4)} | lucro: $${profitReal.toFixed(4)} | TX: ${batchResult.txHash?.slice(0, 10)}...`)
+    } catch (err: any) {
+      this.log(`[PREGÃO] ❌ Erro executando pacote ${pacote.id}: ${err.message.slice(0, 150)}`)
+      pkgResult.status = 'falhou'
+      this._savePackageResults()
+      for (const trade of pacote.trades) {
+        if (trade.ordemId) this.atualizarOrdem(trade.ordemId, { status: "falhou" })
+      }
+    }
   }
 
   getStatus(): { ordensAtivas: number; ordensConcluidas: number; oksPendentes: number; sessionTrades: number; sessionWins: number; sessionLosses: number; sessionProfit: number } {

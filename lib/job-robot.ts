@@ -63,8 +63,7 @@ class JobRobot {
   }
 
   getKitKey(): string {
-    if (typeof window !== "undefined") return localStorage.getItem("arcflow_kit_key") ?? ""
-    return ""
+    return process.env.KIT_KEY || (typeof window !== "undefined" ? localStorage.getItem("arcflow_kit_key") : null) || ""
   }
 
   isReady(): boolean {

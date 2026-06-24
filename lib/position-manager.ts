@@ -202,7 +202,7 @@ class PositionManager {
 
     const coinIds: Record<string, string> = {
       WETH: "ethereum", WMATIC: "matic-network", ARB: "arbitrum",
-      WBTC: "bitcoin", SOL: "solana",
+      WBTC: "bitcoin", SOL: "solana", cirBTC: "bitcoin",
     };
     const coinId = coinIds[token];
     if (!coinId) {
@@ -235,7 +235,7 @@ class PositionManager {
   async fetchTokenChange24h(token: TokenSymbol): Promise<{ change24h: number; variation24h: number }> {
     const coinIds: Record<string, string> = {
       WETH: "ethereum", WMATIC: "matic-network", ARB: "arbitrum",
-      WBTC: "bitcoin", SOL: "solana",
+      WBTC: "bitcoin", SOL: "solana", cirBTC: "bitcoin",
     };
     const coinId = coinIds[token];
     if (!coinId) return { change24h: 0, variation24h: 2 };

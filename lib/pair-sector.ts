@@ -109,7 +109,7 @@ class PairSector {
   // Remove avaliações de tokens sem price feed real (cirBTC, mcirBTC, etc.)
   // que foram registradas antes do filtro coinIds ser adicionado
   limparInvalidos() {
-    const VALID_TOKENS = new Set(["WETH", "WMATIC", "ARB", "WBTC", "SOL", "USDC", "EURC"])
+    const VALID_TOKENS = new Set(["WETH", "WMATIC", "ARB", "WBTC", "SOL", "USDC", "EURC", "cirBTC", "mcirBTC"])
     const antes = this.avaliacoes.length
     this.avaliacoes = this.avaliacoes.filter(a => {
       const tokenV = a.direcao === "buy" ? a.toToken : a.fromToken

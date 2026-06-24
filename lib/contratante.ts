@@ -146,6 +146,11 @@ class Contratante {
       this._ultimoError = result.error ?? 'Erro desconhecido'
       this._ultimoResultado = `❌ Swap #${this._cicloAtual} falhou: ${result.error?.slice(0, 100)}`
       this.notify()
+      const _kitKey = jobRobot.getKitKey();
+      console.error(`❌ Swap falhou: ${result?.error || "Erro desconhecido"}`);
+      if (_kitKey === "KIT_KEY:keyId:keySecret" || !_kitKey) {
+        console.error(`⚠️ KIT_KEY inválida — configure no .env ou no dashboard`);
+      }
       return { ok: false, msg: `❌ Swap falhou: ${result.error?.slice(0, 100)}` }
     }
     } finally {

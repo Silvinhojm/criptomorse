@@ -77,6 +77,7 @@ const COIN_IDS: Record<string, string> = {
   WETH: "ethereum", WMATIC: "matic-network", WBTC: "bitcoin",
   USDC: "usd-coin", USDT: "tether", DAI: "dai", EURC: "eurc",
   ARB: "arbitrum", SOL: "solana", POL: "matic-network",
+  cirBTC: "bitcoin", mcirBTC: "bitcoin",
 }
 
 class VolatilityTracker {

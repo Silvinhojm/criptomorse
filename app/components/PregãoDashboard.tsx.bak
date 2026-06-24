@@ -1,5 +1,4 @@
 "use client"
-
 import { useState, useEffect, useRef, useCallback } from "react"
 import { pregão, type OrdemExecucao, type CashBoxState } from "@/lib/pregão"
 import { escriturário } from "@/lib/escriturario"
@@ -54,14 +53,6 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     const v = getPregãoAllowedBalance()
     return v === Infinity ? 15 : v
   })
-  const [isLoading, setIsLoading] = useState(false)
-  const [stressTestKey, setStressTestKey] = useState(() => {
-    if (typeof window !== "undefined") return localStorage.getItem("arcflow_stress_test_key") || ""
-    return ""
-  })
-  const [stressTestResult, setStressTestResult] = useState<{ success: boolean; details?: string; results?: any[] } | null>(null)
-  const [stressTestRunning, setStressTestRunning] = useState(false)
-  const stressTestIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const logRef = useRef<HTMLDivElement>(null)
   const cicloRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [cicloAtivo, setCicloAtivo] = useState(false)
@@ -172,6 +163,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     const netConf = NETWORKS[rede as NetworkKey]
     if (!netConf) return
 
+    // Trocar a rede no executor e buscar saldos reais on-chain
     realSwap.switchNetwork(rede as NetworkKey).then(async () => {
       const walletUsdc = realSwap.getBalance("USDC")
       const eurcBal = realSwap.getBalance("EURC")
@@ -212,6 +204,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         if (nativeUsd < 0.01 && !netConf.isTestnet) {
           narrador.saldoBaixo(`${netConf.name} (${netConf.nativeSymbol})`)
         }
+        // 📚 Atualiza dados da escola de robôs + rodízio de turno
         pregão.verificarShiftRotacao()
         setEscolaRobosData(escolaRobos.getAll())
         setProfessorStats(professor.getStats())
@@ -296,6 +289,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     setCicloAtivo(true)
     const net = NETWORKS[redeRef.current as NetworkKey]
     const isTestnet = net?.isTestnet ?? true
+    // 🔥 Testnet (Arc) → single-network | Mainnet → multi-chain scanning
     const agenteRede = isTestnet ? redeRef.current : "all"
     resumeFromPanic()
     setTestnetMode(isTestnet)
@@ -312,13 +306,8 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     try {
       const { executarCicloPregueiros } = await import("@/lib/pregueiro")
       const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")
-      const { professor } = await import("@/lib/professor")
       await executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`))
       await executarCicloAgentes(agenteRede).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
-      if (!isTestnet) {
-        await professor.gerarPacotes().catch(e => addLog(`❌ Professor: ${e?.message ?? e}`))
-        await pregão.executarPacotes().catch(e => addLog(`❌ Pacote: ${e?.message ?? e}`))
-      }
       if (isTestnet) {
         const { executarCiclo } = await import("@/lib/pregao-arc")
         await executarCiclo()
@@ -335,13 +324,8 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       try {
       const { executarCicloPregueiros } = await import("@/lib/pregueiro")
       const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")
-      const { professor } = await import("@/lib/professor")
       await executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`))
       await executarCicloAgentes(agenteRede).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
-      if (!isTestnet) {
-        await professor.gerarPacotes().catch(e => addLog(`❌ Professor: ${e?.message ?? e}`))
-        await pregão.executarPacotes().catch(e => addLog(`❌ Pacote: ${e?.message ?? e}`))
-      }
       if (isTestnet) {
         const { executarCiclo: executarArc } = await import("@/lib/pregao-arc")
         await executarArc()
@@ -413,108 +397,10 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     atualizarTudo()
   }
 
-  // ─── STRESS TEST ─────────────────────────────────────────────────────────────
-
-  const runStressTestWithKey = async () => {
-    if (!stressTestKey) {
-      alert("❌ Digite a private key primeiro")
-      return
-    }
-
-    try {
-      setIsLoading(true)
-      setStressTestResult(null)
-      addLog("🧪 Iniciando Stress Test na Arc Testnet...")
-      
-      const response = await fetch('/api/stress-test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ privateKey: stressTestKey })
-      })
-      
-      const data = await response.json()
-      
-      if (data.success) {
-        const { result } = data
-        setStressTestResult({
-          success: true,
-          details: `Total: ${result.total}, Sucesso: ${result.success}, Falhas: ${result.failed}`,
-          results: result.results
-        })
-        addLog(`✅ Stress Test: ${result.success}/${result.total} sucesso`)
-        result.results.forEach((r: any, i: number) => {
-          addLog(`  ${i+1}. ${r.operation} → ${r.success ? '✅' : '❌'} ${r.duration}ms${r.error ? ' - ' + r.error : ''}`)
-        })
-        alert(`✅ Stress Test concluído!\n\nTotal: ${result.total}\nSucesso: ${result.success}\nFalhas: ${result.failed}`)
-      } else {
-        setStressTestResult({
-          success: false,
-          details: data.error || "Erro desconhecido"
-        })
-        addLog(`❌ Stress Test falhou: ${data.error}`)
-        alert(`❌ Stress Test falhou: ${data.error}`)
-      }
-    } catch (error) {
-      setStressTestResult({
-        success: false,
-        details: error instanceof Error ? error.message : String(error)
-      })
-      addLog(`❌ Erro no Stress Test: ${error}`)
-      alert(`❌ Erro: ${error}`)
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const startStressTestLoop = async () => {
-    if (!stressTestKey) {
-      alert("❌ Digite a private key primeiro")
-      return
-    }
-
-    if (stressTestRunning) {
-      alert("⚠️ Stress Test já está rodando")
-      return
-    }
-
-    setStressTestRunning(true)
-    setStressTestResult(null)
-    addLog("🔄 Iniciando Stress Test em loop na Arc Testnet...")
-
-    // Executa imediatamente o primeiro ciclo
-    await runStressTestWithKey()
-
-    // Configura o intervalo
-    stressTestIntervalRef.current = setInterval(async () => {
-      if (document.hidden) return
-      await runStressTestWithKey()
-    }, 30000) // 30 segundos entre ciclos
-  }
-
-  const stopStressTestLoop = () => {
-    if (stressTestIntervalRef.current) {
-      clearInterval(stressTestIntervalRef.current)
-      stressTestIntervalRef.current = null
-    }
-    setStressTestRunning(false)
-    addLog("⏹️ Stress Test em loop parado")
-  }
-
-  // ─── CLEANUP ─────────────────────────────────────────────────────────────────
-
-  useEffect(() => {
-    return () => {
-      if (stressTestIntervalRef.current) {
-        clearInterval(stressTestIntervalRef.current)
-        stressTestIntervalRef.current = null
-      }
-    }
-  }, [])
-
-  // ─── Contratante (JobRobot) ─────────────────────────────────────────────────
-
+  // ─── Contratante (JobRobot) — auto-inicia na testnet ──
   useEffect(() => {
     const unsub = contratante.onChange(() => setContratanteState(contratante.getState()))
+    // Auto-iniciar na testnet se houver private key
     const netRede = NETWORKS[redeRef.current as NetworkKey]
     if (netRede?.isTestnet) {
       const pk = localStorage.getItem("arcflow_private_key")
@@ -695,7 +581,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         <button onClick={alternarCiclo} style={{
           flex: 1, padding: "8px 0", fontSize: 11, fontWeight: "bold",
           background: cicloAtivo ? "#ef4444" : COR_PREGÃO, color: "#fff",
@@ -720,122 +606,6 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
           </button>
         )}
       </div>
-
-      {/* 🧪 STRESS TEST COM PRIVATE KEY - APENAS NA ARC */}
-      {NETWORKS[redeRef.current as NetworkKey]?.isTestnet && (
-        <div style={{ marginBottom: 12, background: "rgba(124,58,237,0.08)", borderRadius: 12, padding: 12, border: "1px solid rgba(124,58,237,0.25)" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-            <span style={{ fontSize: 20 }}>🧪</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, color: "#a78bfa", fontWeight: "bold" }}>Stress Test — Arc Testnet</div>
-              <div style={{ fontSize: 9, color: "#94a3b8" }}>
-                Execute transações em lote para testar a capacidade da rede
-                {stressTestRunning && (
-                  <span style={{ color: "#22c55e", marginLeft: 8 }}>🟢 RODANDO</span>
-                )}
-              </div>
-            </div>
-          </div>
-          
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <input
-              type="password"
-              placeholder="Private Key (0x...)"
-              value={stressTestKey}
-              onChange={(e) => {
-                setStressTestKey(e.target.value)
-                localStorage.setItem("arcflow_stress_test_key", e.target.value)
-              }}
-              disabled={stressTestRunning}
-              style={{
-                flex: 1,
-                minWidth: "150px",
-                padding: "6px 10px",
-                fontSize: 10,
-                fontFamily: "monospace",
-                borderRadius: 6,
-                background: stressTestRunning ? "#1a1a2e" : "#0f172a",
-                border: "1px solid rgba(124,58,237,0.3)",
-                color: "#e2e8f0",
-                outline: "none"
-              }}
-            />
-            
-            {!stressTestRunning ? (
-              <button
-                onClick={startStressTestLoop}
-                disabled={!stressTestKey}
-                style={{
-                  padding: "6px 16px",
-                  fontSize: 11,
-                  fontWeight: "bold",
-                  borderRadius: 6,
-                  border: "none",
-                  background: (!stressTestKey) ? "#6b7280" : "#22c55e",
-                  color: "#fff",
-                  cursor: (!stressTestKey) ? "not-allowed" : "pointer"
-                }}
-              >
-                ▶️ Iniciar Loop
-              </button>
-            ) : (
-              <button
-                onClick={stopStressTestLoop}
-                style={{
-                  padding: "6px 16px",
-                  fontSize: 11,
-                  fontWeight: "bold",
-                  borderRadius: 6,
-                  border: "none",
-                  background: "#ef4444",
-                  color: "#fff",
-                  cursor: "pointer"
-                }}
-              >
-                ⏹️ Parar Loop
-              </button>
-            )}
-          </div>
-          
-          {stressTestKey && !stressTestRunning && (
-            <div style={{ fontSize: 8, color: "#6b7280", marginTop: 4 }}>
-              🔑 Private Key carregada {stressTestKey.length > 0 ? `(${stressTestKey.slice(0, 6)}...${stressTestKey.slice(-4)})` : ""}
-            </div>
-          )}
-          {stressTestRunning && (
-            <div style={{ fontSize: 8, color: "#22c55e", marginTop: 4 }}>
-              🔄 Executando a cada 30 segundos. Clique em "Parar Loop" para interromper.
-            </div>
-          )}
-          {stressTestResult && (
-            <div style={{
-              marginTop: 8,
-              padding: "8px 10px",
-              borderRadius: 6,
-              background: stressTestResult.success ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
-              border: `1px solid ${stressTestResult.success ? "rgba(34,197,94,0.2)" : "rgba(239,68,68,0.2)"}`
-            }}>
-              <div style={{ fontSize: 10, color: stressTestResult.success ? "#22c55e" : "#ef4444", fontWeight: "bold" }}>
-                {stressTestResult.success ? "✅ Stress Test concluído!" : "❌ Stress Test falhou"}
-              </div>
-              {stressTestResult.details && (
-                <div style={{ fontSize: 9, color: "#94a3b8", marginTop: 2 }}>
-                  {stressTestResult.details}
-                </div>
-              )}
-              {stressTestResult.results && (
-                <div style={{ fontSize: 8, color: "#6b7280", marginTop: 4, maxHeight: 80, overflowY: "auto" }}>
-                  {stressTestResult.results.map((r: any, i: number) => (
-                    <div key={i} style={{ color: r.success ? "#22c55e" : "#ef4444" }}>
-                      {i+1}. {r.operation} → {r.success ? "✅" : "❌"} {r.duration}ms{r.error ? ` - ${r.error}` : ""}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
 
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 9, color: "#94a3b8", marginBottom: 4 }}>Intervalo entre ciclos: {cicloIntervalo}s</div>
@@ -1115,6 +885,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
             const badge = promovido ? "🏆" : verified ? "🎓" : noTurno ? "📋" : "📚"
             const corBorda = promovido ? "#FFD700" : verified ? "#22c55e" : noTurno ? "#d4a574" : "#6b7280"
             const ultimoFeedback = robo.historicoFeedback.length > 0 ? robo.historicoFeedback[robo.historicoFeedback.length - 1] : ""
+            // Barra de progresso para promoção
             const progPalpites = Math.min(100, (robo.palpitesTotal / 50) * 100)
             const progTaxa = Math.min(100, (robo.taxaAcerto / 60) * 100)
             const progPontos = Math.min(100, (robo.pontos / 500) * 100)

@@ -1,4 +1,4 @@
-// lib/real-swap-executor.ts
+﻿// lib/real-swap-executor.ts
 // Executa SWAPS REAIS via LI.FI API REST + assinatura ethers.Wallet
 // Suporte a múltiplos pares e saldo real por rede
 
@@ -97,6 +97,7 @@ export const NETWORKS = {
       WETH: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
       EURC: "0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c",
       WBTC: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+      cirBTC: "0x72DFB2E44f59C5AD2bAFE84314E5b99a7cd5075E",
       NATIVE:"0x0000000000000000000000000000000000000000",
     },
   },
@@ -159,15 +160,19 @@ export const TRADING_PAIRS: Record<NetworkKey, Array<{ from: TokenSymbol; to: To
     { from: "DAI",    to: "USDC",   label: "DAI→USDC" },
   ],
   ethereum: [
-    { from: "USDC", to: "WETH", label: "USDC→WETH" },  // era "USDC→ETH"
-    { from: "WETH", to: "USDC", label: "WETH→USDC" },  // era "ETH→USDC"
-    { from: "USDC", to: "WBTC", label: "USDC→WBTC" },  // era "USDC→BTC"
-    { from: "WBTC", to: "USDC", label: "WBTC→USDC" },  // era "BTC→USDC"
-    { from: "WETH", to: "WBTC", label: "WETH→WBTC" },  // era "ETH→BTC"
-    { from: "WBTC", to: "WETH", label: "WBTC→WETH" },  // era "BTC→ETH"
+    { from: "USDC", to: "WETH", label: "USDC→WETH" },
+    { from: "WETH", to: "USDC", label: "WETH→USDC" },
+    { from: "USDC", to: "WBTC", label: "USDC→WBTC" },
+    { from: "WBTC", to: "USDC", label: "WBTC→USDC" },
+    { from: "WETH", to: "WBTC", label: "WETH→WBTC" },
+    { from: "WBTC", to: "WETH", label: "WBTC→WETH" },
     { from: "USDC", to: "DAI",  label: "USDC→DAI" },
     { from: "DAI",  to: "USDC", label: "DAI→USDC" },
     { from: "USDC", to: "EURC", label: "USDC→EURC" },
+    { from: "USDC", to: "cirBTC", label: "USDC→cirBTC" },
+    { from: "cirBTC", to: "USDC", label: "cirBTC→USDC" },
+    { from: "EURC", to: "cirBTC", label: "EURC→cirBTC" },
+    { from: "cirBTC", to: "EURC", label: "cirBTC→EURC" },
   ],
   arbitrum: [
     { from: "USDC", to: "WETH", label: "USDC→WETH" },  // era "USDC→ETH"
@@ -846,7 +851,9 @@ class RealSwapExecutor {
       // LI.FI
       let lifiQuote: QuoteResult | null = null;
       if (net.isTestnet) {
-        lifiQuote = generateSyntheticQuote(fromTokenAddr, toTokenAddr, fromAmountRaw, this.userAddress, net.chainId);
+        // Arc Testnet: sem DEX real — swaps revertiam sempre (synthetic-direct com data vazio)
+        // Trades na Arc desabilitados; usar apenas para Jobs e aprendizado
+        return this._fail(fromToken, toToken, amountUsd, "Arc Testnet: sem DEX real disponivel — use Polygon para trades", timestamp);
       } else {
         try {
           lifiQuote = await getQuote({
@@ -874,12 +881,32 @@ class RealSwapExecutor {
                 await atx.wait();
               }
               const arcFeeParams = net.chainId === 5042002 ? getArcFeeParams() : {};
+              // Fix Arc gasLimit: estima gas com fallback de 500k se undefined
+              let arcGasLimit: bigint | undefined = lifiQuote.transactionRequest!.gasLimit
+                ? BigInt(lifiQuote.transactionRequest!.gasLimit)
+                : undefined;
+              if (net.chainId === 5042002) {
+                if (!arcGasLimit) {
+                  try {
+                    const est = await this.signer!.provider!.estimateGas({
+                      to: lifiQuote.transactionRequest!.to,
+                      data: lifiQuote.transactionRequest!.data,
+                      value: BigInt(lifiQuote.transactionRequest!.value ?? "0"),
+                    });
+                    arcGasLimit = (est * 130n) / 100n;
+                    log(`⛽ Arc gasLimit estimado: ${arcGasLimit}`);
+                  } catch {
+                    arcGasLimit = 500_000n;
+                    log(`⛽ Arc gasLimit fallback: 500000`);
+                  }
+                }
+              }
               try {
                 const txResp = await this.signer!.sendTransaction({
                   to: lifiQuote.transactionRequest!.to,
                   data: lifiQuote.transactionRequest!.data,
                   value: BigInt(lifiQuote.transactionRequest!.value ?? "0"),
-                  gasLimit: lifiQuote.transactionRequest!.gasLimit ? BigInt(lifiQuote.transactionRequest!.gasLimit) : undefined,
+                  gasLimit: arcGasLimit,
                   ...arcFeeParams,
                 });
                 log(`🔗 LI.FI TX: ${txResp.hash}`);

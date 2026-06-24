@@ -598,8 +598,9 @@ NVIDIA_API_KEY=
 |----------|----------|
 | USDC | `0x3600000000000000000000000000000000000000` |
 | EURC | `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a` |
-| cirBTC | `0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF` |
-| mcirBTC | `0x8cad4951192853D14f8Cb813695146b5Ae00EA6d` |
+| cirBTC (Arc testnet) | `0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF` |
+| mcirBTC (Arc testnet) | `0x8cad4951192853D14f8Cb813695146b5Ae00EA6d` |
+| cirBTC (Ethereum mainnet) | `0x72DFB2E44f59C5AD2bAFE84314E5b99a7cd5075E` |
 | Multicall3 | `0xcA11bde05977b3631167028862bE2a173976CA11` |
 | CCTP TokenMessenger V2 (testnet) | `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA` |
 | CCTP MessageTransmitter V2 (testnet) | `0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275` |
@@ -632,12 +633,16 @@ import { realSwap, type SwapResult } from "./real-swap-executor"
 
 ### Adicionar Novo Token
 Se for adicionar um novo token, atualizar em **todos** os lugares:
-1. `real-swap-executor.ts`: `NETWORKS.rede.tokens` + `COIN_IDS`
+1. `real-swap-executor.ts`: `NETWORKS.rede.tokens` + `TRADING_PAIRS`
 2. `pair-price-feed.ts`: `COIN_IDS`
 3. `volatility-tracker.ts`: `COIN_IDS`
-4. `position-manager.ts`: `fetchTokenPrice` → coinIds
-5. `TRADING_PAIRS`: adicionar pares com o novo token
-6. `agentes-do-pregão.ts`: `getTokenPrice()` → coinIds (se aplicável)
+4. `position-manager.ts`: `fetchTokenPrice` → coinIds + `fetchTokenChange24h` → coinIds
+5. `professor.ts`: `COIN_IDS`
+6. `agentes-do-pregão.ts`: `getTokenPrice()` → coinIds + `registrarPalpite` filter
+7. `corretor.ts`: `buscarPreco` → coinIds
+8. `escriturario.ts`: `fetchTokenPrice` → coinIds
+9. `networks.ts`: adicionar token à rede correspondente (UI)
+10. `ARCFLOW.md`: atualizar seção de contratos + pares prioritários
 
 ---
 
@@ -1186,7 +1191,7 @@ Cada rede agora prioriza pares diferentes:
 | Polygon (mainnet) | WMATIC→USDC, WETH→USDC, USDC→WMATIC, USDC→WETH | Voláteis primeiro |
 | Base (mainnet) | WETH→USDC, USDC→WETH, WBTC→USDC | Voláteis primeiro |
 | Arbitrum (mainnet) | ARB→USDC, WETH→USDC, USDC→ARB, USDC→WETH | Voláteis primeiro |
-| Ethereum (mainnet) | WETH→USDC, USDC→WETH, WBTC→USDC | Conservador (gas alto) |
+| Ethereum (mainnet) | WETH→USDC, USDC→WETH, WBTC→USDC, USDC→cirBTC, cirBTC→USDC | Conservador (gas alto) |
 
 Em mainnet (exceto ETH), pares voláteis (WETH, WBTC, WMATIC, ARB) são analisados
 **antes** de pares stable-stable, garantindo que micro-trades voláteis tenham prioridade.
@@ -1700,3 +1705,20 @@ Parâmetros ajustáveis por robô em `lib/parametros-robos.ts`:
 | `arcflow_professor_palpites` | Palpites pendentes e avaliados |
 | `arcflow_parametros_robos` | Parâmetros ajustados por robô |
 
+
+---
+
+## ✅ RESULTADO
+
+O `ARCFLOW.md` foi atualizado com:
+
+1. **Setor de Pacotes** — novo módulo com descrição completa
+2. **Fluxo atualizado** — incluindo o Setor de Pacotes no caminho crítico
+3. **Parâmetros** — configurações do Setor de Pacotes
+4. **Persistência** — novas chaves adicionadas
+5. **Changelog** — todas as modificações de 24/06/2026
+6. **Próximos passos** — status atualizado
+
+---
+
+**Pronto! Agora sua documentação está atualizada com todas as mudanças.** 📄🚀

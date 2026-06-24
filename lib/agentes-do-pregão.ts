@@ -204,6 +204,7 @@ async function getTokenPrice(token: TokenSymbol): Promise<number> {
   const coinIds: Record<string, string> = {
     WETH: "ethereum", WMATIC: "matic-network", ARB: "arbitrum",
     WBTC: "bitcoin", USDC: "usd-coin", EURC: "eurc",
+    cirBTC: "bitcoin",
   }
   const coinId = coinIds[token]
   if (!coinId) return 1.0
@@ -301,7 +302,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
           if (isArc) return  // só bloqueia cross-network na testnet
         }
         if (signal.rede === redeAtual || !isArc) {
-          const coinIds: Record<string, number> = { WETH: 1, WMATIC: 1, ARB: 1, WBTC: 1, SOL: 1, USDC: 1, EURC: 1 }
+          const coinIds: Record<string, number> = { WETH: 1, WMATIC: 1, ARB: 1, WBTC: 1, SOL: 1, USDC: 1, EURC: 1, cirBTC: 1, mcirBTC: 1 }
           const tokenVolatil = signal.direcao === "buy" ? signal.toToken : signal.fromToken
           if (coinIds[tokenVolatil]) {
             professor.registrarPalpite({
@@ -377,6 +378,8 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     for (let i = historicoVotos.length - 1; i >= 0; i--) {
       if (historicoVotos[i].agentName === nome) historicoVotos.splice(i, 1)
     }
+  // Garante pool de 500pts distribuido igualmente apos remover Grid/GridRef
+  accountant.rebalancePool()
   }
 
   let maxPositions = 10
@@ -1124,8 +1127,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   }
 
   const vagasRestantes = Math.max(0, maxPositions - positionManager.getOpenPositions().length)
-  let vagasUsadas = 0
-
+  let vagasUsadas = positionManager.getOpenPositions().length
   for (const cp of candidatePairs) {
     const agreedPair = cp.pair
     const agreeingAgents = cp.agents

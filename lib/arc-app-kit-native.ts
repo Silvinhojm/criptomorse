@@ -107,7 +107,7 @@ class ArcAppKit {
   async swap(params: SwapParams): Promise<SwapResult> {
     const chain = CHAIN_MAP[params.chain];
     const adapter = await this.getAdapter();
-    const kitKey = process.env.KIT_KEY || '';
+    const kitKey = process.env.KIT_KEY || (typeof window !== "undefined" ? localStorage.getItem("arcflow_kit_key") : null) || "KIT_KEY:keyId:keySecret";
 
     try {
       const result = await this.kit.swap({

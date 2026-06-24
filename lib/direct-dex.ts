@@ -1,6 +1,6 @@
 // lib/direct-dex.ts
 // DEX direto (Uniswap V2-style) para swaps mais rápidos e baratos que LI.FI
-// Usa QuickSwap (Polygon), Aerodrome (Base), SushiSwap (Arbitrum)
+// Usa QuickSwap (Polygon), Aerodrome (Base), SushiSwap (Arbitrum), Uniswap V2 (Ethereum)
 // LI.FI fica como fallback para rotas complexas ou cross-chain
 
 import { ethers } from "ethers";
@@ -13,6 +13,7 @@ const DEX_ROUTERS: Record<string, string> = {
   polygon:  "0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff",   // QuickSwap V2
   base:     "0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43",   // Aerodrome
   arbitrum: "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506",   // SushiSwap
+  ethereum: "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",   // Uniswap V2
 };
 
 const ROUTER_ABI = [

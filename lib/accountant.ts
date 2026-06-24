@@ -99,8 +99,24 @@ class Accountant {
     return map;
   }
 
+  private readonly AGENTES_INICIAIS = [
+    'Quantum','Technical','TrendFollower','MeanReversion','QuantumTrader',
+    'ArbitrageHunter','MarketMaker','BTCTrader','Liquidator','MomentumTrader',
+    'NVIDIAgent','Synthesis','Morse',
+  ];
+
   constructor() {
     this._load();
+    for (const nome of this.AGENTES_INICIAIS) {
+      if (!this.agentScores.has(nome)) {
+        this.agentScores.set(nome, {
+          agentName: nome, totalTrades: 0, wins: 0, losses: 0,
+          winRate: 0, totalProfit: 0, avgProfit: 0, bestTrade: 0,
+          worstTrade: 0, score: 0, streak: 0, lastDecide: null, points: 0,
+        });
+      }
+    }
+    this.initPool();
   }
 
   private _load() {
@@ -284,6 +300,18 @@ class Accountant {
     this.agentScores.delete(agentName);
     this.initPool();
     this._save();
+  }
+
+  rebalancePool() {
+    const agents = Array.from(this.agentScores.keys());
+    if (agents.length === 0) return;
+    const each = Math.floor(500 / agents.length);
+    let remainder = 500 - each * agents.length;
+    for (const name of agents) {
+      const a = this.agentScores.get(name)!;
+      a.points = each + (remainder > 0 ? 1 : 0);
+      if (remainder > 0) remainder--;
+    }
   }
 
   resetScores() {

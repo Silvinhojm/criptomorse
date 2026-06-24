@@ -433,7 +433,7 @@ class Corretor {
   private async buscarPreco(token: TokenSymbol): Promise<number> {
     const coinIds: Record<string, string> = {
       WETH: "ethereum", WMATIC: "matic-network", WBTC: "bitcoin",
-      ARB: "arbitrum", SOL: "solana",
+      ARB: "arbitrum", SOL: "solana", cirBTC: "bitcoin",
     }
     const coinId = coinIds[token] || token.toLowerCase()
     try {
