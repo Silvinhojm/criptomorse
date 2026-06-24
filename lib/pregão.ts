@@ -673,7 +673,7 @@ class Pregão {
             trade.fromToken as TokenSymbol,
             r.swap.expectedToAmount,
             trade.amount,
-            trade.amount / Math.max(1, r.swap.expectedToAmount),
+            trade.amount / (r.swap.expectedToAmount || 0.000000001),
           )
         }
 
