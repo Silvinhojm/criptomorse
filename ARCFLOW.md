@@ -1708,17 +1708,51 @@ Parâmetros ajustáveis por robô em `lib/parametros-robos.ts`:
 
 ---
 
-## ✅ RESULTADO
+## 28. CHANGELOG — 24/06/2026 (Sessão 2)
 
-O `ARCFLOW.md` foi atualizado com:
+### 28.1 cirBTC Ethereum Mainnet (Live desde 08/06/2026)
 
-1. **Setor de Pacotes** — novo módulo com descrição completa
-2. **Fluxo atualizado** — incluindo o Setor de Pacotes no caminho crítico
-3. **Parâmetros** — configurações do Setor de Pacotes
-4. **Persistência** — novas chaves adicionadas
-5. **Changelog** — todas as modificações de 24/06/2026
-6. **Próximos passos** — status atualizado
+cirBTC (Circle Wrapped Bitcoin) agora integrado como token real no Ethereum mainnet:
 
----
+| Item | Antes | Depois |
+|------|-------|--------|
+| Endereço Ethereum | Não existia | `0x72DFB2E44f59C5AD2bAFE84314E5b99a7cd5075E` |
+| Endereço Arc testnet | `0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF` | Mantido (testnet) |
+| Trading pairs Ethereum | Sem cirBTC | USDC→cirBTC, cirBTC→USDC, EURC→cirBTC, cirBTC→EURC |
+| VALID_TOKENS (pair-sector) | Sem cirBTC/mcirBTC | Adicionado |
+| COIN_IDS (professor/volatility/position/etc) | Sem cirBTC | Adicionado `cirBTC → "bitcoin"` |
+| DEX routing Ethereum | Não existia | Uniswap V2 `0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D` |
+| UI (networks.ts) | Sem cirBTC/WBTC/EURC no ETH | Adicionado |
 
-**Pronto! Agora sua documentação está atualizada com todas as mudanças.** 📄🚀
+### 28.2 Arquivos Modificados
+
+| Arquivo | Mudança |
+|---------|---------|
+| `real-swap-executor.ts` | Add cirBTC `0x72DFB2E44f59C5AD2bAFE84314E5b99a7cd5075E` ao Ethereum tokens + 4 trading pairs ETH |
+| `networks.ts` | Add cirBTC, WBTC, EURC ao Ethereum mainnet |
+| `direct-dex.ts` | Add Uniswap V2 router Ethereum |
+| `pair-sector.ts` | Add cirBTC/mcirBTC ao VALID_TOKENS |
+| `professor.ts` | Add `cirBTC: "bitcoin"` ao COIN_IDS, removido comentário "testnet" |
+| `volatility-tracker.ts` | Add `cirBTC/mcirBTC: "bitcoin"` ao COIN_IDS |
+| `position-manager.ts` | Add `cirBTC: "bitcoin"` em fetchTokenPrice + fetchTokenChange24h |
+| `agentes-do-pregão.ts` | Add `cirBTC: "bitcoin"` em getTokenPrice + filtro de agente |
+| `escriturario.ts` | Add `cirBTC: "bitcoin"` em fetchTokenPrice |
+| `corretor.ts` | Add `cirBTC: "bitcoin"` em buscarPreco |
+| `pregão.ts` | Refatorado: `_quoteWithTimeout()`, `_quoteTrade()`, quoting paralelo, threshold progressivo, 3-strike rule |
+| `AGENTS.md` | Session summary atualizado |
+
+### 28.3 Renomeação do Projeto
+
+| Onde | Antes | Depois |
+|------|-------|--------|
+| GitHub | `Silvinhojm/criptomorse-arc` | `Silvinhojm/criptomorse` |
+| `package.json` | `arcflow` | `criptomorse` |
+| `vercel.json` | Não existia | Criado com `name: "criptomorse"` |
+| `README.md` | Template Next.js | Título "Criptomorse" |
+
+### 28.4 Próximos Passos
+
+- [ ] Adicionar Ethereum Sepolia testnet para testes de cirBTC sem custo
+- [ ] Verificar se o ciclo gera pacotes com cirBTC no log: "[PROFESSOR] 📦 Pacote gerado..."
+- [ ] Testar swap real USDC→cirBTC no Ethereum mainnet (gas ~$1.50)
+- [ ] Escalar capital inicial para $50-100 para tornar gas irrelevante no Ethereum
