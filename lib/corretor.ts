@@ -1,4 +1,4 @@
-import { realSwap, NETWORKS, type NetworkKey, type TokenSymbol } from "./real-swap-executor"
+import { realSwap, NETWORKS, type NetworkKey, type TokenSymbol, TOKEN_DECIMALS, isStable } from "./real-swap-executor"
 import { pairProfitability } from "./pair-profitability"
 import { pregão, type OrdemExecucao } from "./pregão"
 import { blockIfPanicked, recordTradeResult } from "./circuit-breaker"
@@ -7,6 +7,11 @@ import { positionManager } from "./position-manager"
 
 import { accountant } from "./accountant"
 import { nanopaymentSystem } from "./nanopayment-system"
+import { batchApprove, executeBatch, type UltraFlashSwap } from "./ultraflash"
+import { getQuote } from "./lifi-executor"
+import { hasDirectDex, getDirectDexQuote, calculateAmountOutMin } from "./direct-dex"
+import { ethers } from "ethers"
+import { gasPriceOracle } from "./gas-price-oracle"
 
 const AGENTES_CONHECIDOS = new Set([
   "Quantum", "Technical", "TrendFollower", "MeanReversion",
@@ -187,6 +192,241 @@ class Corretor {
     } catch (err: any) {
       this.log(`❌ Erro na execução: ${err.message}`)
       pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+    }
+  }
+
+  async executarBatch(ordens: OrdemExecucao[], valores: number[]) {
+    if (ordens.length < 2 || ordens.length !== valores.length) return
+
+    const redeKey = ordens[0].rede as NetworkKey
+    for (const o of ordens) {
+      if (o.rede !== redeKey) {
+        this.log(`❌ executarBatch: todas ordens devem ser na mesma rede`)
+        return
+      }
+    }
+
+    if (blockIfPanicked()) {
+      for (const o of ordens) {
+        pregão.atualizarOrdem(o.id, { status: "falhou" })
+      }
+      this.log(`🚨 Circuit breaker ativo — batch ${redeKey} bloqueado`)
+      return
+    }
+
+    const currentNet = realSwap.getNetworkKey()
+    if (currentNet !== redeKey) {
+      this.log(`🔀 Alternando rede: ${currentNet} → ${redeKey}`)
+      await realSwap.switchNetwork(redeKey)
+    }
+
+    const net = NETWORKS[redeKey]
+    const swaps: UltraFlashSwap[] = []
+    const erros: string[] = []
+    const log = (msg: string) => this.log(msg)
+
+    // ─── CCTP pre-batch: garante USDC suficiente na rede alvo ──
+    const totalUsdcNeeded = ordens.reduce((s, o, i) => {
+      const from = o.fromToken as TokenSymbol
+      return isStable(from) ? s + valores[i] : s
+    }, 0) * 1.05 // 5% buffer
+
+    if (totalUsdcNeeded > 0 && !net.isTestnet) {
+      await realSwap.refreshAllBalances()
+      const saldoUSDC = realSwap.getBalance("USDC")
+      if (saldoUSDC < totalUsdcNeeded) {
+        log(`🌉 Saldo USDC baixo: $${saldoUSDC.toFixed(2)} < $${totalUsdcNeeded.toFixed(2)} — acionando CCTP bridge pre-batch`)
+        const bridged = await realSwap.bridgeIfNeeded("USDC", totalUsdcNeeded, (m) => log(m))
+        if (bridged) {
+          await realSwap.refreshAllBalances()
+          const novoSaldo = realSwap.getBalance("USDC")
+          log(`✅ CCTP bridge concluído — saldo: $${novoSaldo.toFixed(2)} USDC em ${redeKey}`)
+        } else {
+          log(`⚠️ CCTP bridge falhou — batch prossegue com saldo disponível`)
+        }
+      }
+    }
+
+    for (let i = 0; i < ordens.length; i++) {
+      const ordem = ordens[i]
+      const valorTrade = valores[i]
+      const fromToken = ordem.fromToken as TokenSymbol
+      const toToken = ordem.toToken as TokenSymbol
+      const fromDecimals = TOKEN_DECIMALS[fromToken] ?? 6
+      const toDecimals = TOKEN_DECIMALS[toToken] ?? 6
+      const fromTokenAddr = (net.tokens as any)[fromToken]
+      const toTokenAddr = (net.tokens as any)[toToken]
+
+      if (!fromTokenAddr || !toTokenAddr) {
+        erros.push(ordem.id)
+        pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+        continue
+      }
+
+      try {
+        const fromPrice = await realSwap.fetchTokenPrice(fromToken).catch(() => 1)
+        const fromAmountRaw = ethers.parseUnits((valorTrade / fromPrice).toFixed(fromDecimals), fromDecimals)
+
+        const dexQuote = !net.isTestnet && hasDirectDex(redeKey)
+          ? await getDirectDexQuote(redeKey, realSwap.getProvider()!, fromTokenAddr, toTokenAddr, fromAmountRaw)
+          : null
+
+        const lifiQuote = await getQuote({
+          fromChain: net.chainId, toChain: net.chainId,
+          fromToken: fromTokenAddr, toToken: toTokenAddr,
+          fromAmount: fromAmountRaw.toString(),
+          fromAddress: realSwap.getAddress(),
+          toAddress: realSwap.getAddress(), slippage: 0.005,
+        }).catch(() => null)
+
+        let target: string
+        let calldata: string
+        let value = 0n
+        let spender: string
+        let expectedToAmount = 0
+
+        if (dexQuote && dexQuote.amountOut > 0n) {
+          const amountOutMin = calculateAmountOutMin(dexQuote.amountOut, 100)
+          const deadline = Math.floor(Date.now() / 1000) + 600
+          const iface = new ethers.Interface([
+            "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)",
+          ])
+          calldata = iface.encodeFunctionData("swapExactTokensForTokens", [
+            fromAmountRaw, amountOutMin, dexQuote.path, realSwap.getAddress(), deadline,
+          ])
+          target = dexQuote.router
+          spender = dexQuote.router
+          expectedToAmount = Number(ethers.formatUnits(dexQuote.amountOut, toDecimals))
+        } else if (lifiQuote?.transactionRequest?.data && lifiQuote.transactionRequest?.to) {
+          target = lifiQuote.transactionRequest.to
+          calldata = lifiQuote.transactionRequest.data
+          value = BigInt(lifiQuote.transactionRequest.value ?? "0")
+          spender = lifiQuote.transactionRequest.to
+          expectedToAmount = parseFloat(lifiQuote.toAmount ?? "0") / Math.pow(10, toDecimals)
+        } else {
+          erros.push(ordem.id)
+          pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+          log(`❌ Sem rota para ${ordem.par}`)
+          continue
+        }
+
+        swaps.push({
+          fromToken, toToken,
+          amountRaw: fromAmountRaw, amountUsd: valorTrade,
+          target, calldata, value, spender,
+          expectedToAmount, network: redeKey,
+        })
+
+        pregão.atualizarOrdem(ordem.id, { status: "executando" })
+      } catch (err: any) {
+        erros.push(ordem.id)
+        pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+        log(`❌ Erro preparando ${ordem.par}: ${err.message.slice(0, 100)}`)
+      }
+    }
+
+    if (swaps.length === 0) {
+      this.log(`❌ Batch vazio — todas ordens falharam na preparação`)
+      return
+    }
+
+    log(`⚡ UltraFlash batch: ${swaps.length}/${ordens.length} swaps preparados`)
+
+    try {
+      await batchApprove(realSwap.getSigner()!, realSwap.getAddress(), redeKey, swaps, (m) => log(m))
+      const batchResult = await executeBatch(realSwap.getSigner()!, redeKey, swaps, (m) => log(m))
+
+      if (!batchResult.success) {
+        for (const s of swaps) {
+          const ordem = ordens.find(o => o.fromToken === s.fromToken && o.toToken === s.toToken)
+          if (ordem) pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+        }
+        return
+      }
+
+      for (const r of batchResult.results) {
+        const ordem = ordens.find(o =>
+          o.fromToken === r.swap.fromToken && o.toToken === r.swap.toToken
+        )
+        if (!ordem) continue
+
+        if (!r.success) {
+          pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+          log(`❌ Swap ${ordem.par} falhou no batch`)
+          continue
+        }
+
+        const isStableTo = ["USDC", "USDT", "DAI", "EURC"].includes(ordem.toToken)
+        const isStableFrom = ["USDC", "USDT", "DAI", "EURC"].includes(ordem.fromToken)
+        const isBuyOpening = isStableFrom && !isStableTo
+        const profit = isStableTo ? r.swap.expectedToAmount - r.swap.amountUsd : 0
+
+        if (isBuyOpening) {
+          const entryPrice = r.swap.expectedToAmount > 0
+            ? r.swap.amountUsd / r.swap.expectedToAmount
+            : 0
+          positionManager.openPosition(
+            redeKey, ordem.toToken as TokenSymbol, ordem.fromToken as TokenSymbol,
+            r.swap.expectedToAmount, r.swap.amountUsd, entryPrice,
+          )
+          log(`📦 Posição ${ordem.toToken} aberta (batch): ${r.swap.expectedToAmount.toFixed(6)} @ $${entryPrice.toFixed(2)}`)
+        }
+
+        if (!isStableFrom && isStableTo) {
+          const pos = positionManager.getOpenPositions()
+            .find(p => (p.boughtToken === ordem.fromToken || `W${p.boughtToken}` === ordem.fromToken) && p.status === "open")
+          if (pos) {
+            const cp = await this.buscarPreco(pos.boughtToken as TokenSymbol)
+            positionManager.closePosition(pos.id, cp)
+            log(`🔒 Posição ${pos.boughtToken} fechada (batch)!`)
+          }
+        }
+
+        if (!isBuyOpening) {
+          const agentes = ordem.pregueiros.filter(n => AGENTES_CONHECIDOS.has(n.replace("Agente:", "")))
+          const profitPorAgente = profit / Math.max(1, agentes.length)
+          for (const nome of agentes) {
+            accountant.addReport({
+              id: `${ordem.id}_${nome.replace("Agente:", "")}`,
+              agentName: nome.replace("Agente:", ""),
+              action: "sell", fromToken: ordem.fromToken, toToken: ordem.toToken,
+              amount: r.swap.amountUsd, toAmount: r.swap.expectedToAmount,
+              profit: profitPorAgente, profitPercent: 0,
+              entryPrice: 0, exitPrice: 0,
+              status: "completed", duration: Date.now() - ordem.timestamp,
+              timestamp: Date.now(), networkKey: ordem.rede,
+            })
+          }
+          pairProfitability.recordTrade(ordem.par, profit, profit > 0)
+          if (profit > 0 && agentes.length > 0) {
+            const rewardPerAgent = (profit * 0.1) / agentes.length
+            for (const nome of agentes) {
+              nanopaymentSystem.rewardAgentForTrade(nome.replace("Agente:", ""), rewardPerAgent, ordem.id, ordem.par)
+            }
+          }
+          const { isPanicActive } = recordTradeResult(profit)
+          if (isPanicActive) log(`🚨 Circuit breaker ativado após batch!`)
+        }
+
+        pregão.atualizarOrdem(ordem.id, {
+          status: "concluido",
+          resultado: {
+            txHash: batchResult.txHash || "",
+            explorerUrl: `${net.explorer}/tx/${batchResult.txHash}`,
+            fromAmount: r.swap.amountUsd,
+            toAmount: r.swap.expectedToAmount,
+            profit,
+          },
+        })
+        log(`✅ BATCH CONCLUÍDO: ${ordem.par} | TX: ${(batchResult.txHash ?? "").slice(0, 10)}... | Lucro: $${profit.toFixed(4)}`)
+        for (const cb of this.onTradeCallbacks) cb(ordem)
+      }
+    } catch (err: any) {
+      log(`❌ Erro no batch UltraFlash: ${err.message.slice(0, 150)}`)
+      for (const s of swaps) {
+        const ordem = ordens.find(o => o.fromToken === s.fromToken && o.toToken === s.toToken)
+        if (ordem) pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+      }
     }
   }
 

@@ -1005,6 +1005,12 @@ class RealSwapExecutor {
   getAddress(): string { return this.userAddress; }
   getNetworkKey(): NetworkKey { return this.networkKey; }
   isTestnet(): boolean { return NETWORKS[this.networkKey].isTestnet; }
+  getProvider(): ethers.Provider | null { return this.provider; }
+  getSigner(): ethers.Signer | null { return this.signer; }
+  async fetchTokenPrice(token: TokenSymbol): Promise<number> { return this._getTokenPrice(token); }
+  async bridgeIfNeeded(fromToken: TokenSymbol, amountUsd: number, log: (msg: string) => void): Promise<boolean> {
+    return this.ensureStableViaCCTP(fromToken, amountUsd, log)
+  }
 
   private _fail(
     fromToken: TokenSymbol,

@@ -8,6 +8,9 @@ const VALOR_PADRAO_TRADE = 5
 
 class Escriturário {
   private onLogCallbacks: Array<(msg: string) => void> = []
+  private ordemBuffer: Map<string, { ordem: OrdemExecucao; valorTrade: number }[]> = new Map()
+  private bufferTimeout: ReturnType<typeof setTimeout> | null = null
+  private flushesQueued = new Set<string>()
 
   onLog(cb: (msg: string) => void) {
     this.onLogCallbacks.push(cb)
@@ -17,6 +20,32 @@ class Escriturário {
   private log(msg: string) {
     console.log(`[ESCRITURÁRIO] ${msg}`)
     for (const cb of this.onLogCallbacks) cb(msg)
+  }
+
+  private scheduleFlush(rede: string) {
+    if (this.flushesQueued.has(rede)) return
+    this.flushesQueued.add(rede)
+    setImmediate(() => {
+      this.flushesQueued.delete(rede)
+      this.flushBuffer(rede)
+    })
+  }
+
+  private async flushBuffer(rede: string) {
+    const items = this.ordemBuffer.get(rede)
+    if (!items || items.length === 0) return
+    this.ordemBuffer.delete(rede)
+
+    if (items.length === 1) {
+      const { ordem, valorTrade } = items[0]
+      await corretor.executar(ordem, valorTrade)
+      return
+    }
+
+    this.log(`⚡ UltraFlash batch: ${items.length} ordens em ${rede}`)
+    const ordens = items.map(i => i.ordem)
+    const valores = items.map(i => i.valorTrade)
+    await corretor.executarBatch(ordens, valores)
   }
 
   private async fetchTokenPrice(token: string): Promise<number> {
@@ -116,8 +145,20 @@ class Escriturário {
     }
 
     this.log(`💰 Valor preparado: $${valorTrade.toFixed(2)} ${fromToken} → ${ordem.toToken}`)
-    this.log(`🔗 Encaminhando para o Corretor executar...`)
 
+    // Buffer para batch UltraFlash (apenas mainnets)
+    if (!isTestnet) {
+      const netKey = ordem.rede
+      if (!this.ordemBuffer.has(netKey)) this.ordemBuffer.set(netKey, [])
+      this.ordemBuffer.get(netKey)!.push({ ordem, valorTrade })
+      const batchSize = this.ordemBuffer.get(netKey)!.length
+      this.log(`📦 Buffer ${netKey}: ${batchSize} ordens aguardando`)
+      this.scheduleFlush(netKey)
+      return
+    }
+
+    // Testnet: executa direto (sem batch)
+    this.log(`🔗 Encaminhando para o Corretor executar...`)
     await corretor.executar(ordem, valorTrade)
   }
 }
