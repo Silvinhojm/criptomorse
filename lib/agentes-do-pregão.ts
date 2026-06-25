@@ -1464,9 +1464,13 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       continue
     }
 
-    // ETH: só vende se lucro >= $0.50 ou 3% do valor (o que for maior)
+    // ETH: só vende se lucro >= target escalonado por valor da posição
     if (profitPercent > 0 && posNet === "ethereum") {
-      const minProfitTargetUSD = Math.max(0.50, posValue * 0.03)
+      const minProfitTargetUSD = posValue <= 10
+        ? Math.max(0.10, posValue * 0.02)
+        : posValue <= 50
+          ? Math.max(0.30, posValue * 0.02)
+          : Math.max(0.50, posValue * 0.015)
       const targetPercent = (minProfitTargetUSD / posValue) * 100
       if (profitPercent < targetPercent) {
         pregão.adicionarLog(`📊 ${pos.boughtToken} em ${posNet}: ${profitPercent.toFixed(1)}% < meta $${minProfitTargetUSD.toFixed(2)} (${targetPercent.toFixed(1)}%) — segurando`)
