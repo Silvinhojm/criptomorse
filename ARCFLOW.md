@@ -974,24 +974,45 @@ Zona 3 (baixo): ActiveTrades + AgentGrid — posições ativas e ranking
 
 ## 19. ORACLE STORK (Arc Testnet)
 
-### 18.1 Integração
+### 19.1 Arquitetura (Pull Oracle)
+Stork é um **pull oracle** (diferente de Chainlink push):
+1. Dados chegam off-chain via WebSocket (assinatura signed)
+2. Subscriber envia tx `updateTemporalNumericValuesV1()` ao contrato Arc
+3. Contrato armazena o preço assinado — lido via `getTemporalNumericValueUnsafeV1(bytes32 id)`
+
+### 19.2 WebSocket (Off-chain)
+| Item | Detalhe |
+|------|---------|
+| Endpoint | `wss://api.jp.stork-oracle.network` |
+| Path | `/evm/subscribe` |
+| Auth | `Authorization: Basic <token>` (requer contato com Stork Labs — sales@stork.network) |
+| Frequência | A cada 500ms ou 0.1% de variação |
+| Payload | `oracle_prices` com `asset_id`, `price`, `timestamp`, `stork_signed_price` |
+
+### 19.3 Contrato On-chain (Arc Testnet)
+| Item | Detalhe |
+|------|---------|
+| Endereço | `0xacC0a0cF13571d30B4b8637996F5D6D774d4fd62` |
+| Explorer | `https://testnet.arcscan.app/address/0xacC0a0cF13571d30B4b8637996F5D6D774d4fd62` |
+| Função | `getTemporalNumericValueUnsafeV1(bytes32 id)` → preço com 18 decimais |
+| Feeds | `EURCUSD`, `BTCUSD` (usado para cirBTC/mcirBTC) |
+
+### 19.4 Integração no Código
 - `pair-price-feed.ts`: suporte ao oracle Stork on-chain na Arc Testnet
-- Contrato: `0xacC0a0cF13571d30B4b8637996F5D6D774d4fd62` (Arc)
-- Feed IDs disponíveis:
-  - `EURCUSD`: `0x64ffe1382a02f37d4e16872cde1e7379679aa83bba98d99036921942203afafb`
-  - `BTCUSD`: `0x7404e3d104ea7841c3d9e6fd20adfe99b4ad586bc08d8f3bd3afef894cf184de` (usado para cirBTC/mcirBTC)
-
-### 18.2 Comportamento
 - Ativado automaticamente quando a rede é `arc` (via `executarCicloPregueiros`)
-- Stork como fonte primária → SoSoValue (via sosovalue-price-agent.ts) como fallback
+- Stork como fonte primária → SoSoValue (fallback)
 - `pairPriceFeed.setUseStork(true/false)` para controle programático
-- `getTemporalNumericValueUnsafeV1(bytes32 id)` → retorna preço com 18 decimais
 
-### 18.3 Chainlink e Pyth
-Segundo a documentação da Stork, os adapters Pyth e Chainlink também estão disponíveis:
-- Stork pode ser consumido via interfaces Pyth e Chainlink (adapters)
-- Para verificar feeds específicos de EURC/cirBTC na Arc, consultar `https://docs.stork.network/resources/adapters.md`
-- Stork também tem SDK npm: `@storknetwork/stork-evm-sdk`
+### 19.5 Status Atual
+| Aspecto | Status |
+|---------|--------|
+| Contrato on-chain verificado | ✅ Deployado em `0xacC0a0cF13571d30B4b8637996F5D6D774d4fd62` |
+| WebSocket subscriber | ⏳ Não implementado (requer token Stork Labs) |
+| Prioridade | **Baixa** — já temos preços reais via SoSoValue |
+
+### 19.6 Adapters (Pyth / Chainlink)
+Stork pode ser consumido via interfaces Pyth e Chainlink (adapters). Documentação: `https://docs.stork.network/resources/adapters.md`
+SDK npm: `@storknetwork/stork-evm-sdk`
 
 ## 19. PRIVACIDADE (Roadmap)
 
