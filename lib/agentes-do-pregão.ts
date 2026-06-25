@@ -275,21 +275,67 @@ function agentAssigned(agentName: string, pairLabel: string): boolean {
   return pairs.includes(agentName)
 }
 
+const priceFetchCache = new Map<string, { price: number; ts: number }>()
+const PRICE_CACHE_TTL = 15000
+
 async function getTokenPrice(token: TokenSymbol): Promise<number> {
+  const cached = priceFetchCache.get(token)
+  if (cached && Date.now() - cached.ts < PRICE_CACHE_TTL) return cached.price
+
   const coinIds: Record<string, string> = {
     WETH: "1673723677362319867", WMATIC: "1730847291434274818", ARB: "1673723677362319902",
     WBTC: "1673723677362319866", USDC: "1673723677362319870", EURC: "1673723677362320241",
     cirBTC: "1673723677362319866",
   }
   const coinId = coinIds[token]
-  if (!coinId) return 1.0
+  if (!coinId) { priceFetchCache.set(token, { price: 1.0, ts: Date.now() }); return 1.0 }
   try {
     const res = await fetch(`/api/price?ids=${coinId}`)
     if (!res.ok) return 1.0
     const body = await res.json()
     const data = body.prices ?? body
-    return data[coinId] ?? 1.0
+    const price = data[coinId] ?? 1.0
+    priceFetchCache.set(token, { price, ts: Date.now() })
+    return price
   } catch { return 1.0 }
+}
+
+async function fetchPricesBatch(tokens: TokenSymbol[]): Promise<Map<string, number>> {
+  const coinIds: Record<string, string> = {
+    WETH: "1673723677362319867", WMATIC: "1730847291434274818", ARB: "1673723677362319902",
+    WBTC: "1673723677362319866", USDC: "1673723677362319870", EURC: "1673723677362320241",
+    cirBTC: "1673723677362319866",
+  }
+  const needed = tokens.filter(t => {
+    const cached = priceFetchCache.get(t)
+    return !cached || Date.now() - cached.ts >= PRICE_CACHE_TTL
+  })
+  if (needed.length === 0) {
+    const result = new Map<string, number>()
+    for (const t of tokens) result.set(t, priceFetchCache.get(t)!.price)
+    return result
+  }
+  const idsToFetch = needed.map(t => coinIds[t]).filter(Boolean)
+  const uniqueIds = [...new Set(idsToFetch)]
+  try {
+    const res = await fetch(`/api/price?ids=${uniqueIds.join(",")}`)
+    if (res.ok) {
+      const body = await res.json()
+      const prices = body.prices ?? body
+      for (const t of needed) {
+        const id = coinIds[t]
+        if (id && prices[id] !== undefined) {
+          priceFetchCache.set(t, { price: prices[id], ts: Date.now() })
+        }
+      }
+    }
+  } catch {}
+  const result = new Map<string, number>()
+  for (const t of tokens) {
+    const cached = priceFetchCache.get(t)
+    result.set(t, cached ? cached.price : 1.0)
+  }
+  return result
 }
 
 export interface AgentPairVote {
@@ -658,264 +704,238 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     const assigned = AGENTES_NOMES
       .filter(a => agentAssigned(a.nome, pairLabel))
       .map(a => a.nome)
-    const votesForPair: AgentPairVote[] = []
-
-    // ── QuantumAgent ──
-    if (agentAssigned("Quantum", pairLabel)) {
-      try {
-        const result = await quantumAgent.evaluatePair(wavePair)
-        const pQ = parametrosRobos.get("Quantum")
-        if (result && result.confidence >= pQ.confiancaMinima) {
-          votesForPair.push({
-            agentName: "Quantum",
-            pair: pairLabel,
-            fromToken: wavePair.fromToken,
-            toToken: wavePair.toToken,
-            network: pairNet,
-            confidence: result.confidence,
-            action: wavePair.momentum > 0 ? "buy" : "sell",
-            reason: `Onda quântica: amplitude ${(wavePair.amplitude * 100).toFixed(0)}%`,
-          })
-        }
-      } catch (e) {
-        const pQ = parametrosRobos.get("Quantum")
-        const fallbackConfidence = Math.min(60, Math.round(pQ.confiancaMinima + Math.abs(wavePair.momentum) * 300))
-        if (fallbackConfidence >= pQ.confiancaMinima && !votesForPair.some(v => v.agentName === "Quantum")) {
-          votesForPair.push({
-            agentName: "Quantum",
-            pair: pairLabel,
-            fromToken: wavePair.fromToken,
-            toToken: wavePair.toToken,
-            network: pairNet,
-            confidence: fallbackConfidence,
-            action: wavePair.momentum > 0 ? "buy" : "sell",
-            reason: `Quantum fallback: momentum ${(wavePair.momentum * 100).toFixed(2)}%`,
-          })
-        }
-      }
-    }
-
-    // ── TechnicalAgent ──
-    if (agentAssigned("Technical", pairLabel)) try {
-      const pT = parametrosRobos.get("Technical")
-      const mockPrices = [1.0, 1.001, 0.999, 1.002, 1.0 + wavePair.momentum * 10]
-      const indicators = technicalAgent.calculateIndicators(mockPrices)
-      const rsi = indicators.rsi
-      const rsiAction: "buy" | "sell" | "hold" = rsi < pT.rsiCompra ? "buy" : rsi > pT.rsiVenda ? "sell" : "hold"
-      if (rsiAction !== "hold") {
-        const confidence = Math.min(90, Math.round(40 + Math.abs(rsi - 50) * 0.8))
-        if (confidence >= pT.confiancaMinima) {
-          votesForPair.push({
-            agentName: "Technical",
-            pair: pairLabel,
-            fromToken: wavePair.fromToken,
-            toToken: wavePair.toToken,
-            network: pairNet,
-            confidence: confidence,
-            action: rsiAction,
-            reason: `RSI: ${Math.round(rsi)} — ${rsiAction === "buy" ? "sobrevendido" : "sobrecomprado"}`,
-          })
-        }
-      }
-    } catch (e) {}
-
-    // ── TrendFollower ──
-    if (agentAssigned("TrendFollower", pairLabel) && Math.abs(wavePair.momentum) > parametrosRobos.get("TrendFollower").thresholdEntrada) {
-      const confidence = Math.min(80, Math.round(30 + Math.abs(wavePair.momentum) * 800))
-      votesForPair.push({
-        agentName: "TrendFollower",
-        pair: pairLabel,
-        fromToken: wavePair.fromToken,
-        toToken: wavePair.toToken,
-        network: pairNet,
-        confidence: confidence,
-        action: wavePair.momentum > 0 ? "buy" : "sell",
-        reason: `Trend ${wavePair.momentum > 0 ? "🠕" : "🠗"} momentum ${(wavePair.momentum * 100).toFixed(2)}%`,
-      })
-    }
-
-    // ── MeanReversion ──
-    if (agentAssigned("MeanReversion", pairLabel) && wavePair.amplitude > parametrosRobos.get("MeanReversion").thresholdEntrada) {
-      const confidence = Math.min(80, Math.round(30 + wavePair.amplitude * 600))
-      votesForPair.push({
-        agentName: "MeanReversion",
-        pair: pairLabel,
-        fromToken: wavePair.fromToken,
-        toToken: wavePair.toToken,
-        network: pairNet,
-        confidence: confidence,
-        action: wavePair.momentum > 0 ? "sell" : "buy",
-        reason: `Reversão: amplitude ${(wavePair.amplitude * 100).toFixed(2)}%`,
-      })
-    }
-
-    // ── ArbitrageHunter ──
+    // ── Pré-carrega preços uma única vez para todos os agentes ──
+    const [pairFromPrice, pairToPrice] = await Promise.all([
+      getTokenPrice(pair.from as TokenSymbol),
+      getTokenPrice(pair.to as TokenSymbol),
+    ])
+    const spreadPct = pairFromPrice > 0 ? Math.abs((pairToPrice - pairFromPrice) / pairFromPrice * 100) : 0
     const isStableStable = STABLES.has(pair.from) && STABLES.has(pair.to)
-    if (agentAssigned("ArbitrageHunter", pairLabel) && isStableStable) {
-      const pAH = parametrosRobos.get("ArbitrageHunter")
-      const fromPrice = await getTokenPrice(pair.from)
-      const toPrice = await getTokenPrice(pair.to)
-      const spread = Math.abs((toPrice - fromPrice) / fromPrice * 100)
-      if (spread > pAH.thresholdSpread) {
-        votesForPair.push({
-          agentName: "ArbitrageHunter",
-          pair: pairLabel,
-          fromToken: pair.from,
-          toToken: pair.to,
-          network: pairNet,
-          confidence: Math.min(75, Math.round(30 + spread * 10)),
-          action: toPrice > fromPrice ? "sell" : "buy",
-          reason: `Arbitragem ${pairLabel} (spread ${spread.toFixed(3)}%)`,
-        })
-      }
-    }
-
-    // ── MarketMaker ──
-    if (agentAssigned("MarketMaker", pairLabel)) {
-      const pMM = parametrosRobos.get("MarketMaker")
-      const fromPrice = await getTokenPrice(pair.from)
-      const toPrice = await getTokenPrice(pair.to)
-      const spread = Math.abs((toPrice - fromPrice) / fromPrice * 100)
-      if (spread > pMM.thresholdSpread) {
-        votesForPair.push({
-          agentName: "MarketMaker",
-          pair: pairLabel,
-          fromToken: pair.from,
-          toToken: pair.to,
-          network: pairNet,
-          confidence: Math.min(70, Math.round(40 + spread * 20)),
-          action: toPrice > fromPrice ? "sell" : "buy",
-          reason: `Market ${pairLabel} ${toPrice > fromPrice ? "🠕" : "🠗"} (${spread.toFixed(3)}%)`,
-        })
-      }
-    }
-
-    // ── BTCTrader ──
     const isBtcEth = pair.from === "WBTC" || pair.to === "WBTC" ||
                      pair.from === "WETH" || pair.to === "WETH"
-    if (agentAssigned("BTCTrader", pairLabel) && isBtcEth) {
-      const pBT = parametrosRobos.get("BTCTrader")
-      const fromPrice = await getTokenPrice(pair.from)
-      const toPrice = await getTokenPrice(pair.to)
-      const spread = Math.abs((toPrice - fromPrice) / fromPrice * 100)
-      if (spread > pBT.thresholdSpread) {
-        votesForPair.push({
-          agentName: "BTCTrader",
-          pair: pairLabel,
-          fromToken: pair.from,
-          toToken: pair.to,
-          network: pairNet,
-          confidence: 65,
-          action: toPrice > fromPrice ? "sell" : "buy",
-          reason: `BTC/ETH ${pairLabel} ${toPrice > fromPrice ? "🠕" : "🠗"}`,
-        })
-      }
-    }
 
-    // ── Liquidator ──
-    if (agentAssigned("Liquidator", pairLabel) && wavePair.liquidity > parametrosRobos.get("Liquidator").thresholdLiquidez) {
-      votesForPair.push({
-        agentName: "Liquidator",
-        pair: pairLabel,
-        fromToken: wavePair.fromToken,
-        toToken: wavePair.toToken,
-        network: pairNet,
-        confidence: Math.round(wavePair.liquidity * 60),
-        action: wavePair.momentum > 0 ? "buy" : "sell",
-        reason: `Liquidez ${(wavePair.liquidity * 100).toFixed(0)}% — ${pairLabel}`,
-      })
-    }
-
-    // ── MomentumTrader ──
-    if (agentAssigned("MomentumTrader", pairLabel) && Math.abs(wavePair.momentum) * wavePair.volatility > parametrosRobos.get("MomentumTrader").thresholdEntrada) {
-      const momentumScore = Math.abs(wavePair.momentum) * wavePair.volatility
-      votesForPair.push({
-        agentName: "MomentumTrader",
-        pair: pairLabel,
-        fromToken: wavePair.fromToken,
-        toToken: wavePair.toToken,
-        network: pairNet,
-        confidence: Math.min(90, Math.round(40 + momentumScore * 2000)),
-        action: wavePair.momentum > 0 ? "buy" : "sell",
-        reason: `Momento × vol = ${(momentumScore * 10000).toFixed(0)} — ${wavePair.momentum > 0 ? "🠕🠕" : "🠗🠗"}`,
-      })
-    }
-
-    // ── NVIDIAgent ──
-    if (agentAssigned("NVIDIAgent", pairLabel) && wavePair.probability > parametrosRobos.get("NVIDIAgent").thresholdProbabilidade) {
-      votesForPair.push({
-        agentName: "NVIDIAgent",
-        pair: pairLabel,
-        fromToken: wavePair.fromToken,
-        toToken: wavePair.toToken,
-        network: pairNet,
-        confidence: Math.min(90, Math.round(wavePair.probability)),
-        action: wavePair.momentum > 0 ? "buy" : "sell",
-        reason: `NIM: ondas de probabilidade — ${pairLabel}`,
-      })
-    }
-
-    // ── Synthesis ──
-    if (agentAssigned("Synthesis", pairLabel)) {
-      const pSyn = parametrosRobos.get("Synthesis")
-      const synthConfidence = Math.min(65, Math.round(pSyn.confiancaMinima + 5 + Math.abs(wavePair.momentum) * 200))
-      if (synthConfidence >= pSyn.confiancaMinima && !votesForPair.some(v => v.agentName === "Synthesis")) {
-        votesForPair.push({
-          agentName: "Synthesis",
-          pair: pairLabel,
-          fromToken: wavePair.fromToken,
-          toToken: wavePair.toToken,
-          network: pairNet,
-          confidence: synthConfidence,
-          action: wavePair.momentum > 0 ? "buy" : "sell",
-          reason: `Síntese automática: momentum ${(wavePair.momentum * 100).toFixed(2)}%`,
-        })
-      }
-    }
-
-    // ── Morse ──
-    if (agentAssigned("Morse", pairLabel)) {
-      const metrics: { nome: string; alinhado: boolean; direcao: "buy" | "sell"; peso: number }[] = []
-
-      const momSignal = wavePair.momentum > 0.02 ? "buy" : wavePair.momentum < -0.02 ? "sell" : null
-      if (momSignal) {
-        metrics.push({ nome: "Momentum", alinhado: true, direcao: momSignal, peso: Math.abs(wavePair.momentum) })
-      }
-
-      const volSignal = wavePair.volatility > 0.6 ? (wavePair.momentum > 0 ? "buy" : "sell") : null
-      if (volSignal) {
-        metrics.push({ nome: "Bollinger", alinhado: true, direcao: volSignal, peso: wavePair.volatility })
-      }
-
-      const ampSignal = wavePair.amplitude > 0.03 ? (wavePair.momentum > 0 ? "buy" : "sell") : null
-      if (ampSignal) {
-        metrics.push({ nome: "Amplitude", alinhado: true, direcao: ampSignal, peso: wavePair.amplitude })
-      }
-
-      if (wavePair.probability > 10) {
-        metrics.push({ nome: "Confiabilidade", alinhado: true, direcao: wavePair.momentum > 0 ? "buy" : "sell", peso: wavePair.probability / 100 })
-      }
-
-      if (metrics.length >= 2) {
-        const direcoes = new Set(metrics.map(m => m.direcao))
-        if (direcoes.size === 1) {
-          const direcaoUnica = [...direcoes][0]
-          const pesoTotal = metrics.reduce((s, m) => s + m.peso, 0) / metrics.length
-          const confianca = Math.min(90, Math.round(30 + pesoTotal * 60))
-          const metrs = metrics.map(m => m.nome).join(" · ")
-          votesForPair.push({
-            agentName: "Morse",
-            pair: pairLabel,
-            fromToken: wavePair.fromToken,
-            toToken: wavePair.toToken,
-            network: pairNet,
-            confidence: confianca,
-            action: direcaoUnica,
-            reason: `📻 ${metrs} → ${direcaoUnica === "buy" ? "⬆ COMPRA" : "⬇ VENDA"} (${metrics.length}/${metrics.length} alinhadas)`,
-          })
+    // ── Todos os agentes em paralelo ──
+    const agentEvals = await Promise.all([
+      // QuantumAgent
+      (async (): Promise<AgentPairVote[]> => {
+        if (!agentAssigned("Quantum", pairLabel)) return []
+        const pQ = parametrosRobos.get("Quantum")
+        try {
+          const result = await quantumAgent.evaluatePair(wavePair)
+          if (result && result.confidence >= pQ.confiancaMinima) {
+            return [{
+              agentName: "Quantum", pair: pairLabel, fromToken: wavePair.fromToken,
+              toToken: wavePair.toToken, network: pairNet, confidence: result.confidence,
+              action: wavePair.momentum > 0 ? "buy" : "sell",
+              reason: `Onda quântica: amplitude ${(wavePair.amplitude * 100).toFixed(0)}%`,
+            }]
+          }
+        } catch {
+          const fallbackConfidence = Math.min(60, Math.round(pQ.confiancaMinima + Math.abs(wavePair.momentum) * 300))
+          if (fallbackConfidence >= pQ.confiancaMinima) {
+            return [{
+              agentName: "Quantum", pair: pairLabel, fromToken: wavePair.fromToken,
+              toToken: wavePair.toToken, network: pairNet, confidence: fallbackConfidence,
+              action: wavePair.momentum > 0 ? "buy" : "sell",
+              reason: `Quantum fallback: momentum ${(wavePair.momentum * 100).toFixed(2)}%`,
+            }]
+          }
         }
-      }
-    }
+        return []
+      })(),
+
+      // TechnicalAgent
+      (async (): Promise<AgentPairVote[]> => {
+        if (!agentAssigned("Technical", pairLabel)) return []
+        try {
+          const pT = parametrosRobos.get("Technical")
+          const mockPrices = [1.0, 1.001, 0.999, 1.002, 1.0 + wavePair.momentum * 10]
+          const indicators = technicalAgent.calculateIndicators(mockPrices)
+          const rsi = indicators.rsi
+          const rsiAction: "buy" | "sell" | "hold" = rsi < pT.rsiCompra ? "buy" : rsi > pT.rsiVenda ? "sell" : "hold"
+          if (rsiAction !== "hold") {
+            const confidence = Math.min(90, Math.round(40 + Math.abs(rsi - 50) * 0.8))
+            if (confidence >= pT.confiancaMinima) {
+              return [{
+                agentName: "Technical", pair: pairLabel, fromToken: wavePair.fromToken,
+                toToken: wavePair.toToken, network: pairNet, confidence,
+                action: rsiAction,
+                reason: `RSI: ${Math.round(rsi)} — ${rsiAction === "buy" ? "sobrevendido" : "sobrecomprado"}`,
+              }]
+            }
+          }
+        } catch {}
+        return []
+      })(),
+
+      // TrendFollower
+      (async (): Promise<AgentPairVote[]> => {
+        if (!agentAssigned("TrendFollower", pairLabel) || Math.abs(wavePair.momentum) <= parametrosRobos.get("TrendFollower").thresholdEntrada) return []
+        const confidence = Math.min(80, Math.round(30 + Math.abs(wavePair.momentum) * 800))
+        return [{
+          agentName: "TrendFollower", pair: pairLabel, fromToken: wavePair.fromToken,
+          toToken: wavePair.toToken, network: pairNet, confidence,
+          action: wavePair.momentum > 0 ? "buy" : "sell",
+          reason: `Trend ${wavePair.momentum > 0 ? "🠕" : "🠗"} momentum ${(wavePair.momentum * 100).toFixed(2)}%`,
+        }]
+      })(),
+
+      // MeanReversion
+      (async (): Promise<AgentPairVote[]> => {
+        if (!agentAssigned("MeanReversion", pairLabel) || wavePair.amplitude <= parametrosRobos.get("MeanReversion").thresholdEntrada) return []
+        const confidence = Math.min(80, Math.round(30 + wavePair.amplitude * 600))
+        return [{
+          agentName: "MeanReversion", pair: pairLabel, fromToken: wavePair.fromToken,
+          toToken: wavePair.toToken, network: pairNet, confidence,
+          action: wavePair.momentum > 0 ? "sell" : "buy",
+          reason: `Reversão: amplitude ${(wavePair.amplitude * 100).toFixed(2)}%`,
+        }]
+      })(),
+
+      // ArbitrageHunter
+      (async (): Promise<AgentPairVote[]> => {
+        if (!agentAssigned("ArbitrageHunter", pairLabel) || !isStableStable) return []
+        const pAH = parametrosRobos.get("ArbitrageHunter")
+        if (spreadPct > pAH.thresholdSpread) {
+          return [{
+            agentName: "ArbitrageHunter", pair: pairLabel, fromToken: pair.from,
+            toToken: pair.to, network: pairNet,
+            confidence: Math.min(75, Math.round(30 + spreadPct * 10)),
+            action: pairToPrice > pairFromPrice ? "sell" : "buy",
+            reason: `Arbitragem ${pairLabel} (spread ${spreadPct.toFixed(3)}%)`,
+          }]
+        }
+        return []
+      })(),
+
+      // MarketMaker
+      (async (): Promise<AgentPairVote[]> => {
+        if (!agentAssigned("MarketMaker", pairLabel)) return []
+        const pMM = parametrosRobos.get("MarketMaker")
+        if (spreadPct > pMM.thresholdSpread) {
+          return [{
+            agentName: "MarketMaker", pair: pairLabel, fromToken: pair.from,
+            toToken: pair.to, network: pairNet,
+            confidence: Math.min(70, Math.round(40 + spreadPct * 20)),
+            action: pairToPrice > pairFromPrice ? "sell" : "buy",
+            reason: `Market ${pairLabel} ${pairToPrice > pairFromPrice ? "🠕" : "🠗"} (${spreadPct.toFixed(3)}%)`,
+          }]
+        }
+        return []
+      })(),
+
+      // BTCTrader
+      (async (): Promise<AgentPairVote[]> => {
+        if (!agentAssigned("BTCTrader", pairLabel) || !isBtcEth) return []
+        const pBT = parametrosRobos.get("BTCTrader")
+        if (spreadPct > pBT.thresholdSpread) {
+          return [{
+            agentName: "BTCTrader", pair: pairLabel, fromToken: pair.from,
+            toToken: pair.to, network: pairNet, confidence: 65,
+            action: pairToPrice > pairFromPrice ? "sell" : "buy",
+            reason: `BTC/ETH ${pairLabel} ${pairToPrice > pairFromPrice ? "🠕" : "🠗"}`,
+          }]
+        }
+        return []
+      })(),
+
+      // Liquidator
+      (async (): Promise<AgentPairVote[]> => {
+        if (!agentAssigned("Liquidator", pairLabel) || wavePair.liquidity <= parametrosRobos.get("Liquidator").thresholdLiquidez) return []
+        return [{
+          agentName: "Liquidator", pair: pairLabel, fromToken: wavePair.fromToken,
+          toToken: wavePair.toToken, network: pairNet,
+          confidence: Math.round(wavePair.liquidity * 60),
+          action: wavePair.momentum > 0 ? "buy" : "sell",
+          reason: `Liquidez ${(wavePair.liquidity * 100).toFixed(0)}% — ${pairLabel}`,
+        }]
+      })(),
+
+      // MomentumTrader
+      (async (): Promise<AgentPairVote[]> => {
+        if (!agentAssigned("MomentumTrader", pairLabel) || Math.abs(wavePair.momentum) * wavePair.volatility <= parametrosRobos.get("MomentumTrader").thresholdEntrada) return []
+        const momentumScore = Math.abs(wavePair.momentum) * wavePair.volatility
+        return [{
+          agentName: "MomentumTrader", pair: pairLabel, fromToken: wavePair.fromToken,
+          toToken: wavePair.toToken, network: pairNet,
+          confidence: Math.min(90, Math.round(40 + momentumScore * 2000)),
+          action: wavePair.momentum > 0 ? "buy" : "sell",
+          reason: `Momento × vol = ${(momentumScore * 10000).toFixed(0)} — ${wavePair.momentum > 0 ? "🠕🠕" : "🠗🠗"}`,
+        }]
+      })(),
+
+      // NVIDIAgent
+      (async (): Promise<AgentPairVote[]> => {
+        if (!agentAssigned("NVIDIAgent", pairLabel) || wavePair.probability <= parametrosRobos.get("NVIDIAgent").thresholdProbabilidade) return []
+        return [{
+          agentName: "NVIDIAgent", pair: pairLabel, fromToken: wavePair.fromToken,
+          toToken: wavePair.toToken, network: pairNet,
+          confidence: Math.min(90, Math.round(wavePair.probability)),
+          action: wavePair.momentum > 0 ? "buy" : "sell",
+          reason: `NIM: ondas de probabilidade — ${pairLabel}`,
+        }]
+      })(),
+
+      // Synthesis
+      (async (): Promise<AgentPairVote[]> => {
+        if (!agentAssigned("Synthesis", pairLabel)) return []
+        const pSyn = parametrosRobos.get("Synthesis")
+        const synthConfidence = Math.min(65, Math.round(pSyn.confiancaMinima + 5 + Math.abs(wavePair.momentum) * 200))
+        if (synthConfidence >= pSyn.confiancaMinima) {
+          return [{
+            agentName: "Synthesis", pair: pairLabel, fromToken: wavePair.fromToken,
+            toToken: wavePair.toToken, network: pairNet, confidence: synthConfidence,
+            action: wavePair.momentum > 0 ? "buy" : "sell",
+            reason: `Síntese automática: momentum ${(wavePair.momentum * 100).toFixed(2)}%`,
+          }]
+        }
+        return []
+      })(),
+
+      // Morse
+      (async (): Promise<AgentPairVote[]> => {
+        if (!agentAssigned("Morse", pairLabel)) return []
+        const metrics: { nome: string; alinhado: boolean; direcao: "buy" | "sell"; peso: number }[] = []
+
+        const momSignal = wavePair.momentum > 0.02 ? "buy" : wavePair.momentum < -0.02 ? "sell" : null
+        if (momSignal) {
+          metrics.push({ nome: "Momentum", alinhado: true, direcao: momSignal, peso: Math.abs(wavePair.momentum) })
+        }
+
+        const volSignal = wavePair.volatility > 0.6 ? (wavePair.momentum > 0 ? "buy" : "sell") : null
+        if (volSignal) {
+          metrics.push({ nome: "Bollinger", alinhado: true, direcao: volSignal, peso: wavePair.volatility })
+        }
+
+        const ampSignal = wavePair.amplitude > 0.03 ? (wavePair.momentum > 0 ? "buy" : "sell") : null
+        if (ampSignal) {
+          metrics.push({ nome: "Amplitude", alinhado: true, direcao: ampSignal, peso: wavePair.amplitude })
+        }
+
+        if (wavePair.probability > 10) {
+          metrics.push({ nome: "Confiabilidade", alinhado: true, direcao: wavePair.momentum > 0 ? "buy" : "sell", peso: wavePair.probability / 100 })
+        }
+
+        if (metrics.length >= 2) {
+          const direcoes = new Set(metrics.map(m => m.direcao))
+          if (direcoes.size === 1) {
+            const direcaoUnica = [...direcoes][0]
+            const pesoTotal = metrics.reduce((s, m) => s + m.peso, 0) / metrics.length
+            const confianca = Math.min(90, Math.round(30 + pesoTotal * 60))
+            const metrs = metrics.map(m => m.nome).join(" · ")
+            return [{
+              agentName: "Morse", pair: pairLabel, fromToken: wavePair.fromToken,
+              toToken: wavePair.toToken, network: pairNet, confidence: confianca,
+              action: direcaoUnica,
+              reason: `📻 ${metrs} → ${direcaoUnica === "buy" ? "⬆ COMPRA" : "⬇ VENDA"} (${metrics.length}/${metrics.length} alinhadas)`,
+            }]
+          }
+        }
+        return []
+      })(),
+    ])
+
+    const votesForPair: AgentPairVote[] = agentEvals.flat()
 
     if (votesForPair.length === 1 && votesForPair[0].confidence < 60) {
       const synthConfidence = Math.min(65, Math.round(votesForPair[0].confidence + 15))
