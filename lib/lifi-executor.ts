@@ -109,7 +109,7 @@ function explorerTx(chainId: number, txHash: string): string {
 
 // --- 1. Buscar cotacao ---
 
-export async function getQuote(params: SwapParams, retryCount = 0): Promise<QuoteResult | null> {
+export async function getQuote(params: SwapParams): Promise<QuoteResult | null> {
   // Se está em cooldown global (429 recente), retorna null imediatamente
   if (Date.now() < cooldownUntil) {
     console.warn(`LI.FI em cooldown (mais ${Math.round((cooldownUntil - Date.now())/1000)}s) — pulando`);
@@ -117,13 +117,6 @@ export async function getQuote(params: SwapParams, retryCount = 0): Promise<Quot
   }
 
   try {
-    // Backoff progressivo: 2s, 4s, 8s, 12s, 16s (max 5 retentativas)
-    if (retryCount > 0) {
-      const delay = Math.min(2000 * Math.pow(1.8, retryCount - 1), 16000);
-      console.warn(`LI.FI rate limit - aguardando ${delay}ms (tentativa ${retryCount}/5)...`);
-      await new Promise(r => setTimeout(r, delay));
-    }
-
     const searchParams = new URLSearchParams({
       fromChain:   params.fromChain.toString(),
       toChain:     params.toChain.toString(),

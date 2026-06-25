@@ -276,7 +276,7 @@ function agentAssigned(agentName: string, pairLabel: string): boolean {
 }
 
 const priceFetchCache = new Map<string, { price: number; ts: number }>()
-const PRICE_CACHE_TTL = 15000
+const PRICE_CACHE_TTL = 25000
 
 async function getTokenPrice(token: TokenSymbol): Promise<number> {
   const cached = priceFetchCache.get(token)
@@ -1435,7 +1435,8 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     const sellConfidence = Math.min(90, Math.round((30 + Math.max(0, profitPercent) * 4) * confMult))
     if (sellConfidence < 35) continue
 
-    const STOP_LOSS = -15
+    const posValue = pos.amountBought * currentPrice
+    const STOP_LOSS = posValue < 10 ? -4 : posValue > 20 ? -15 : Math.round(-(4 + (posValue - 10) * 1.1) * 10) / 10
     const MIN_MEANINGFUL_PROFIT = 1
     if (profitPercent > STOP_LOSS && (pos.peakProfitPercent ?? 0) < MIN_MEANINGFUL_PROFIT) {
       pregão.adicionarLog(`⏳ ${pos.boughtToken} em ${posNet}: ${profitPercent.toFixed(1)}% (pico ${(pos.peakProfitPercent ?? 0).toFixed(2)}%) sem lucro significativo — Staircase segura (hold)`)
@@ -1463,13 +1464,12 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       continue
     }
 
-    // ETH: só vende se lucro >= 90% da variação 24h (conservador)
-    // Demais redes: micro-trades fecham sem esperar variação 24h
+    // ETH: só vende se lucro >= $0.50 ou 3% do valor (o que for maior)
     if (profitPercent > 0 && posNet === "ethereum") {
-      const { change24h, variation24h } = await positionManager.fetchTokenChange24h(pos.boughtToken as TokenSymbol)
-      const profitTarget = variation24h * 0.9
-      if (profitPercent < profitTarget) {
-        pregão.adicionarLog(`📊 ${pos.boughtToken} em ${posNet}: ${profitPercent.toFixed(1)}% < meta ${profitTarget.toFixed(1)}% (90% da variação 24h=${variation24h.toFixed(1)}%, change=${change24h.toFixed(1)}%) — segurando`)
+      const minProfitTargetUSD = Math.max(0.50, posValue * 0.03)
+      const targetPercent = (minProfitTargetUSD / posValue) * 100
+      if (profitPercent < targetPercent) {
+        pregão.adicionarLog(`📊 ${pos.boughtToken} em ${posNet}: ${profitPercent.toFixed(1)}% < meta $${minProfitTargetUSD.toFixed(2)} (${targetPercent.toFixed(1)}%) — segurando`)
         continue
       }
     }

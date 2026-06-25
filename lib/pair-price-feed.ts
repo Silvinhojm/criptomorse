@@ -34,7 +34,7 @@ const COIN_IDS: Record<string, string> = {
 // Stablecoins mudam muito pouco — cache de 60s
 // Tokens voláteis — cache de 30s (era 15s, duplicado)
 const CACHE_MS_STABLE = 60_000
-const CACHE_MS_VOLATILE = 30_000
+const CACHE_MS_VOLATILE = 12_000
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 
 const HISTORY_MAX_POINTS = 20;
