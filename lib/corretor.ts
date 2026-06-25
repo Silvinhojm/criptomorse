@@ -247,8 +247,7 @@ class Corretor {
       }
     }
 
-    for (let i = 0; i < ordens.length; i++) {
-      const ordem = ordens[i]
+    const swapPrepResults = await Promise.all(ordens.map(async (ordem, i) => {
       const valorTrade = valores[i]
       const fromToken = ordem.fromToken as TokenSymbol
       const toToken = ordem.toToken as TokenSymbol
@@ -258,26 +257,26 @@ class Corretor {
       const toTokenAddr = (net.tokens as any)[toToken]
 
       if (!fromTokenAddr || !toTokenAddr) {
-        erros.push(ordem.id)
         pregão.atualizarOrdem(ordem.id, { status: "falhou" })
-        continue
+        return null
       }
 
       try {
         const fromPrice = await realSwap.fetchTokenPrice(fromToken).catch(() => 1)
         const fromAmountRaw = ethers.parseUnits((valorTrade / fromPrice).toFixed(fromDecimals), fromDecimals)
 
-        const dexQuote = !net.isTestnet && hasDirectDex(redeKey)
-          ? await getDirectDexQuote(redeKey, realSwap.getProvider()!, fromTokenAddr, toTokenAddr, fromAmountRaw)
-          : null
-
-        const lifiQuote = await getQuote({
-          fromChain: net.chainId, toChain: net.chainId,
-          fromToken: fromTokenAddr, toToken: toTokenAddr,
-          fromAmount: fromAmountRaw.toString(),
-          fromAddress: realSwap.getAddress(),
-          toAddress: realSwap.getAddress(), slippage: 0.005,
-        }).catch(() => null)
+        const [dexQuote, lifiQuote] = await Promise.all([
+          !net.isTestnet && hasDirectDex(redeKey)
+            ? getDirectDexQuote(redeKey, realSwap.getProvider()!, fromTokenAddr, toTokenAddr, fromAmountRaw).catch(() => null)
+            : Promise.resolve(null),
+          getQuote({
+            fromChain: net.chainId, toChain: net.chainId,
+            fromToken: fromTokenAddr, toToken: toTokenAddr,
+            fromAmount: fromAmountRaw.toString(),
+            fromAddress: realSwap.getAddress(),
+            toAddress: realSwap.getAddress(), slippage: 0.005,
+          }).catch(() => null),
+        ])
 
         let target: string
         let calldata: string
@@ -304,25 +303,24 @@ class Corretor {
           spender = lifiQuote.transactionRequest.to
           expectedToAmount = parseFloat(lifiQuote.toAmount ?? "0") / Math.pow(10, toDecimals)
         } else {
-          erros.push(ordem.id)
           pregão.atualizarOrdem(ordem.id, { status: "falhou" })
           log(`❌ Sem rota para ${ordem.par}`)
-          continue
+          return null
         }
 
-        swaps.push({
-          fromToken, toToken,
-          amountRaw: fromAmountRaw, amountUsd: valorTrade,
-          target, calldata, value, spender,
-          expectedToAmount, network: redeKey,
-        })
-
         pregão.atualizarOrdem(ordem.id, { status: "executando" })
+        return { fromToken, toToken, amountRaw: fromAmountRaw, amountUsd: valorTrade,
+          target, calldata, value, spender, expectedToAmount, network: redeKey } as UltraFlashSwap
       } catch (err: any) {
-        erros.push(ordem.id)
         pregão.atualizarOrdem(ordem.id, { status: "falhou" })
         log(`❌ Erro preparando ${ordem.par}: ${err.message.slice(0, 100)}`)
+        return null
       }
+    }))
+
+    for (const r of swapPrepResults) {
+      if (r) swaps.push(r)
+      else erros.push("swap_failed")
     }
 
     if (swaps.length === 0) {

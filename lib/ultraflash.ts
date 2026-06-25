@@ -53,26 +53,31 @@ export async function batchApprove(
   const calls: { target: string; allowFailure: boolean; callData: string }[] = []
   const approvedKeys: string[] = []
 
-  for (const swap of swaps) {
-    const net = NETWORKS[network]
+  const net = NETWORKS[network]
+  const allowanceResults = await Promise.all(swaps.map(async (swap) => {
     const tokenAddr = (net.tokens as any)[swap.fromToken]
-    if (!tokenAddr) continue
+    if (!tokenAddr) return null
 
     const key = approvedKey(tokenAddr, swap.spender)
-    if (approvedSet.has(key)) continue
+    if (approvedSet.has(key)) return { key, needApprove: false, tokenAddr: "", swap }
 
     const tc = new ethers.Contract(tokenAddr, ERC20_ABI, signer)
     const al = await tc.allowance(userAddress, swap.spender)
     if (al >= swap.amountRaw) {
       approvedSet.add(key)
-      continue
+      return { key, needApprove: false, tokenAddr: "", swap }
     }
 
+    return { key, needApprove: true, tokenAddr, swap }
+  }))
+
+  for (const r of allowanceResults) {
+    if (!r || !r.needApprove) continue
     const iface = new ethers.Interface(ERC20_ABI)
-    const callData = iface.encodeFunctionData("approve", [swap.spender, ethers.MaxUint256])
-    calls.push({ target: tokenAddr, allowFailure: false, callData })
-    approvedKeys.push(key)
-    log(`🔓 Pré-aprovando ${swap.fromToken} → ${swap.spender.slice(0, 10)}...`)
+    const callData = iface.encodeFunctionData("approve", [r.swap.spender, ethers.MaxUint256])
+    calls.push({ target: r.tokenAddr, allowFailure: false, callData })
+    approvedKeys.push(r.key)
+    log(`🔓 Pré-aprovando ${r.swap.fromToken} → ${r.swap.spender.slice(0, 10)}...`)
   }
 
   if (calls.length === 0) return approvedKeys

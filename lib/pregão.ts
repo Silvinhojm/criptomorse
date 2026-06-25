@@ -8,6 +8,7 @@ import { hasDirectDex, getDirectDexQuote, calculateAmountOutMin } from "./direct
 import { getQuote } from "./lifi-executor"
 import { ethers } from "ethers"
 import { gasPriceOracle } from "./gas-price-oracle"
+import { positionManager } from "./position-manager"
 
 export interface PackageResult {
   id: string
@@ -645,7 +646,6 @@ class Pregão {
         }
         const isStableTo = ["USDC", "USDT", "DAI", "EURC"].includes(trade.toToken)
         const isStableFrom = ["USDC", "USDT", "DAI", "EURC"].includes(trade.fromToken)
-        const { positionManager } = await import("./position-manager")
         if (!isStableTo && isStableFrom) {
           positionManager.openPosition(
             pacote.rede, trade.toToken as TokenSymbol, trade.fromToken as TokenSymbol,
@@ -717,7 +717,6 @@ class Pregão {
         // Se vendeu volátil → fecha posição correspondente (delta neutro)
         const isStableTo = ["USDC", "USDT", "DAI", "EURC"].includes(trade.toToken)
         const isStableFrom = ["USDC", "USDT", "DAI", "EURC"].includes(trade.fromToken)
-        const { positionManager } = await import("./position-manager")
         if (!isStableTo && isStableFrom) {
           positionManager.openPosition(
             pacote.rede,
