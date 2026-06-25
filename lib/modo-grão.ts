@@ -8,11 +8,9 @@ import { volatilityTracker } from './volatility-tracker'
 
 function getNetworkPair() {
   const net = realSwap.getNetworkKey() as string
-  if (net === 'arc' || net === 'sepolia') return { fromToken: 'USDC', toToken: 'cirBTC' }
+  if (net === 'arc' || net === 'sepolia') return { fromToken: 'USDC', toToken: 'EURC' }
   return { fromToken: 'USDC', toToken: 'WETH' }
 }
-
-const PAIR_NAME = { 'USDC': 'USDC', 'cirBTC': 'cirBTC', 'WETH': 'WETH' } as Record<string, string>
 
 interface PendingSignal {
   action: 'buy'
@@ -168,7 +166,7 @@ class ModoGrao {
     if (toPrice <= 0) return
 
     const vol = this._testMode
-      ? { vol24h: 0.005, vol1h: 0.002, vol4h: 0.003, dataPoints: 20, trend: 'stable' as const }
+      ? { vol24h: 0.01, vol1h: 0.005, vol4h: 0.007, dataPoints: 20, trend: 'stable' as const }
       : volatilityTracker.getVolatility(this.getPair().toToken as any)
 
     // 2. Check positions (stop/target)
@@ -186,9 +184,9 @@ class ModoGrao {
 
     // 5. MeanReversion evaluation
     const amplitude = vol.vol24h
-    if (amplitude >= CONFIG.minAmplitude && this._openPositions.filter(p => p.status === 'open').length < CONFIG.maxPositions) {
+    if (amplitude >= CONFIG.minAmplitude) {
       const mrConfidence = Math.min(80, Math.round(30 + amplitude * 600))
-      if (mrConfidence >= CONFIG.minConfidence) {
+      if (mrConfidence >= (this._testMode ? 20 : CONFIG.minConfidence) && this._openPositions.filter(p => p.status === 'open').length < CONFIG.maxPositions) {
         const mmSignal = this._pendingSignals.find(s => s.agentName === 'MarketMaker')
         if (mmSignal) {
           this._pendingSignals = this._pendingSignals.filter(s => s !== mmSignal)
@@ -201,10 +199,12 @@ class ModoGrao {
     }
 
     // 6. MarketMaker evaluation
-    const spreadPct = fromPrice > 0 ? Math.abs(toPrice - fromPrice) / fromPrice : 0
-    if (spreadPct >= CONFIG.minSpread && this._openPositions.filter(p => p.status === 'open').length < CONFIG.maxPositions) {
+    const spreadPct = this._testMode
+      ? 0.005
+      : fromPrice > 0 ? Math.abs(toPrice - fromPrice) / fromPrice : 0
+    if (spreadPct >= CONFIG.minSpread) {
       const mmConfidence = Math.min(70, Math.round(40 + spreadPct * 20))
-      if (mmConfidence >= CONFIG.minConfidence) {
+      if (mmConfidence >= (this._testMode ? 20 : CONFIG.minConfidence) && this._openPositions.filter(p => p.status === 'open').length < CONFIG.maxPositions) {
         const mrSignal = this._pendingSignals.find(s => s.agentName === 'MeanReversion')
         if (mrSignal) {
           this._pendingSignals = this._pendingSignals.filter(s => s !== mrSignal)
