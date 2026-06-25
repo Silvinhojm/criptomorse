@@ -1,7 +1,7 @@
 import { UnifiedBalanceKit } from "@circle-fin/unified-balance-kit"
 import { createViemAdapterFromProvider } from "@circle-fin/adapter-viem-v2"
 
-type UbChain = "Arc_Testnet" | "Base" | "Polygon" | "Ethereum" | "Arbitrum"
+type UbChain = "Arc_Testnet" | "Base" | "Polygon" | "Ethereum" | "Arbitrum" | "Ethereum_Sepolia"
 type UbNetworkType = "mainnet" | "testnet"
 
 export const UB_CHAIN: Record<string, UbChain> = {
@@ -10,6 +10,7 @@ export const UB_CHAIN: Record<string, UbChain> = {
   polygon: "Polygon",
   ethereum: "Ethereum",
   arbitrum: "Arbitrum",
+  sepolia: "Ethereum_Sepolia",
 }
 
 export interface SaldoCaixa {

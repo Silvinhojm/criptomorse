@@ -17,7 +17,7 @@ const ADAPT_SPEED = 0.12
 const JUMP_COOLDOWN_MS = 180000
 const STORAGE_KEY = "arcflow_adaptive_grid_state"
 const PERF_KEY = "arcflow_grid_performance"
-const GAS_ESTIMATE_GRID: Record<string, number> = { polygon: 0.005, base: 0.003, arc: 0.001, ethereum: 0.50, arbitrum: 0.01 }
+const GAS_ESTIMATE_GRID: Record<string, number> = { polygon: 0.005, base: 0.003, arc: 0.001, ethereum: 0.50, arbitrum: 0.01, sepolia: 0.006 }
 const SPREAD_PCT = 0.005
 
 export interface GridTradeRecord {

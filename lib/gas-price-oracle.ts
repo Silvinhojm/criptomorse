@@ -11,6 +11,7 @@ const GAS_COST_ESTIMATE: Record<string, number> = {
   polygon: 0.005,
   ethereum: 1.50,
   arbitrum: 0.02,
+  sepolia: 0.006,
 };
 
 const GAS_UNITS_SWAP = 200000;

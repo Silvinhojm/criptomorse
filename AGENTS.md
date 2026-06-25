@@ -37,6 +37,19 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - Chave: `SOSO-2ca874f7857946529d23c707520dcd17` (válida, testada — BTC $59,538).
 - Build compila sem novos erros (4 erros TS pré-existentes não relacionados).
 
+## Session Summary (25/06/2026) — Quarta sessão: Ethereum Sepolia testnet
+
+### What's Changed
+1. **Sepolia Network** — `lib/real-swap-executor.ts`: nova rede `sepolia` (chainId 11155111, testnet ETH, RPC `rpc.sepolia.org`). USDC (`0x1c7D4B...`), WETH (`0xfFf997...`), trading pairs USDC→WETH / WETH→USDC. GAS_COST_ESTIMATE $0.006, minVolatileTrade $1 (testnet).
+2. **networks.ts** — Sepolia adicionada ao `SUPPORTED_NETWORKS` com LI.FI support (chainId 11155111).
+3. **gas-price-oracle.ts** — Sepolia adicionada ao `GAS_COST_ESTIMATE`.
+4. **caixa.ts** — `UB_CHAIN` inclui `sepolia: "Ethereum_Sepolia"`.
+5. **grid-trading.ts** — `GAS_ESTIMATE_GRID` inclui Sepolia $0.006.
+6. **page.tsx** — `SEPOLIA_TESTNET` config, `NETWORK_KEY_MAP` + `CHAIN_TO_KEY` com Sepolia, `handleNetworkKeyChange` suporta "sepolia", `getPortfolioTokens` inclui WETH Sepolia.
+7. **Header.tsx** — Botão 🧪 Sepolia no seletor de rede.
+8. **package.json** — Script `dev:sepolia` (porta 3003).
+9. **Commit + Push** — Mudanças da terceira sessão (migração SoSoValue) commitadas e enviadas para `origin/versao-polygon`.
+
 ## Session Summary (24/06/2026) — Segunda sessão
 
 ### What's Changed

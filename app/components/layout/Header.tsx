@@ -10,6 +10,7 @@ const NETWORK_META: { key: NetworkKey; icon: string; label: string }[] = [
   { key: "base", icon: "🟢", label: "Base" },
   { key: "polygon", icon: "🟣", label: "Polygon" },
   { key: "ethereum", icon: "💙", label: "Ethereum" },
+  { key: "sepolia", icon: "🧪", label: "Sepolia" },
 ]
 
 type Props = {

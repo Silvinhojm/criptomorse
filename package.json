@@ -7,6 +7,7 @@
     "dev:polygon": "set NEXT_PUBLIC_DEFAULT_NETWORK=polygon&& next dev --turbopack --port 3000",
     "dev:testnet": "set NEXT_PUBLIC_DEFAULT_NETWORK=arc&& next dev --turbopack --port 3001",
     "dev:base": "set NEXT_PUBLIC_DEFAULT_NETWORK=base&& next dev --turbopack --port 3002",
+    "dev:sepolia": "set NEXT_PUBLIC_DEFAULT_NETWORK=sepolia&& next dev --turbopack --port 3003",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"

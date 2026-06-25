@@ -109,13 +109,30 @@ const ETHEREUM_MAINNET = {
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }
 };
 
-type Network = typeof ARC_TESTNET | typeof BASE_MAINNET | typeof POLYGON_MAINNET | typeof ETHEREUM_MAINNET;
+// Ethereum Sepolia (testnet)
+const SEPOLIA_TESTNET = {
+  name: "Ethereum Sepolia",
+  shortName: "Sepolia",
+  rpc: "https://rpc.sepolia.org",
+  chainId: 11155111,
+  chainIdHex: "0xaa36a7",
+  usdc: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+  eurc: "",
+  erc8183: "0x0747EEf0706327138c69792bF28Cd525089e4583",
+  explorer: "https://sepolia.etherscan.io",
+  icon: "🧪",
+  isTestnet: true,
+  nativeCurrency: { name: "Sepolia ETH", symbol: "ETH", decimals: 18 }
+};
+
+type Network = typeof ARC_TESTNET | typeof BASE_MAINNET | typeof POLYGON_MAINNET | typeof ETHEREUM_MAINNET | typeof SEPOLIA_TESTNET;
 
 const NETWORK_KEY_MAP: Record<number, keyof typeof NETWORKS> = {
   5042002: "arc",
   8453: "base",
   137: "polygon",
   1: "ethereum",
+  11155111: "sepolia",
 };
 
 const short = (a: string) => a ? a.slice(0, 6) + "..." + a.slice(-4) : "";
@@ -341,7 +358,7 @@ function SwapBridgeModal({
   const [targetNetwork, setTargetNetwork] = useState<Network>(BASE_MAINNET);
   const [bridgeToken, setBridgeToken] = useState("USDC");
 
-  const availableNetworks = [BASE_MAINNET, POLYGON_MAINNET, ETHEREUM_MAINNET];
+  const availableNetworks = [BASE_MAINNET, POLYGON_MAINNET, ETHEREUM_MAINNET, SEPOLIA_TESTNET];
 
   const availableTokens = [
     { symbol: "USDC", name: "USD Coin", icon: "💵" },
@@ -593,6 +610,7 @@ export default function Home() {
     const defaultNet = process.env.NEXT_PUBLIC_DEFAULT_NETWORK || "arc";
     if (defaultNet === "polygon") return POLYGON_MAINNET;
     if (defaultNet === "base") return BASE_MAINNET;
+    if (defaultNet === "sepolia") return SEPOLIA_TESTNET;
     return ARC_TESTNET;
   });
 
@@ -636,6 +654,10 @@ export default function Home() {
         { symbol: "DAI", name: "Dai", icon: "🏦", address: "0x6B175474E89094C44Da98b954EedeAC495271d0F", decimals: 18, isNative: false },
         { symbol: "USDT", name: "Tether", icon: "🪙", address: "0xdAC17F958D2ee523a2206206994597C13D831ec7", decimals: 6, isNative: false },
         { symbol: "WBTC", name: "Wrapped Bitcoin", icon: "₿", address: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599", decimals: 8, isNative: false },
+      );
+    } else if (currentNetwork.chainId === 11155111) { // Sepolia
+      common.push(
+        { symbol: "WETH", name: "Wrapped Ether", icon: "✨", address: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14", decimals: 18, isNative: false },
       );
     }
     return common;
@@ -762,14 +784,16 @@ export default function Home() {
     8453: "base",
     1: "ethereum",
     42161: "arbitrum",
+    11155111: "sepolia",
   }
-  const currentNetworkKey = (CHAIN_TO_KEY[currentNetwork.chainId] ?? "polygon") as "arc" | "polygon" | "base" | "ethereum" | "arbitrum"
-  const handleNetworkKeyChange = (key: "arc" | "polygon" | "base" | "ethereum" | "arbitrum") => {
-    const netMap: Record<string, typeof ARC_TESTNET | typeof POLYGON_MAINNET | typeof BASE_MAINNET | typeof ETHEREUM_MAINNET> = {
+  const currentNetworkKey = (CHAIN_TO_KEY[currentNetwork.chainId] ?? "polygon") as "arc" | "polygon" | "base" | "ethereum" | "arbitrum" | "sepolia"
+  const handleNetworkKeyChange = (key: "arc" | "polygon" | "base" | "ethereum" | "arbitrum" | "sepolia") => {
+    const netMap: Record<string, typeof ARC_TESTNET | typeof POLYGON_MAINNET | typeof BASE_MAINNET | typeof ETHEREUM_MAINNET | typeof SEPOLIA_TESTNET> = {
       arc: ARC_TESTNET,
       polygon: POLYGON_MAINNET,
       base: BASE_MAINNET,
       ethereum: ETHEREUM_MAINNET,
+      sepolia: SEPOLIA_TESTNET,
     }
     const newNet = netMap[key]
     if (newNet) handleNetworkSwitch(newNet)

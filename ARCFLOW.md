@@ -311,6 +311,7 @@ TREND_CHECK_INTERVAL_MS = 60_000    // verifica a cada 1 min
 //          USDC→WETH, WETH→USDC, USDC→DAI, DAI→USDC
 // ETH:    USDC→WETH, WETH→USDC, USDC→WBTC, WBTC→USDC, etc.
 // ARB:    USDC→WETH, WETH→USDC, USDC→ARB, ARB→USDC, etc.
+// SEPOLIA: USDC→WETH, WETH→USDC
 ```
 
 ### 4.4 Config de Rede + Gas Oracle (real-swap-executor.ts + gas-price-oracle.ts)
@@ -322,6 +323,7 @@ GAS_COST_ESTIMATE: {
   polygon:  0.005,  // POL ~$0.078, 52 gwei, 500k gas → $0.005
   ethereum: 1.50,
   arbitrum: 0.03,
+  sepolia:  0.006,  // ~$0.006 por tx na Sepolia (testnet)
 }
 
 GAS_UNITS_SWAP = 500000  // 280k → 500k para swaps complexos LI.FI (jun/2026)
@@ -341,7 +343,7 @@ GAS_UNITS_SWAP = 500000  // 280k → 500k para swaps complexos LI.FI (jun/2026)
 // minVolatileTrade por rede:
 // - Ethereum: $50
 // - Polygon/Base/Arbitrum: $0.10
-// - Testnet: $1
+// - Testnet (Arc/Sepolia): $1
 ```
 
 ### 4.5 Pregão (pregão.ts + agentes-do-pregão.ts)
@@ -598,11 +600,13 @@ Se preço cai para $3100 → lucro 3.3% → nível atual = 1
 | Base | 8453 | 💰 mainnet | basescan.org | ETH |
 | Ethereum | 1 | 💰 mainnet | etherscan.io | ETH |
 | Arbitrum | 42161 | 💰 mainnet | arbiscan.io | ETH |
+| Ethereum Sepolia | 11155111 | 🧪 testnet | sepolia.etherscan.io | ETH |
 
 Cada rede roda em uma porta diferente:
 - `npm run dev` → Polygon (3000)
 - `npm run dev:testnet` → Arc (3001)
 - `npm run dev:base` → Base (3002)
+- `npm run dev:sepolia` → Sepolia (3003)
 
 ---
 
@@ -1830,3 +1834,39 @@ cirBTC (Circle Wrapped Bitcoin) agora integrado como token real no Ethereum main
 - Rate limit: 20 req/min (demo plan). Cache de 15s + spacing de 3s entre chamadas.
 - Chave: `SOSO-2ca874f7857946529d23c707520dcd17` (válida, testada — BTC $59,538).
 - Build compila sem novos erros (4 erros TS pré-existentes não relacionados).
+
+---
+
+## 30. CHANGELOG — 25/06/2026 (Quarta sessão: Ethereum Sepolia testnet)
+
+### 30.1 Sepolia Network
+
+| Item | Detalhe |
+|------|---------|
+| ChainId | 11155111 |
+| RPC | `https://rpc.sepolia.org` |
+| Explorer | `https://sepolia.etherscan.io` |
+| Native | SepoliaETH (testnet) |
+| USDC | `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` (Circle test) |
+| WETH | `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14` |
+| Trading pairs | USDC→WETH, WETH→USDC |
+| Gas estimate | $0.006/tx |
+
+### 30.2 Arquivos Modificados
+
+| Arquivo | Mudança |
+|---------|---------|
+| `lib/real-swap-executor.ts` | Add `sepolia` em NETWORKS, GAS_COST_ESTIMATE, TRADING_PAIRS, UB_CHAIN, BACKUP_RPCS |
+| `lib/networks.ts` | Add Sepolia ao SUPPORTED_NETWORKS (LI.FI chainId 11155111) |
+| `lib/gas-price-oracle.ts` | Add sepolia ao GAS_COST_ESTIMATE |
+| `lib/caixa.ts` | Add `Ethereum_Sepolia` ao UB_CHAIN |
+| `lib/grid-trading.ts` | Add sepolia ao GAS_ESTIMATE_GRID |
+| `app/page.tsx` | Add SEPOLIA_TESTNET config, NETWORK_KEY_MAP, CHAIN_TO_KEY, handleNetworkKeyChange, getPortfolioTokens |
+| `app/components/layout/Header.tsx` | Add botão 🧪 Sepolia no seletor de rede |
+| `package.json` | Add script `dev:sepolia` (porta 3003) |
+| `AGENTS.md` | Session summary atualizado |
+
+### 30.3 Comando
+```bash
+npm run dev:sepolia  # Sepolia testnet (porta 3003)
+```

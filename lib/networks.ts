@@ -167,6 +167,30 @@ export const SUPPORTED_NETWORKS: Network[] = [
     lifiId: 42161,
   },
   
+  // Ethereum Sepolia (testnet)
+  {
+    id: 'sepolia',
+    name: 'Ethereum Sepolia',
+    shortName: 'Sepolia',
+    chainId: 11155111,
+    chainIdHex: '0xaa36a7',
+    rpcUrl: 'https://rpc.sepolia.org',
+    explorerUrl: 'https://sepolia.etherscan.io',
+    nativeCurrency: {
+      name: 'Sepolia ETH',
+      symbol: 'ETH',
+      decimals: 18,
+    },
+    tokens: [
+      { symbol: 'USDC', name: 'USD Coin', address: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238', decimals: 6, icon: '💵' },
+      { symbol: 'WETH', name: 'Wrapped Ether', address: '0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14', decimals: 18, icon: '⬜' },
+    ],
+    icon: '🧪',
+    isTestnet: true,
+    isActive: true,
+    lifiId: 11155111,
+  },
+
   // Optimism
   {
     id: 'optimism',

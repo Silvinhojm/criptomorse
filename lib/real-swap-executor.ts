@@ -32,6 +32,7 @@ export const GAS_COST_ESTIMATE: Record<string, number> = {
   polygon: 0.005,
   ethereum: 1.50,
   arbitrum: 0.02,
+  sepolia: 0.006,
 };
 
 export const NETWORKS = {
@@ -117,6 +118,19 @@ export const NETWORKS = {
       NATIVE:"0x0000000000000000000000000000000000000000",
     },
   },
+  sepolia: {
+    chainId: 11155111,
+    name: "Ethereum Sepolia",
+    rpcUrl: "https://rpc.sepolia.org",
+    explorer: "https://sepolia.etherscan.io",
+    isTestnet: true,
+    nativeSymbol: "ETH",
+    tokens: {
+      USDC: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+      WETH: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+      NATIVE:"0x0000000000000000000000000000000000000000",
+    },
+  },
 };
 
 export type NetworkKey = keyof typeof NETWORKS;
@@ -184,6 +198,10 @@ export const TRADING_PAIRS: Record<NetworkKey, Array<{ from: TokenSymbol; to: To
     { from: "USDC", to: "ARB",  label: "USDC→ARB" },
     { from: "ARB",  to: "USDC", label: "ARB→USDC" },
     { from: "USDC", to: "USDT", label: "USDC→USDT" },
+  ],
+  sepolia: [
+    { from: "USDC", to: "WETH", label: "USDC→WETH" },
+    { from: "WETH", to: "USDC", label: "WETH→USDC" },
   ],
 };
 
@@ -259,6 +277,7 @@ const UB_CHAIN: Record<string, string> = {
   polygon: "Polygon",
   ethereum: "Ethereum",
   arbitrum: "Arbitrum",
+  sepolia: "Ethereum_Sepolia",
 };
 
 class RealSwapExecutor {
@@ -274,6 +293,10 @@ class RealSwapExecutor {
     base: [],
     ethereum: [],
     arbitrum: [],
+    sepolia: [
+      "https://sepolia.gateway.tenderly.co",
+      "https://ethereum-sepolia.publicnode.com",
+    ],
   }
   private userAddress: string = "";
   private privateKey: string = "";
