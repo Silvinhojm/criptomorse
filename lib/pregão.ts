@@ -507,7 +507,7 @@ class Pregão {
       ? parseFloat(lifiQuote.toAmount ?? "0") / Math.pow(10, toDecimals)
       : 0
 
-    if (dexOut >= lifiOut && dexOut > 0) {
+    if (dexOut >= lifiOut && dexOut > 0 && dexQuote) {
       const amountOutMin = calculateAmountOutMin(dexQuote.amountOut, 100)
       const deadline = Math.floor(Date.now() / 1000) + 600
       const iface = new ethers.Interface([
@@ -525,7 +525,7 @@ class Pregão {
       }
     }
 
-    if (lifiOut > 0) {
+    if (lifiOut > 0 && lifiQuote?.transactionRequest) {
       return {
         fromToken: trade.fromToken, toToken: trade.toToken,
         amountRaw: fromAmountRaw, amountUsd: trade.amount,
@@ -619,6 +619,56 @@ class Pregão {
 
     this.log(`[PREGÃO] 🚀 Pacote ${pacote.id}: ${swaps.length} swaps em ${pacote.rede} | lucro esp.: $${lucroRealEsperado.toFixed(4)} | gas: $${estimatedGasTotal.toFixed(4)}`)
 
+    // ─── 4. Modo Papel: simula trades sem gastar gas ──
+    const isPaper = typeof window !== "undefined" && localStorage.getItem("arcflow_paper_mode") === "true"
+    if (isPaper) {
+      this.log(`[PREGÃO] 📝 Modo Papel: simulando ${swaps.length} trades em ${pacote.rede}`)
+      let totalReturned = 0
+      let tradesOk = 0
+      for (let i = 0; i < swaps.length; i++) {
+        const sw = swaps[i]
+        const trade = pacote.trades[i]
+        if (!trade) continue
+        totalReturned += sw.expectedToAmount
+        tradesOk++
+        if (trade.ordemId) {
+          this.atualizarOrdem(trade.ordemId, {
+            status: "concluido",
+            resultado: {
+              txHash: "paper_" + Date.now(),
+              explorerUrl: "",
+              fromAmount: trade.amount,
+              toAmount: sw.expectedToAmount,
+              profit: sw.expectedToAmount - trade.amount,
+            },
+          })
+        }
+        const isStableTo = ["USDC", "USDT", "DAI", "EURC"].includes(trade.toToken)
+        const isStableFrom = ["USDC", "USDT", "DAI", "EURC"].includes(trade.fromToken)
+        const { positionManager } = await import("./position-manager")
+        if (!isStableTo && isStableFrom) {
+          positionManager.openPosition(
+            pacote.rede, trade.toToken as TokenSymbol, trade.fromToken as TokenSymbol,
+            sw.expectedToAmount, trade.amount, trade.amount / (sw.expectedToAmount || 0.000000001),
+          )
+        }
+        if (!isStableFrom && isStableTo) {
+          const pos = positionManager.getOpenPositions()
+            .find(p => p.boughtToken === trade.fromToken && p.networkKey === pacote.rede && p.status === "open")
+          if (pos) positionManager.closePosition(pos.id, sw.expectedToAmount / trade.amount)
+        }
+        this.log(`[PREGÃO] 📝 ${trade.fromToken}→${trade.toToken}: $${trade.amount} → $${sw.expectedToAmount.toFixed(4)} (simulado)`)
+      }
+      const profitReal = totalReturned - pkgResult.totalInvested
+      pkgResult.tradesSucesso = tradesOk
+      pkgResult.totalReturned = totalReturned
+      pkgResult.profit = profitReal
+      pkgResult.status = 'concluido'
+      this._savePackageResults()
+      this.log(`[PREGÃO] 📝 Pacote ${pacote.id}: ${tradesOk}/${swaps.length} simulado | lucro: $${profitReal.toFixed(4)}`)
+      return
+    }
+
     try {
       await batchApprove(realSwap.getSigner()!, realSwap.getAddress(), pacote.rede as NetworkKey, swaps, (m) => this.log(`[PREGÃO] ${m}`))
       const batchResult = await executeBatch(realSwap.getSigner()!, pacote.rede as NetworkKey, swaps, (m) => this.log(`[PREGÃO] ${m}`))
@@ -663,10 +713,12 @@ class Pregão {
           })
         }
 
-        // Se comprou volátil → abre posição com packageId
+        // Se comprou volátil → abre posição
+        // Se vendeu volátil → fecha posição correspondente (delta neutro)
         const isStableTo = ["USDC", "USDT", "DAI", "EURC"].includes(trade.toToken)
-        if (!isStableTo) {
-          const { positionManager } = await import("./position-manager")
+        const isStableFrom = ["USDC", "USDT", "DAI", "EURC"].includes(trade.fromToken)
+        const { positionManager } = await import("./position-manager")
+        if (!isStableTo && isStableFrom) {
           positionManager.openPosition(
             pacote.rede,
             trade.toToken as TokenSymbol,
@@ -675,6 +727,13 @@ class Pregão {
             trade.amount,
             trade.amount / (r.swap.expectedToAmount || 0.000000001),
           )
+        }
+        if (!isStableFrom && isStableTo) {
+          const pos = positionManager.getOpenPositions()
+            .find(p => p.boughtToken === trade.fromToken && p.networkKey === pacote.rede && p.status === "open")
+          if (pos) {
+            positionManager.closePosition(pos.id, r.swap.expectedToAmount / trade.amount)
+          }
         }
 
         this.log(`[PREGÃO] ✅ ${trade.fromToken}→${trade.toToken} via ${r.swap.network}: $${trade.amount} → $${r.swap.expectedToAmount.toFixed(4)} (${(r.swap.expectedToAmount > trade.amount ? '+' : '')}${((r.swap.expectedToAmount / trade.amount - 1) * 100).toFixed(2)}%)`)

@@ -71,6 +71,8 @@ export async function POST(req: Request) {
             result = { success: true, txHash: tx.hash }
             break
           }
+          default:
+            result = { success: false, txHash: "", error: "Operação desconhecida" }
         }
         results.push({
           operation: op,

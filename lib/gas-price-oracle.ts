@@ -1,5 +1,5 @@
 // lib/gas-price-oracle.ts
-// Gas price oracle: busca gas real da RPC + preco do token nativo via CoinGecko
+// Gas price oracle: busca gas real da RPC + preco do token nativo via SoSoValue
 // Fallback para GAS_COST_ESTIMATE estatico se falhar
 
 import { ethers } from "ethers";
@@ -18,8 +18,8 @@ const GAS_UNITS_SWAP = 200000;
 const STABLECOIN_SYMBOLS = new Set(["USDC", "USDT", "DAI", "EURC", "ARC"]);
 
 const COINGECKO_IDS: Record<string, string> = {
-  ETH: "ethereum",
-  POL: "matic-network",
+  ETH: "1673723677362319867",
+  POL: "1730847291434274818",
 };
 
 class GasPriceOracle {

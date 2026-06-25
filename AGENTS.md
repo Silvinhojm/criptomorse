@@ -11,7 +11,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
 
 2. **Mantenha a documentação atualizada** — toda alteração em parâmetros, novos módulos, mudanças de fluxo ou adição de tokens deve refletir em `ARCFLOW.md`. Se a IA não fizer isso automaticamente, o desenvolvedor vai pedir.
 
-3. **Nunca duplique COIN_IDS** — ao adicionar um token, atualize em TODOS os 5 lugares (listados na seção 14 do ARCFLOW.md).
+3. **Nunca duplique COIN_IDS** — ao adicionar um token, atualize em TODOS os lugares que mapeiam símbolo → SoSoValue currency_id. A lista completa está na seção 14 do ARCFLOW.md.
 
 4. **Persistência primeiro** — qualquer estado que deve sobreviver a F5 precisa de localStorage com chave `arcflow_*`. Documente no ARCFLOW.md seção 5.
 
@@ -19,6 +19,23 @@ This version has breaking changes — APIs, conventions, and file structure may 
 <!-- END:arcflow-rules -->
 
 - Ao verificar estado do sistema, commit alterações no ARCFLOW.md e no código e faça push
+
+## Session Summary (24/06/2026) — Terceira sessão: Migração CoinGecko → SoSoValue
+
+### What's Changed
+1. **SoSoValue Price Agent** — `lib/sosovalue-price-agent.ts`: novo agente de preços que usa a API oficial da SoSoValue (`openapi.sosovalue.com/openapi/v1`). Cache de 15s, rate limiting de 3s entre chamadas, hardcoded currency IDs mapeados do endpoint `/currencies`.
+2. **Price Route** — `app/api/price/route.ts`: backend trocado de CoinGecko (`api.coingecko.com/api/v3/simple/price`) para SoSoValue (`/currencies/{id}/market-snapshot`). Mesmo contrato de API (`?ids=...` → `{ prices, change24h }`).
+3. **Market Data Route** — `app/api/market-data/route.ts`: removidas as chamadas CoinGecko (news, global). Mantido apenas alternative.me (fear/greed) + cryptocompare (news).
+4. **COIN_IDS atualizados** — 10 arquivos com `COIN_IDS`/`coinIds` migrados de slugs CoinGecko (`"ethereum"`, `"bitcoin"`) para currency IDs numéricos SoSoValue (`"1673723677362319867"`, `"1673723677362319866"`): `pair-price-feed.ts`, `volatility-tracker.ts`, `professor.ts`, `real-swap-executor.ts`, `position-manager.ts`, `agentes-do-pregão.ts`, `corretor.ts`, `escriturario.ts`, `trading-nanopayments.ts`, `gas-price-oracle.ts`.
+5. **Agentes deprecitados** — `coingecko-agent.ts` e `coinmarketcap-agent.ts` agora redirecionam para `sosovalue-price-agent.ts` (código original removido, compatibilidade mantida).
+6. **API Key** — `SOSO_API_KEY` adicionada ao `.env.local`. Chave gratuita (20 req/min, demo plan).
+7. **cirBTC/mcirBTC** — mapeados para currency_id do BTC (`"1673723677362319866"`), já que não estão listados na SoSoValue.
+
+### Current State
+- Preços agora via SoSoValue API em vez de CoinGecko.
+- Rate limit: 20 req/min (demo plan). Cache de 15s + spacing de 3s entre chamadas.
+- Chave: `SOSO-2ca874f7857946529d23c707520dcd17` (válida, testada — BTC $59,538).
+- Build compila sem novos erros (4 erros TS pré-existentes não relacionados).
 
 ## Session Summary (24/06/2026) — Segunda sessão
 

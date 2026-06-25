@@ -85,7 +85,7 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
        │   └── networks.ts / real-swap-executor.ts ← Config de redes
        │
        └── AGENTES DE MERCADO (dados)
-           ├── coingecko-agent.ts
+            ├── coingecko-agent.ts (deprecated → SoSoValue via sosovalue-price-agent.ts)
            ├── coinmarketcap-agent.ts
            ├── news-agent.ts
            ├── market-agent.ts
@@ -215,11 +215,12 @@ MAX_POSITION_AGE_MS = 12 * 60 * 60 * 1000
 // 12h — força fechamento SÓ se a posição já viu lucro (peakProfitPercent > 0)
 // Se nunca lucrou, segura até o stop loss ou o mercado virar
 
-STALE_NO_PROFIT_MS = 4 * 60 * 60 * 1000
-// 4h sem lucro — NÃO fecha mais (só loga aviso). Espera mercado virar.
+STALE_NO_PROFIT_MS = 60_000 // REMOVIDO: incondicional de 4h removido. Staircase não segura posição.
+// Posição sem lucro é fechada pelo stale force close em 5min.
 
-STALE_FORCE_CLOSE_MS = 30 * 60 * 1000
-// 30min sem lucro — FECHA para liberar vaga (impede posição fantasma de travar o sistema)
+STALE_FORCE_CLOSE_MS = 5 * 60 * 1000
+// 5min sem lucro — FECHA para liberar vaga (removeu exceção de hold após 4h)
+// Arc testnet: 1min (staleThreshold = 60_000)
 
 MAX_LOSS_PERCENT = -15
 // Stop loss máximo: se perda passar de 15%, fecha imediatamente
@@ -257,7 +258,50 @@ MIN_LUCRO_LIQUIDO_USD = 0.02
 // trend "stable"  → 1.0
 ```
 
-### 4.3 Trading Pairs (real-swap-executor.ts)
+### 4.3 Trend Filter (agentes-do-pregão.ts)
+
+```typescript
+// Histórico rolling de 10 min por token (PRICE_HISTORY)
+TREND_PERIOD_MS = 10 * 60 * 1000   // 10 minutos
+TREND_THRESHOLD = 0.02              // 2% — movimento mínimo para considerar tendência
+TREND_CHECK_INTERVAL_MS = 60_000    // verifica a cada 1 min
+
+// Comportamento:
+//   getTrendDirection(token) → "up" | "down" | "flat"
+//   - "up":   preço subiu > 2% nos últimos 10 min → bloqueia VENDAS
+//   - "down": preço caiu > 2% nos últimos 10 min → bloqueia COMPRAS
+//   - "flat": sem tendência forte → deixa fluir
+// Aplicado em executarCicloAgentes() após ajuste de confiança por volatilidade
+
+// registraPreco() é chamada a cada fetchTokenPrice bem-sucedido
+```
+
+### 4.4 Modo Papel (agentes-do-pregão.ts + pregão.ts)
+
+```typescript
+// Toggle via localStorage "arcflow_paper_mode" = "true" | "false"
+// Botão "📝 Papel" no PregãoDashboard
+// 
+// Quando ativo:
+//   executarPacotes() em pregão.ts: SKIPA batchApprove + executeBatch
+//   Simula cada swap com o expectedToAmount da quote
+//   Registra posições (openPosition/closePosition) normalmente
+//   Marca ordens como concluídas com txHash "paper_<timestamp>"
+//   Útil para treinar agentes sem gastar gas real
+```
+
+### 4.5 Batches por Token (professor.ts)
+
+```typescript
+// gerarPacotes() agora agrupa ordens pendentes do Pregão por PAR
+// dentro de cada rede (antes: umbrella por rede)
+// Cada par vira um pacote atômico separado:
+//   WMATIC→USDC + USDC→WMATIC → mesmo pacote (delta neutro)
+//   WETH→USDC → pacote separado
+// Garante atomicidade: compra + venda do mesmo token no mesmo batch
+```
+
+### 4.6 Trading Pairs (real-swap-executor.ts)
 
 ```typescript
 // Cada rede tem seus pares disponíveis:
@@ -404,6 +448,7 @@ MIN_BALANCE_THRESHOLD = 0.50  // $0.50 — saldos abaixo disso são ignorados no
 | `arcflow_professor_palpites` | Palpites pendentes e avaliados | professor.ts |
 | `arcflow_parametros_robos` | Parâmetros ajustados por robô | parametros-robos.ts |
 | `arcflow_pair_sector` | Avaliações de pares por rede | pair-sector.ts |
+| `arcflow_paper_mode` | Modo Papel (simulação sem gas) ativado/desativado | agentes-do-pregão.ts |
 
 ### O que é perdido no F5 (volátil):
 
@@ -501,8 +546,9 @@ Se preço cai para $3100 → lucro 3.3% → nível atual = 1
 ### Regras:
 - Staircase só ativa após lucro > 0% (nível 0 = 0%)
 - Close só acontece se pico > nível 0 (evita fechar no prejuízo)
-- **Stale (4h sem lucro)**: NÃO fecha mais — segura e espera o mercado virar
-- **Stale force close (30min sem lucro)**: FECHA posição que nunca lucrou para liberar vaga
+- **Stale (4h sem lucro)**: REMOVIDO — não segura mais posição sem lucro
+- **Stale force close (5min sem lucro)**: FECHA incondicionalmente posição parada para liberar vaga (antes 30min, depois 5min). Testnet: 1min.
+- **Venda break-even**: liberada após stale threshold (5min mainnet, 1min testnet) — antes era bloqueada "só Staircase pode fechar"
 - **Expired (12h)**: só força fechamento se a posição já viu lucro (peakProfitPercent > 0)
 - **Stop loss (-15%)**: única exceção que fecha no prejuízo (proteção catastrófica)
 - Ao fechar, injeta 3 OKs no Pregão com `toToken: "USDC"` sempre
@@ -632,6 +678,9 @@ import { realSwap, type SwapResult } from "./real-swap-executor"
 - PositionManager salva a cada open/close
 
 ### Adicionar Novo Token
+
+> **Nota:** Os currency IDs no COIN_IDS agora são IDs numéricos da SoSoValue (ex: `"1673723677362319867"` para ETH), não mais slugs do CoinGecko (ex: `"ethereum"`). cirBTC e mcirBTC usam o currency_id do BTC (`"1673723677362319866"`).
+
 Se for adicionar um novo token, atualizar em **todos** os lugares:
 1. `real-swap-executor.ts`: `NETWORKS.rede.tokens` + `TRADING_PAIRS`
 2. `pair-price-feed.ts`: `COIN_IDS`
@@ -730,7 +779,7 @@ Se for adicionar um novo token, atualizar em **todos** os lugares:
 - Pontos acima da média → boost na confiança
 
 ### Feature: "Variação 24h como meta de lucro" (position-manager.ts)
-- `fetchTokenChange24h(token)` busca variação percentual 24h da CoinGecko
+- `fetchTokenChange24h(token)` busca variação percentual 24h da SoSoValue (via sosovalue-price-agent.ts)
 - `/api/price` agora retorna `{ prices, change24h }` com `include_24hr_change=true`
 - No sell loop: só vende se `profitPercent >= variation24h * 0.9`
 - Exemplo: ETH varia 3% → só vende com lucro >= 2.7%
@@ -930,7 +979,7 @@ Zona 3 (baixo): ActiveTrades + AgentGrid — posições ativas e ranking
 
 ### 18.2 Comportamento
 - Ativado automaticamente quando a rede é `arc` (via `executarCicloPregueiros`)
-- Stork como fonte primária → CoinGecko como fallback
+- Stork como fonte primária → SoSoValue (via sosovalue-price-agent.ts) como fallback
 - `pairPriceFeed.setUseStork(true/false)` para controle programático
 - `getTemporalNumericValueUnsafeV1(bytes32 id)` → retorna preço com 18 decimais
 
@@ -1756,3 +1805,28 @@ cirBTC (Circle Wrapped Bitcoin) agora integrado como token real no Ethereum main
 - [ ] Verificar se o ciclo gera pacotes com cirBTC no log: "[PROFESSOR] 📦 Pacote gerado..."
 - [ ] Testar swap real USDC→cirBTC no Ethereum mainnet (gas ~$1.50)
 - [ ] Escalar capital inicial para $50-100 para tornar gas irrelevante no Ethereum
+
+---
+
+## 29. CHANGELOG — 24/06/2026 (Terceira sessão: Migração CoinGecko → SoSoValue)
+
+### 29.1 SoSoValue Price Agent
+- **Novo**: `lib/sosovalue-price-agent.ts` — agente de preços usando a API oficial da SoSoValue (`openapi.sosovalue.com/openapi/v1`). Cache de 15s, rate limiting de 3s entre chamadas, currency IDs numéricos mapeados do endpoint `/currencies`.
+- **Modificado**: `app/api/price/route.ts` — backend trocado de CoinGecko (`api.coingecko.com/api/v3/simple/price`) para SoSoValue (`/currencies/{id}/market-snapshot`). Mesmo contrato de API (`?ids=...` → `{ prices, change24h }`).
+- **Modificado**: `app/api/market-data/route.ts` — removidas as chamadas CoinGecko (news, global). Mantido apenas alternative.me (fear/greed) + cryptocompare (news).
+
+### 29.2 COIN_IDS Migrados
+- **10 arquivos** migrados de slugs CoinGecko (`"ethereum"`, `"bitcoin"`) para currency IDs numéricos SoSoValue (`"1673723677362319867"`, `"1673723677362319866"`): `pair-price-feed.ts`, `volatility-tracker.ts`, `professor.ts`, `real-swap-executor.ts`, `position-manager.ts`, `agentes-do-pregão.ts`, `corretor.ts`, `escriturario.ts`, `trading-nanopayments.ts`, `gas-price-oracle.ts`.
+- `cirBTC`/`mcirBTC` mapeados para currency_id do BTC (`"1673723677362319866"`), já que não estão listados na SoSoValue.
+
+### 29.3 Agentes Deprecitados
+- `coingecko-agent.ts` e `coinmarketcap-agent.ts` — código original removido, agora redirecionam para `sosovalue-price-agent.ts` (compatibilidade mantida).
+
+### 29.4 API Key
+- `SOSO_API_KEY` adicionada ao `.env.local`. Chave gratuita (20 req/min, demo plan).
+
+### 29.5 Estado Atual
+- Preços agora via SoSoValue API em vez de CoinGecko.
+- Rate limit: 20 req/min (demo plan). Cache de 15s + spacing de 3s entre chamadas.
+- Chave: `SOSO-2ca874f7857946529d23c707520dcd17` (válida, testada — BTC $59,538).
+- Build compila sem novos erros (4 erros TS pré-existentes não relacionados).

@@ -1,7 +1,7 @@
 // lib/pair-price-feed.ts
 // Feed de preço real por par, compartilhado entre quantum-wave.ts e pregueiro.ts.
 //
-// FIX: Rate limiting para evitar flood na CoinGecko (limite gratuito ~30 req/min)
+// FIX: Rate limiting para evitar flood na SoSoValue (limite gratuito ~30 req/min)
 // - Batch de requisições: agrupa múltiplos coinIds em uma única chamada
 // - Cache estendido: 30s em vez de 15s para tokens voláteis, 60s para stablecoins
 // - Fila de requisições: máximo 1 batch a cada 2s
@@ -24,13 +24,13 @@ const STORK_FEED_IDS: Record<string, string> = {
 };
 
 const COIN_IDS: Record<string, string> = {
-  WETH: "ethereum", WMATIC: "matic-network", WBTC: "bitcoin",
-  USDC: "usd-coin", USDT: "tether", DAI: "dai", EURC: "eurc",
-  ARB: "arbitrum", SOL: "solana",
-  cirBTC: "bitcoin", mcirBTC: "bitcoin",
+  WETH: "1673723677362319867", WMATIC: "1730847291434274818", WBTC: "1673723677362319866",
+  USDC: "1673723677362319870", USDT: "1673723677362319868", DAI: "1673723677362319879", EURC: "1673723677362320241",
+  ARB: "1673723677362319902", SOL: "1673723677362319875",
+  cirBTC: "1673723677362319866", mcirBTC: "1673723677362319866",
 };
 
-// FIX: Cache estendido para reduzir requisições à CoinGecko
+// FIX: Cache estendido para reduzir requisições à SoSoValue
 // Stablecoins mudam muito pouco — cache de 60s
 // Tokens voláteis — cache de 30s (era 15s, duplicado)
 const CACHE_MS_STABLE = 60_000
@@ -39,7 +39,7 @@ const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 
 const HISTORY_MAX_POINTS = 20;
 
-// FIX: Rate limiting do batch — mínimo 2s entre batches para não exceder limite CoinGecko
+// FIX: Rate limiting do batch — mínimo 2s entre batches para não exceder limite SoSoValue
 const MIN_BATCH_INTERVAL_MS = 2_000
 let lastBatchTime = 0
 let pendingBatchIds: Set<string> = new Set()

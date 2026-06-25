@@ -21,8 +21,8 @@ class Escriturário {
 
   private async fetchTokenPrice(token: string): Promise<number> {
     const coinIds: Record<string, string> = {
-      WETH: "ethereum", WMATIC: "matic-network", ARB: "arbitrum",
-      WBTC: "bitcoin", SOL: "solana", cirBTC: "bitcoin",
+      WETH: "1673723677362319867", WMATIC: "1730847291434274818", ARB: "1673723677362319902",
+      WBTC: "1673723677362319866", SOL: "1673723677362319875", cirBTC: "1673723677362319866",
     }
     const coinId = coinIds[token] ?? token.toLowerCase()
     try {
@@ -117,14 +117,12 @@ class Escriturário {
 
     this.log(`💰 Valor preparado: $${valorTrade.toFixed(2)} ${fromToken} → ${ordem.toToken}`)
 
-    // Mainnet: pacotes são gerenciados pelo Professor + SetorPacotes + Pregão
-    // Escriturário só executa direto em testnet
+    // Mainnet: batch via Professor + UltraFlash (pacotes)
     if (!isTestnet) {
-      this.log(`📦 Ordem ${ordem.par} encaminhada — Professor gerencia pacotes em mainnet`)
+      this.log(`📦 Ordem ${ordem.par} na mainnet — aguardando batch via Professor`)
       return
     }
 
-    // Testnet: executa direto (sem batch)
     this.log(`🔗 Encaminhando para o Corretor executar...`)
     await corretor.executar(ordem, valorTrade)
   }

@@ -15,7 +15,7 @@ import { NETWORKS, realSwap, isStable } from "@/lib/real-swap-executor"
 import type { NetworkKey } from "@/lib/real-swap-executor"
 import { caixa } from "@/lib/caixa"
 import { resumeFromPanic, setTestnetMode } from "@/lib/circuit-breaker"
-import { AGENTES_NOMES, AGENTE_CORES, getPregãoAllowedBalance, setPregãoAllowedBalance } from "@/lib/agentes-do-pregão"
+import { AGENTES_NOMES, AGENTE_CORES, getPregãoAllowedBalance, setPregãoAllowedBalance, isPaperMode, setPaperMode } from "@/lib/agentes-do-pregão"
 import { positionManager } from "@/lib/position-manager"
 import { narrador } from "@/lib/narrator"
 import { contratante } from "@/lib/contratante"
@@ -445,14 +445,12 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         result.results.forEach((r: any, i: number) => {
           addLog(`  ${i+1}. ${r.operation} → ${r.success ? '✅' : '❌'} ${r.duration}ms${r.error ? ' - ' + r.error : ''}`)
         })
-        alert(`✅ Stress Test concluído!\n\nTotal: ${result.total}\nSucesso: ${result.success}\nFalhas: ${result.failed}`)
       } else {
         setStressTestResult({
           success: false,
           details: data.error || "Erro desconhecido"
         })
         addLog(`❌ Stress Test falhou: ${data.error}`)
-        alert(`❌ Stress Test falhou: ${data.error}`)
       }
     } catch (error) {
       setStressTestResult({
@@ -719,6 +717,20 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
             🔒 Fechar Posição ({openPositions})
           </button>
         )}
+        <button
+          onClick={() => {
+            const novo = !isPaperMode()
+            setPaperMode(novo)
+            addLog(`📝 Modo Papel ${novo ? "ativado" : "desativado"} — trades serão ${novo ? "simulados sem gas" : "executados na rede"}`)
+          }}
+          style={{
+            padding: "8px 12px", fontSize: 11, fontWeight: "bold",
+            background: isPaperMode() ? "#f59e0b" : "rgba(255,255,255,0.1)",
+            color: "#fff", border: isPaperMode() ? "1px solid #f59e0b" : "1px solid rgba(255,255,255,0.2)",
+            borderRadius: 8, cursor: "pointer"
+          }}>
+          📝 Papel
+        </button>
       </div>
 
       {/* 🧪 STRESS TEST COM PRIVATE KEY - APENAS NA ARC */}

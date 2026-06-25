@@ -16,11 +16,82 @@ import { pairSector } from "./pair-sector"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 
+// ─── Filtro de Tendência (ADX simplificado) ───
+// Armazena histórico de preços para detectar tendências fortes
+// Em tendência forte (>2% no período), pausa o lado perdedor do delta neutro
+const PRICE_HISTORY: Map<string, { price: number; timestamp: number }[]> = new Map()
+const TREND_PERIOD_MS = 10 * 60 * 1000 // 10 minutos
+const TREND_THRESHOLD = 0.02 // 2%
+const TREND_CHECK_INTERVAL_MS = 60_000 // verifica a cada 1 min
+
+let ultimaVerificacaoTendencia = 0
+
+function registrarPreco(token: string, price: number) {
+  if (price <= 0) return
+  const agora = Date.now()
+  if (!PRICE_HISTORY.has(token)) PRICE_HISTORY.set(token, [])
+  const hist = PRICE_HISTORY.get(token)!
+  hist.push({ price, timestamp: agora })
+  // Mantém só os últimos TREND_PERIOD_MS
+  while (hist.length > 0 && agora - hist[0].timestamp > TREND_PERIOD_MS) {
+    hist.shift()
+  }
+}
+
+function getTrendDirection(token: string): "up" | "down" | "flat" {
+  const hist = PRICE_HISTORY.get(token)
+  if (!hist || hist.length < 2) return "flat"
+  const oldest = hist[0]
+  const newest = hist[hist.length - 1]
+  const change = (newest.price - oldest.price) / oldest.price
+  if (change > TREND_THRESHOLD) return "up"
+  if (change < -TREND_THRESHOLD) return "down"
+  return "flat"
+}
+
+function aplicarFiltroTendencia(votes: AgentPairVote[]): AgentPairVote[] {
+  const agora = Date.now()
+  if (agora - ultimaVerificacaoTendencia < TREND_CHECK_INTERVAL_MS) return votes
+  ultimaVerificacaoTendencia = agora
+
+  const tokensAfetados = new Set<string>()
+  for (const v of votes) {
+    const tokenVolatil = v.action === "buy" ? v.toToken : v.fromToken
+    if (STABLES.has(tokenVolatil)) continue
+    const direcao = getTrendDirection(tokenVolatil)
+    if (direcao === "flat") continue
+    // Se tendência forte UP → pausa vendas (não vende em tendência de alta)
+    // Se tendência forte DOWN → pausa compras (não compra em tendência de baixa)
+    if ((direcao === "up" && v.action === "sell") || (direcao === "down" && v.action === "buy")) {
+      tokensAfetados.add(v.agentName)
+    }
+  }
+
+  if (tokensAfetados.size === 0) return votes
+
+  const filtrados = votes.filter(v => !tokensAfetados.has(v.agentName))
+  const removidos = votes.length - filtrados.length
+  pregão.adicionarLog(`🧭 Filtro de Tendência: ${removidos} votos removidos (${[...tokensAfetados].join(", ")} foram contra tendência forte)`)
+  return filtrados
+}
+
+// ─── Modo Papel ───
+const PAPER_MODE_KEY = "arcflow_paper_mode"
+export function isPaperMode(): boolean {
+  if (typeof window === "undefined") return false
+  return localStorage.getItem(PAPER_MODE_KEY) === "true"
+}
+export function setPaperMode(enabled: boolean): void {
+  if (typeof window === "undefined") return
+  localStorage.setItem(PAPER_MODE_KEY, enabled ? "true" : "false")
+}
+
 function getMinTradeSize(network: NetworkKey): number {
   const net = NETWORKS[network]
   if (!net || net.isTestnet) return 2
   if (network === "ethereum") return 50
-  if (network === "polygon" || network === "base" || network === "arbitrum") return 2
+  if (network === "polygon") return 6.50
+  if (network === "base" || network === "arbitrum") return 2
   return 20
 }
 
@@ -94,6 +165,10 @@ async function avaliarVotosPassados(redeAtual: NetworkKey) {
       profitPercent = ((voto.priceAtVote - priceAgora) / voto.priceAtVote) * 100
     }
 
+    // Só avalia se movimento > 0.1% (mesmo threshold do Professor)
+    // Evita penalizar agentes por ruído em mercado lateral
+    if (Math.abs(profitPercent) < 0.1) continue
+
     const simulatedAmount = 5
     const simulatedProfit = simulatedAmount * (profitPercent / 100)
 
@@ -117,7 +192,7 @@ async function avaliarVotosPassados(redeAtual: NetworkKey) {
 
     const score = accountant.getAgentScore(voto.agentName)
     if (score && score.points > 0) {
-      const stake = score.points * (voto.confidence / 100) * 0.15
+      const stake = Math.min(score.points * (voto.confidence / 100) * 0.15, 20)
       const isCorrect = profitPercent > 0
       results.push({
         agentName: voto.agentName,
@@ -202,9 +277,9 @@ function agentAssigned(agentName: string, pairLabel: string): boolean {
 
 async function getTokenPrice(token: TokenSymbol): Promise<number> {
   const coinIds: Record<string, string> = {
-    WETH: "ethereum", WMATIC: "matic-network", ARB: "arbitrum",
-    WBTC: "bitcoin", USDC: "usd-coin", EURC: "eurc",
-    cirBTC: "bitcoin",
+    WETH: "1673723677362319867", WMATIC: "1730847291434274818", ARB: "1673723677362319902",
+    WBTC: "1673723677362319866", USDC: "1673723677362319870", EURC: "1673723677362320241",
+    cirBTC: "1673723677362319866",
   }
   const coinId = coinIds[token]
   if (!coinId) return 1.0
@@ -407,8 +482,8 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     const allowed = getPregãoAllowedBalance();
     const saldoEfetivo = allowed === Infinity ? maiorStable : Math.min(maiorStable, allowed);
     const posAbertas = positionManager.getOpenPositions().length;
-    // Usa o menor minTradeSize entre as redes alvo
-    const minTradeSize = Math.min(...networksToScan.map(n => getMinTradeSize(n)))
+    // Usa o maior minTradeSize entre as redes alvo (garante que cabe em todas)
+    const minTradeSize = Math.max(...networksToScan.map(n => getMinTradeSize(n)))
     maxPositions = Math.max(1, Math.floor((saldoEfetivo * 0.9) / minTradeSize))
     const vagas = Math.max(1, maxPositions - posAbertas);
 
@@ -1018,6 +1093,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     if (STABLES.has(tokenVolatil)) continue
     const precoVoto = await positionManager.fetchTokenPrice(tokenVolatil as TokenSymbol).catch(() => 0)
     if (precoVoto > 0) {
+      registrarPreco(tokenVolatil, precoVoto)
       registrarVoto({
         agentName: v.agentName,
         fromToken: v.fromToken,
@@ -1042,6 +1118,9 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       }
     }
   }
+
+  // 🧭 Filtro de Tendência: remove votos contra tendência forte
+  votes = aplicarFiltroTendencia(votes)
 
   for (const v of votes) {
     pregão.adicionarLog(`🗳️ ${v.agentName} → ${v.pair} (${v.confidence}%)`)
@@ -1155,7 +1234,27 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       const minViableTrade = (getMinProfitReal(pairNet) + gasCost) / Math.max(0.001, expectedReturn - spreadPct)
       const minSizeForCheck = getMinTradeSize(pairNet)
 
-      if (valorFinal < minSizeForCheck) {
+      const isTestnetNet = NETWORKS[pairNet]?.isTestnet ?? false
+      if (isTestnetNet) {
+        pregão.adicionarLog(`🧪 Testnet volatile ${agreedPair.pair}: ignorando threshold — executando`)
+        pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair} em ${pairNet} (${agreedPair.fromToken}→${agreedPair.toToken})`)
+        const precoPalpite = await positionManager.fetchTokenPrice(agreedPair.toToken as TokenSymbol).catch(() => 0)
+        for (const v of agreeingAgents) {
+          pregão.receberOK({
+            pregueiro: `Agente:${v.agentName}`,
+            rede: v.network,
+            par: v.pair,
+            confianca: v.confidence,
+            timestamp: Date.now(),
+            fromToken: v.fromToken,
+            toToken: v.toToken,
+            amountUsd,
+            direcao: v.action,
+            precoNoPalpite: precoPalpite || undefined,
+          })
+        }
+        vagasUsadas++
+      } else if (valorFinal < minSizeForCheck) {
         pregão.adicionarLog(`⏳ Trade $${valorFinal.toFixed(2)} abaixo do mínimo $${minSizeForCheck.toFixed(2)} — pulando`)
       } else if (minViableTrade > 0 && valorFinal < minViableTrade) {
         pregão.adicionarLog(`⏳ Mercado pouco volátil — trade de $${valorFinal.toFixed(2)} não cobre custos (precisa ~$${minViableTrade.toFixed(2)}). Retorno esperado ${(expectedReturn * 100).toFixed(2)}% com ${(vol24h * 100).toFixed(1)}% vol`)
@@ -1195,7 +1294,24 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       const retornoUsd = expectedReturn * valorFinal
       const gasThreshold = gasCost * 1.5
 
-      if (retornoUsd < gasThreshold) {
+      const isTestnetNet = NETWORKS[pairNet]?.isTestnet ?? false
+      if (isTestnetNet) {
+        pregão.adicionarLog(`🧪 Testnet stable-stable ${agreedPair.pair}: ignorando threshold — executando`)
+        pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair} em ${pairNet} (${agreedPair.fromToken}→${agreedPair.toToken})`)
+        for (const v of agreeingAgents) {
+          pregão.receberOK({
+            pregueiro: `Agente:${v.agentName}`,
+            rede: v.network,
+            par: v.pair,
+            confianca: v.confidence,
+            timestamp: Date.now(),
+            fromToken: v.fromToken,
+            toToken: v.toToken,
+            amountUsd,
+            direcao: v.action,
+          })
+        }
+      } else if (retornoUsd < gasThreshold) {
         pregão.adicionarLog(`⏳ Stable-stable ${agreedPair.pair}: retorno esperado $${retornoUsd.toFixed(4)} < gas threshold $${gasThreshold.toFixed(4)} (gas $${gasCost.toFixed(4)} × 1.5) — bloqueado`)
       } else if (minViableTrade > 0 && valorFinal < minViableTrade) {
         pregão.adicionarLog(`⏳ Stable-stable ${agreedPair.pair}: retorno esperado ${(expectedReturn * 100).toFixed(3)}% não cobre gas ($${gasCost.toFixed(4)}) — precisa ~$${minViableTrade.toFixed(2)} de trade`)
@@ -1223,7 +1339,9 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       if (posVenda) {
         const currentPrice = await positionManager.fetchTokenPrice(posVenda.boughtToken as TokenSymbol)
         const profitPercent = ((currentPrice - posVenda.entryPrice) / posVenda.entryPrice) * 100
-        if (profitPercent <= 0) {
+        const idade = Date.now() - posVenda.entryTimestamp
+        const staleThreshold = NETWORKS[pairNet]?.isTestnet ? 60_000 : 300_000 // testnet: 1min, mainnet: 5min
+        if (profitPercent <= 0 && idade < staleThreshold) {
           const label = profitPercent < 0 ? `no prejuízo (${profitPercent.toFixed(1)}%)` : `break-even (0.0%)`
           pregão.adicionarLog(`⏳ ${agreedPair.pair}: posição ${agreedPair.fromToken} ${label} — só Staircase pode fechar`)
         } else {

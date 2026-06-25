@@ -1,24 +1,11 @@
+// DEPRECATED: CoinMarketCap replaced by SoSoValue. Kept for backward compatibility.
+import { fetchPrice } from "@/lib/sosovalue-price-agent";
+
 class CoinmarketcapAgent {
-  private priceCache: Map<string, { price: number; ts: number }> = new Map();
   private marketDataCache: { data: any; ts: number } | null = null;
 
   async getPrice(symbol: string): Promise<number> {
-    const cached = this.priceCache.get(symbol);
-    if (cached && Date.now() - cached.ts < 60000) return cached.price;
-
-    const coinId = this._symbolToCoinId(symbol);
-    try {
-      const res = await fetch(`/api/price?ids=${coinId}`);
-      if (!res.ok) return this._randomPrice(symbol);
-      const data = await res.json();
-      const price = data[coinId] ?? this._randomPrice(symbol);
-      if (price > 0) {
-        this.priceCache.set(symbol, { price, ts: Date.now() });
-      }
-      return price;
-    } catch {
-      return this._randomPrice(symbol);
-    }
+    return fetchPrice(symbol);
   }
 
   async getGlobalMetrics() {
@@ -53,25 +40,12 @@ class CoinmarketcapAgent {
     }
   }
 
-  private _symbolToCoinId(symbol: string): string {
-    const map: Record<string, string> = {
-      BTC: 'bitcoin',
-      ETH: 'ethereum',
-      USDC: 'usd-coin',
-      EURC: 'eurc',
-      POL: 'matic-network',
-      SOL: 'solana',
-      ARB: 'arbitrum',
-    };
-    return map[symbol.toUpperCase()] ?? symbol.toLowerCase();
+  async getTopGainers(limit: number = 10): Promise<Array<{ symbol: string; price: number; change24h: number }>> {
+    return [];
   }
 
-  private _randomPrice(symbol: string): number {
-    const basePrices: Record<string, number> = {
-      BTC: 68000, ETH: 1850, USDC: 1, EURC: 1, POL: 0.35, SOL: 145, ARB: 0.55,
-    };
-    const base = basePrices[symbol.toUpperCase()] ?? 1;
-    return base + (Math.random() - 0.5) * base * 0.03;
+  async getTrending(): Promise<Array<{ symbol: string; name: string }>> {
+    return [];
   }
 
   private async _fetchMarketData() {

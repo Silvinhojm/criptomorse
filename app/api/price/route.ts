@@ -1,91 +1,76 @@
 import { NextRequest } from 'next/server';
-
-const COINGECKO_BASE = 'https://api.coingecko.com/api/v3';
+import { fetchPrices } from '@/lib/sosovalue-price-agent';
 
 const FALLBACK_PRICES: Record<string, number> = {
-  'ethereum': 1850,
-  'matic-network': 0.078,
-  'bitcoin': 68000,
-  'arbitrum': 0.55,
-  'solana': 145,
-  'eurc': 1.08,
-  'usd-coin': 1.0,
+  '1673723677362319866': 68000,  // btc
+  '1673723677362319867': 1850,   // eth
+  '1730847291434274818': 0.078,  // POL
+  '1673723677362319902': 0.55,   // arb
+  '1673723677362319875': 145,    // sol
+  '1673723677362320241': 1.08,   // eurc
+  '1673723677362319870': 1.0,    // USDC
 };
 
 const FALLBACK_CHANGE: Record<string, number> = {
-  'ethereum': 2.5,
-  'matic-network': 3.0,
-  'bitcoin': 1.5,
-  'arbitrum': 4.0,
-  'solana': 3.5,
-  'eurc': 0.5,
-  'usd-coin': 0.1,
+  '1673723677362319866': 1.5,
+  '1673723677362319867': 2.5,
+  '1730847291434274818': 3.0,
+  '1673723677362319902': 4.0,
+  '1673723677362319875': 3.5,
+  '1673723677362320241': 0.5,
+  '1673723677362319870': 0.1,
 };
 
-let priceCache: { data: Record<string, { usd: number; usd_24h_change?: number }>; timestamp: number } | null = null;
+let priceCache: { prices: Record<string, number>; change24h: Record<string, number>; ts: number } | null = null;
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const ids = searchParams.get('ids');
-    if (!ids) {
+    const idsParam = searchParams.get('ids');
+    if (!idsParam) {
       return Response.json({ error: 'Missing ids param' }, { status: 400 });
     }
 
+    const ids = idsParam.split(',').filter(Boolean);
     const cached = priceCache;
-    if (cached && Date.now() - cached.timestamp < 15000) {
+    if (cached && Date.now() - cached.ts < 15000) {
       const prices: Record<string, number> = {};
       const change24h: Record<string, number> = {};
-      for (const id of ids.split(',')) {
-        prices[id] = cached.data[id]?.usd ?? FALLBACK_PRICES[id] ?? 1.0;
-        change24h[id] = cached.data[id]?.usd_24h_change ?? FALLBACK_CHANGE[id] ?? 0;
-      }
-      return Response.json({ prices, change24h });
-    }
-
-    const res = await fetch(
-      `${COINGECKO_BASE}/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`,
-      { signal: AbortSignal.timeout(8000) }
-    );
-
-    if (!res.ok) {
-      const prices: Record<string, number> = {};
-      const change24h: Record<string, number> = {};
-      if (cached) {
-        for (const id of ids.split(',')) {
-          prices[id] = cached.data[id]?.usd ?? FALLBACK_PRICES[id] ?? 1.0;
-          change24h[id] = cached.data[id]?.usd_24h_change ?? FALLBACK_CHANGE[id] ?? 0;
-        }
-      } else {
-        for (const id of ids.split(',')) {
-          prices[id] = FALLBACK_PRICES[id] ?? 1.0;
-          change24h[id] = FALLBACK_CHANGE[id] ?? 0;
+      let allCached = true;
+      for (const id of ids) {
+        if (cached.prices[id] !== undefined) {
+          prices[id] = cached.prices[id];
+          change24h[id] = cached.change24h[id] ?? 0;
+        } else {
+          allCached = false;
+          break;
         }
       }
-      return Response.json({ prices, change24h });
+      if (allCached) return Response.json({ prices, change24h });
     }
 
-    const data = await res.json();
-    priceCache = { data, timestamp: Date.now() };
-
+    const result = await fetchPrices(ids);
     const prices: Record<string, number> = {};
     const change24h: Record<string, number> = {};
-    for (const id of ids.split(',')) {
-      prices[id] = data[id]?.usd ?? FALLBACK_PRICES[id] ?? 1.0;
-      change24h[id] = data[id]?.usd_24h_change ?? FALLBACK_CHANGE[id] ?? 0;
+    for (const id of ids) {
+      prices[id] = result.prices[id] ?? FALLBACK_PRICES[id] ?? 1.0;
+      change24h[id] = result.change24h[id] ?? FALLBACK_CHANGE[id] ?? 0;
     }
+
+    priceCache = { prices, change24h, ts: Date.now() };
     return Response.json({ prices, change24h });
   } catch {
-    const ids = new URL(request.url).searchParams.get('ids') ?? '';
+    const idsParam = new URL(request.url).searchParams.get('ids') ?? '';
+    const ids = idsParam.split(',').filter(Boolean);
     const prices: Record<string, number> = {};
     const change24h: Record<string, number> = {};
     if (priceCache) {
-      for (const id of ids.split(',')) {
-        prices[id] = priceCache.data[id]?.usd ?? FALLBACK_PRICES[id] ?? 1.0;
-        change24h[id] = priceCache.data[id]?.usd_24h_change ?? FALLBACK_CHANGE[id] ?? 0;
+      for (const id of ids) {
+        prices[id] = priceCache.prices[id] ?? FALLBACK_PRICES[id] ?? 1.0;
+        change24h[id] = priceCache.change24h[id] ?? FALLBACK_CHANGE[id] ?? 0;
       }
     } else {
-      for (const id of ids.split(',')) {
+      for (const id of ids) {
         prices[id] = FALLBACK_PRICES[id] ?? 1.0;
         change24h[id] = FALLBACK_CHANGE[id] ?? 0;
       }

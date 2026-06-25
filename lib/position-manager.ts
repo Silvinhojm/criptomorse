@@ -32,7 +32,7 @@ const MAX_POSITION_AGE_MS = 12 * 60 * 60 * 1000;
 const POSITIONS_STORAGE_KEY = "arcflow_open_positions";
 const MAX_LOSS_PERCENT = -15;
 const STALE_NO_PROFIT_MS = 4 * 60 * 60 * 1000;
-const STALE_FORCE_CLOSE_MS = 30 * 60 * 1000; // 30min sem lucro → força fechamento
+const STALE_FORCE_CLOSE_MS = 5 * 60 * 1000; // 5min sem lucro → força fechamento
 
 // Tempo mínimo antes de considerar fechamento com lucro
 const MIN_PROFIT_HOLD_MS = 30 * 1000; // 30 segundos — flip mais rápido em micro-trades
@@ -141,16 +141,10 @@ class PositionManager {
       return "close";
     }
 
-    // Stale force close: 30min sem nunca lucrar → fecha para liberar vaga
+    // Stale force close: 5min sem lucro → fecha incondicionalmente
     if (age > STALE_FORCE_CLOSE_MS && pos.peakProfitPercent <= 0) {
-      pregão.adicionarLog(`⏰ ${pos.boughtToken}: ${(age / 60000).toFixed(0)}min sem lucro — forçando fechamento para liberar vaga`);
+      pregão.adicionarLog(`⏰ ${pos.boughtToken}: ${(age / 60000).toFixed(0)}min sem lucro — forçando fechamento`);
       return "close";
-    }
-
-    // Stale: nunca lucrou após N horas — segura, espera o mercado virar
-    if (age > STALE_NO_PROFIT_MS && pos.peakProfitPercent <= 0) {
-      pregão.adicionarLog(`⏰ ${pos.boughtToken}: ${(age / 3600000).toFixed(1)}h sem lucro — segurando (mercado pode virar)`);
-      return "hold";
     }
 
     // Expirada: 12h+ e já viu lucro — força fechamento
@@ -201,8 +195,8 @@ class PositionManager {
     if (cached && Date.now() - cached.timestamp < 15000) return cached.price;
 
     const coinIds: Record<string, string> = {
-      WETH: "ethereum", WMATIC: "matic-network", ARB: "arbitrum",
-      WBTC: "bitcoin", SOL: "solana", cirBTC: "bitcoin",
+      WETH: "1673723677362319867", WMATIC: "1730847291434274818", ARB: "1673723677362319902",
+      WBTC: "1673723677362319866", SOL: "1673723677362319875", cirBTC: "1673723677362319866",
     };
     const coinId = coinIds[token];
     if (!coinId) {
@@ -231,11 +225,11 @@ class PositionManager {
     }
   }
 
-  // Busca variação percentual 24h da CoinGecko
+  // Busca variação percentual 24h da SoSoValue
   async fetchTokenChange24h(token: TokenSymbol): Promise<{ change24h: number; variation24h: number }> {
     const coinIds: Record<string, string> = {
-      WETH: "ethereum", WMATIC: "matic-network", ARB: "arbitrum",
-      WBTC: "bitcoin", SOL: "solana", cirBTC: "bitcoin",
+      WETH: "1673723677362319867", WMATIC: "1730847291434274818", ARB: "1673723677362319902",
+      WBTC: "1673723677362319866", SOL: "1673723677362319875", cirBTC: "1673723677362319866",
     };
     const coinId = coinIds[token];
     if (!coinId) return { change24h: 0, variation24h: 2 };

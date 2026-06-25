@@ -56,8 +56,8 @@ async function getTokenPrice(token: TokenSymbol): Promise<number> {
   if (cached && Date.now() - cached.timestamp < 60000) return cached.price;
 
   const coinIds: Record<string, string> = {
-    WETH: "ethereum", WMATIC: "matic-network", ARB: "arbitrum",
-    WBTC: "bitcoin", USDC: "usd-coin", EURC: "eurc",
+    WETH: "1673723677362319867", WMATIC: "1730847291434274818", ARB: "1673723677362319902",
+    WBTC: "1673723677362319866", USDC: "1673723677362319870", EURC: "1673723677362320241",
   };
   const coinId = coinIds[token];
   if (!coinId) return 1.0;

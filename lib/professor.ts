@@ -5,6 +5,7 @@ import { narrador } from "./narrator"
 import { pairSector, type ParPerformance } from "./pair-sector"
 import { accountant } from "./accountant"
 import { setorPacotes, type TradeIntent } from "./setor-pacotes"
+import { pregão } from "./pregão"
 import { TRADING_PAIRS, NETWORKS, realSwap, type TokenSymbol, type NetworkKey } from "./real-swap-executor"
 
 export interface PalpiteRobo {
@@ -110,10 +111,10 @@ class Professor {
 
   private async _avaliar(palpite: PalpiteRobo) {
     const tokenVolatil = palpite.direcao === "buy" ? palpite.toToken : palpite.fromToken
-    // Pula tokens sem price feed real (CoinGecko) — evita streak negativo falso
+    // Pula tokens sem price feed real (SoSoValue) — evita streak negativo falso
     const COIN_IDS: Record<string, string> = {
-      WETH: "ethereum", WMATIC: "matic-network", ARB: "arbitrum",
-      WBTC: "bitcoin", SOL: "solana", cirBTC: "bitcoin",
+      WETH: "1673723677362319867", WMATIC: "1730847291434274818", ARB: "1673723677362319902",
+      WBTC: "1673723677362319866", SOL: "1673723677362319875", cirBTC: "1673723677362319866",
     }
     if (!COIN_IDS[tokenVolatil]) return
 
@@ -243,12 +244,78 @@ class Professor {
   }
 
   async gerarPacotes(): Promise<void> {
+    // ─── 1. Consumir ordens pendentes do Pregão ───
+    const pendentes = pregão.getTodasOrdens()
+      .filter(o => o.status === "pronto" || o.status === "preparando")
+    if (pendentes.length > 0) {
+      const porRede = new Map<string, typeof pendentes>()
+      for (const ordem of pendentes) {
+        const rede = ordem.rede
+        if (!porRede.has(rede)) porRede.set(rede, [])
+        porRede.get(rede)!.push(ordem)
+      }
+      for (const [rede, ordens] of porRede) {
+        const net = NETWORKS[rede as NetworkKey]
+        if (!net || net.isTestnet) continue
+
+        // ─── Agrupa ordens por par de tokens (batches atômicos) ───
+        const porPar = new Map<string, typeof ordens>()
+        for (const ordem of ordens) {
+          const par = ordem.par
+          if (!porPar.has(par)) porPar.set(par, [])
+          porPar.get(par)!.push(ordem)
+        }
+
+        for (const [parLabel, ordensPar] of porPar) {
+          const trades: TradeIntent[] = []
+          let totalAmount = 0
+          for (const ordem of ordensPar) {
+            const amount = ordem.amountUsd || 5.0
+            if (amount < 2.0) continue
+            totalAmount += amount
+            trades.push({
+              fromToken: ordem.fromToken as TokenSymbol,
+              toToken: ordem.toToken as TokenSymbol,
+              amount,
+              agentes: ordem.pregueiros.map(p => p.replace("Agente:", "")),
+              confianca: ordem.confiancaMedia,
+              expectedProfit: amount * (ordem.confiancaMedia / 100) * 0.003,
+              ordemId: ordem.id,
+            })
+          }
+          if (trades.length === 0) continue
+          const profitTotal = trades.reduce((s, t) => s + t.expectedProfit, 0)
+          const confMedia = Math.round(trades.reduce((s, t) => s + t.confianca, 0) / trades.length)
+          setorPacotes.registrarPacote({
+            id: `pacote_preg_${rede}_${parLabel.replace(/[^a-zA-Z0-9]/g, "_")}_${Date.now()}`,
+            rede: rede as NetworkKey,
+            trades,
+            expectedProfitTotal: profitTotal,
+            confiancaMedia: confMedia,
+            timestamp: Date.now(),
+            expiraEm: Date.now() + 30_000,
+          })
+          // Marca ordens como executando para não serem re-processadas
+          for (const o of ordensPar) {
+            pregão.atualizarOrdem(o.id, { status: "executando" })
+          }
+          console.log(`[PROFESSOR] 📦 Pacote via Pregão: ${trades.length} trades em ${rede}/${parLabel} | total: $${totalAmount.toFixed(2)} | lucro esp.: $${profitTotal.toFixed(4)} | conf: ${confMedia}%`)
+        }
+      }
+      return
+    }
+
+    // ─── 2. Fallback: criar pacotes do ranking (agentes + pares) ───
     const ranking = accountant.getRanking()
     if (ranking.length === 0) return
 
-    const topAgents = ranking
-      .filter(a => a.totalTrades >= 3 && a.winRate >= 50 && a.score > 0)
-      .slice(0, 5)
+    const provenAgents = ranking.filter(a => a.totalTrades >= 3 && a.winRate >= 50 && a.score > 0)
+    const topAgents = provenAgents.length > 0
+      ? provenAgents.slice(0, 5)
+      : ranking
+          .filter(a => a.totalTrades >= 1)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 5)
 
     if (topAgents.length === 0) return
 
@@ -265,40 +332,47 @@ class Professor {
 
       const performance = pairSector.getPerformancePorPar(rede)
       const topPares = performance
-        .filter(p => p.totalAvaliacoes >= 2 && p.taxaAcerto >= 50)
+        .filter(p => p.totalAvaliacoes >= 1)
         .sort((a, b) => b.taxaAcerto - a.taxaAcerto)
         .slice(0, 5)
 
-      if (topPares.length === 0) continue
+      const paresUsar = topPares.length > 0 ? topPares : paresRede.map(p => ({
+        par: p.label,
+        rede,
+        totalAvaliacoes: 0,
+        acertos: 0,
+        taxaAcerto: 0,
+        ultimaAvaliacao: 0,
+        melhoresRobos: [],
+      }))
 
       const trades: TradeIntent[] = []
-      const agentesUsados = new Set<string>()
       let totalAmount = 0
 
-      for (const par of topPares) {
+      for (const par of paresUsar) {
         const pairDef = paresRede.find(p => p.label === par.par)
         if (!pairDef) continue
         if (totalAmount >= 15) break
 
-        const agenteNome = par.melhoresRobos[0]?.nome
-        if (!agenteNome) continue
-        const agente = topAgents.find(a => a.agentName === agenteNome)
-        if (!agente) continue
-        agentesUsados.add(agenteNome)
-
-        const precoAtual = await positionManager.fetchTokenPrice(pairDef.to)
-        if (!precoAtual || precoAtual <= 0) continue
-
-        const confiancaAjustada = Math.round(Math.min(95, agente.winRate * 0.4 + par.taxaAcerto * 0.6))
-
-        const netConf = NETWORKS[rede]
         const saldoUSDC = realSwap.getBalance("USDC")
         const amount = Math.min(saldoUSDC * 0.25, 5.0)
         if (amount < 2.0) continue
 
+        const melhorRobo = par.melhoresRobos[0]
+        const agenteNome = melhorRobo?.nome || topAgents[0]?.agentName
+        if (!agenteNome) continue
+        const agente = ranking.find(a => a.agentName === agenteNome) || topAgents[0]
+        if (!agente) continue
+
+        const precoAtual = await positionManager.fetchTokenPrice(pairDef.to)
+        if (!precoAtual || precoAtual <= 0) continue
+
+        const winRateBase = Math.max(agente.winRate, 30)
+        const taxaAcertoBase = Math.max(par.taxaAcerto, 30)
+        const confiancaAjustada = Math.round(Math.min(95, winRateBase * 0.4 + taxaAcertoBase * 0.6))
+
         totalAmount += amount
 
-        // Lucro esperado realista: 0.3% de retorno × confiança
         const expectedProfit = amount * (confiancaAjustada / 100) * 0.003
 
         trades.push({
@@ -312,7 +386,6 @@ class Professor {
       }
 
       if (trades.length === 0) continue
-      if (trades.length < 2) continue // mínimo 2 trades por pacote
 
       const profitTotal = trades.reduce((s, t) => s + t.expectedProfit, 0)
       const confMedia = Math.round(trades.reduce((s, t) => s + t.confianca, 0) / trades.length)
@@ -327,7 +400,7 @@ class Professor {
         expiraEm: Date.now() + 30_000,
       })
 
-      console.log(`[PROFESSOR] 📦 Pacote gerado: ${trades.length} trades em ${rede} | total: $${totalAmount.toFixed(2)} | lucro esp.: $${profitTotal.toFixed(4)} | conf: ${confMedia}%`)
+      console.log(`[PROFESSOR] 📦 Pacote via ranking: ${trades.length} trades em ${rede} | total: $${totalAmount.toFixed(2)} | lucro esp.: $${profitTotal.toFixed(4)} | conf: ${confMedia}%`)
     }
   }
 

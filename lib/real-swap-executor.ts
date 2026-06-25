@@ -245,12 +245,12 @@ export interface BestPairResult {
 
 // ─── Executor principal ───────────────────────────────────────────────────────
 const COIN_IDS: Record<string, string> = {
-  WETH: "ethereum", WMATIC: "matic-network", WBTC: "bitcoin",
-  USDC: "usd-coin", USDT: "tether", DAI: "dai", EURC: "eurc",
-  ARB: "arbitrum", SOL: "solana",
-  cirBTC: "bitcoin", mcirBTC: "bitcoin",
+  WETH: "1673723677362319867", WMATIC: "1730847291434274818", WBTC: "1673723677362319866",
+  USDC: "1673723677362319870", USDT: "1673723677362319868", DAI: "1673723677362319879", EURC: "1673723677362320241",
+  ARB: "1673723677362319902", SOL: "1673723677362319875",
+  cirBTC: "1673723677362319866", mcirBTC: "1673723677362319866",
   // Tokens nativos (usados por _fetchNativePrice)
-  ETH: "ethereum", POL: "matic-network", ARC: "usd-coin",
+  ETH: "1673723677362319867", POL: "1730847291434274818", ARC: "1673723677362319870",
 };
 
 const UB_CHAIN: Record<string, string> = {

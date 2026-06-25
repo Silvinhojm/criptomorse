@@ -150,8 +150,8 @@ class BatchExecutor {
     }
 
     // Executa
-    const provider = await realSwap.getProvider(network)
-    const signer = await realSwap.getSigner()
+    const signer = realSwap.getSigner()
+    if (!signer) throw new Error("Sem signer disponível")
     const contract = new ethers.Contract(MULTICALL_ADDRESS, multicallAbi, signer)
 
     const tx = await contract.aggregate(calls, {
