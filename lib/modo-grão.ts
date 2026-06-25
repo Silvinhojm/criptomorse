@@ -31,6 +31,7 @@ interface GranPosition {
 
 export interface ModoGraoState {
   ativo: boolean
+  testMode: boolean
   openPositions: number
   totalTrades: number
   wins: number
@@ -61,6 +62,7 @@ const CONFIG = {
 
 class ModoGrao {
   private _ativo = false
+  private _testMode = false
   private _openPositions: GranPosition[] = []
   private _pendingSignals: PendingSignal[] = []
   private _totalTrades = 0
@@ -78,6 +80,7 @@ class ModoGrao {
     const total = this._wins + this._losses
     return {
       ativo: this._ativo,
+      testMode: this._testMode,
       openPositions: this._openPositions.filter(p => p.status === 'open').length,
       totalTrades: this._totalTrades,
       wins: this._wins,
@@ -100,10 +103,17 @@ class ModoGrao {
     for (const cb of this.listeners) cb()
   }
 
+  setTestMode(enabled: boolean) {
+    this._testMode = enabled
+    this.notify()
+  }
+
   start() {
     if (this._ativo) return
     this._ativo = true
     this._lastError = null
+    this._lastSignal = this._testMode ? '🧪 Modo teste (Sepolia) — volatilidade mock 0.5%' : ''
+    console.log(`[ModoGrão] ▶ ${this._testMode ? '🧪 MODO TESTE' : 'Mainnet'} — ${CONFIG.toToken}/${CONFIG.fromToken} (${CONFIG.network})`)
     this.notify()
     this.loop()
   }
@@ -144,7 +154,9 @@ class ModoGrao {
     ])
     if (toPrice <= 0) return
 
-    const vol = volatilityTracker.getVolatility(CONFIG.toToken as any)
+    const vol = this._testMode
+      ? { vol24h: 0.005, vol1h: 0.002, vol4h: 0.003, dataPoints: 20, trend: 'stable' as const }
+      : volatilityTracker.getVolatility(CONFIG.toToken as any)
 
     // 2. Check positions (stop/target)
     await this.checkPositions(toPrice)

@@ -987,6 +987,15 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
             {modoGraoState.ativo ? "⏹️ Parar" : "🌾 Iniciar"}
           </button>
         </div>
+        <div style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>
+          <label style={{ fontSize: 9, color: "#64748b", display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+            <input type="checkbox" checked={modoGraoState.testMode}
+              onChange={(e) => modoGrao.setTestMode(e.target.checked)}
+              disabled={modoGraoState.ativo}
+              style={{ accentColor: "#f59e0b" }} />
+            🧪 Test mode (Sepolia — volatilidade mock)
+          </label>
+        </div>
         {modoGraoState.lastSignal && (
           <div style={{ fontSize: 9, color: modoGraoState.lastError ? "#ef4444" : "#94a3b8", padding: "4px 8px", background: "rgba(0,0,0,0.3)", borderRadius: 6 }}>
             {modoGraoState.lastSignal}
