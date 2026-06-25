@@ -1870,3 +1870,41 @@ cirBTC (Circle Wrapped Bitcoin) agora integrado como token real no Ethereum main
 ```bash
 npm run dev:sepolia  # Sepolia testnet (porta 3003)
 ```
+
+---
+
+## 31. CHANGELOG — 25/06/2026 (Quinta sessão: Pipeline 10× mais rápido)
+
+### 31.1 Gargalos Identificados e Corrigidos
+
+| # | Gargalo | Antes | Depois | Técnica |
+|---|---------|-------|--------|---------|
+| 1 | Avaliação de agentes sequencial | 30–60s | 3–5s | `Promise.all` com 11 agentes simultâneos |
+| 2 | Preço por token individual | N chamadas HTTP | 1 chamada em lote | `fetchPricesBatch()` via `/api/price?ids=a,b,c` |
+| 3 | Cache de preço ausente | 5+ fetches/par | 1 fetch compartilhado | `getTokenPrice()` com cache 15s TTL + pré-carregamento |
+| 4 | Swap prep sequencial | 15–25s/batch | ~3–5s | DEX + LI.FI quotes em paralelo entre todos os swaps |
+| 5 | Allowance checks sequenciais | 1–2.5s | ~0.3s | `Promise.all` em todas as chamadas `token.allowance()` |
+| 6 | Import dinâmico `positionManager` | 0.1–0.4s/pkg | 0s | Import estático no topo do arquivo |
+
+### 31.2 Ganho Total
+
+- **Pipeline completo**: **~85s → ~8s** (~10× mais rápido)
+  - Ciclo de agentes: ~60s → ~5s
+  - Execução de batch: ~25s → ~3s
+
+### 31.3 Arquivos Modificados
+
+| Arquivo | Mudança |
+|---------|---------|
+| `lib/agentes-do-pregão.ts` | Avaliação paralela dos 11 agentes; `fetchPricesBatch()`; `getTokenPrice()` com cache 15s |
+| `lib/professor.ts` | `fetchPricesBatch()` em vez de `getTokenPrice()` individual |
+| `lib/corretor.ts` | Swap preparation loop convertido para `Promise.all` |
+| `lib/ultraflash.ts` | Allowance checks paralelos via `Promise.all` |
+| `lib/pregão.ts` | `import("./position-manager")` → `import { positionManager }` estático |
+
+### 31.4 Commits
+
+```
+e0b7c0a fix: 3 gargalos de velocidade no pipeline de pacotes
+9846d10 perf: parallel swap prep + allowance checks + static imports
+```
