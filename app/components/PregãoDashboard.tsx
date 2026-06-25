@@ -593,7 +593,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       addLog("⏹️ Modo Grão parado")
     } else {
       modoGrao.start()
-      addLog("🌾 Modo Grão iniciado — microtrades WETH/USDC (Base) a cada 30s")
+      addLog("🌾 Modo Grão iniciado — microtrades a cada 30s")
     }
   }
 
@@ -967,7 +967,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         </div>
       )}
 
-      {/* 🌾 Modo Grão — Microtrades WETH/USDC (Base) */}
+      {/* 🌾 Modo Grão — Microtrades */}
       <div style={{ marginBottom: 12, background: "rgba(34,197,94,0.05)", borderRadius: 12, padding: 12, border: "1px solid rgba(34,197,94,0.15)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
           <span style={{ fontSize: 20 }}>🌾</span>
@@ -976,7 +976,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
             <div style={{ fontSize: 9, color: "#94a3b8" }}>
               {modoGraoState.totalTrades > 0
                 ? `${modoGraoState.wins} wins • ${modoGraoState.losses} losses • $${modoGraoState.totalProfitUSD} lucro`
-                : "WETH/USDC (Base) — $3/trade • AND gate (MR+MM) • target $0.02 1:1"}
+                : "$3/trade • AND gate (MR+MM) • target $0.02 1:1"}
             </div>
           </div>
           <button onClick={alternarModoGrao} style={{

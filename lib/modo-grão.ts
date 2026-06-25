@@ -6,6 +6,14 @@
 import { realSwap } from './real-swap-executor'
 import { volatilityTracker } from './volatility-tracker'
 
+function getNetworkPair() {
+  const net = realSwap.getNetworkKey() as string
+  if (net === 'arc' || net === 'sepolia') return { fromToken: 'USDC', toToken: 'cirBTC' }
+  return { fromToken: 'USDC', toToken: 'WETH' }
+}
+
+const PAIR_NAME = { 'USDC': 'USDC', 'cirBTC': 'cirBTC', 'WETH': 'WETH' } as Record<string, string>
+
 interface PendingSignal {
   action: 'buy'
   agentName: string
@@ -74,6 +82,8 @@ class ModoGrao {
   private _lastError: string | null = null
   private _executando = false
 
+  private getPair() { return getNetworkPair() }
+
   private listeners: Array<() => void> = []
 
   getState(): ModoGraoState {
@@ -113,7 +123,9 @@ class ModoGrao {
     this._ativo = true
     this._lastError = null
     this._lastSignal = this._testMode ? '🧪 Modo teste (Sepolia) — volatilidade mock 0.5%' : ''
-    console.log(`[ModoGrão] ▶ ${this._testMode ? '🧪 MODO TESTE' : 'Mainnet'} — ${CONFIG.toToken}/${CONFIG.fromToken} (${CONFIG.network})`)
+    const p = this.getPair()
+    const netLabel = realSwap.getNetworkKey()
+    console.log(`[ModoGrão] ▶ ${this._testMode ? '🧪 MODO TESTE' : 'Mainnet'} — ${p.toToken}/${p.fromToken} (${netLabel})`)
     this.notify()
     this.loop()
   }
@@ -145,18 +157,19 @@ class ModoGrao {
 
     // 1. Prices + volatility
     await Promise.all([
-      volatilityTracker.collectPrice(CONFIG.fromToken as any),
-      volatilityTracker.collectPrice(CONFIG.toToken as any),
+      volatilityTracker.collectPrice(this.getPair().fromToken as any),
+      volatilityTracker.collectPrice(this.getPair().toToken as any),
     ])
+    const p = this.getPair()
     const [fromPrice, toPrice] = await Promise.all([
-      realSwap.fetchTokenPrice(CONFIG.fromToken as any).catch(() => 1),
-      realSwap.fetchTokenPrice(CONFIG.toToken as any).catch(() => 0),
+      realSwap.fetchTokenPrice(p.fromToken as any).catch(() => 1),
+      realSwap.fetchTokenPrice(p.toToken as any).catch(() => 0),
     ])
     if (toPrice <= 0) return
 
     const vol = this._testMode
       ? { vol24h: 0.005, vol1h: 0.002, vol4h: 0.003, dataPoints: 20, trend: 'stable' as const }
-      : volatilityTracker.getVolatility(CONFIG.toToken as any)
+      : volatilityTracker.getVolatility(this.getPair().toToken as any)
 
     // 2. Check positions (stop/target)
     await this.checkPositions(toPrice)
@@ -213,9 +226,10 @@ class ModoGrao {
     if (this._executando) return
     this._executando = true
     try {
+      const p = this.getPair()
       const result = await realSwap.executeSwap(
-        CONFIG.fromToken as any,
-        CONFIG.toToken as any,
+        p.fromToken as any,
+        p.toToken as any,
         CONFIG.tradeAmountUSD,
       )
       if (result.success && result.toAmount > 0) {
@@ -226,8 +240,8 @@ class ModoGrao {
 
         this._openPositions.push({
           id: `grão-${Date.now()}`,
-          boughtToken: CONFIG.toToken,
-          paidToken: CONFIG.fromToken,
+          boughtToken: p.toToken,
+          paidToken: p.fromToken,
           amountBought: wethBought,
           amountPaid: result.fromAmount,
           entryPrice,
@@ -237,7 +251,7 @@ class ModoGrao {
           status: 'open',
         })
         this._totalTrades++
-        this._lastSignal = `Compra $${CONFIG.tradeAmountUSD} ${CONFIG.toToken} @ entry $${entryPrice.toFixed(2)}`
+        this._lastSignal = `Compra $${CONFIG.tradeAmountUSD} ${p.toToken} @ entry $${entryPrice.toFixed(2)}`
       } else {
         this._lastError = `Falha compra: ${result.message}`
       }
