@@ -19,6 +19,7 @@ import { AGENTES_NOMES, AGENTE_CORES, getPregãoAllowedBalance, setPregãoAllowe
 import { positionManager } from "@/lib/position-manager"
 import { narrador } from "@/lib/narrator"
 import { contratante } from "@/lib/contratante"
+import { modoGrao } from "@/lib/modo-grão"
 import { escolaRobos, MIN_JOBS_PROVA, type RoboEscolar } from "@/lib/escola-robos"
 import { professor } from "@/lib/professor"
 import { pairSector } from "@/lib/pair-sector"
@@ -71,6 +72,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
   const [recentTrades, setRecentTrades] = useState<ReturnType<typeof positionManager.getRecentTrades>>([])
   const [contratanteState, setContratanteState] = useState(contratante.getState())
   const [contratanteAtivo, setContratanteAtivo] = useState(false)
+  const [modoGraoState, setModoGraoState] = useState(modoGrao.getState())
   const [kitKey, setKitKey] = useState(() => {
     if (typeof window !== "undefined") return localStorage.getItem("arcflow_kit_key") ?? ""
     return ""
@@ -578,6 +580,23 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     setContratanteAtivo(!contratanteAtivo)
   }
 
+  // ─── Modo Grão ────────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    const unsub = modoGrao.onChange(() => setModoGraoState(modoGrao.getState()))
+    return () => unsub()
+  }, [])
+
+  const alternarModoGrao = () => {
+    if (modoGraoState.ativo) {
+      modoGrao.stop()
+      addLog("⏹️ Modo Grão parado")
+    } else {
+      modoGrao.start()
+      addLog("🌾 Modo Grão iniciado — microtrades WETH/USDC (Base) a cada 30s")
+    }
+  }
+
   const corStatus = (status: string) => {
     switch (status) {
       case "preparando": return "#fbbf24"
@@ -947,6 +966,42 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
           )}
         </div>
       )}
+
+      {/* 🌾 Modo Grão — Microtrades WETH/USDC (Base) */}
+      <div style={{ marginBottom: 12, background: "rgba(34,197,94,0.05)", borderRadius: 12, padding: 12, border: "1px solid rgba(34,197,94,0.15)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <span style={{ fontSize: 20 }}>🌾</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 11, color: "#4ade80", fontWeight: "bold" }}>Modo Grão — Microtrades</div>
+            <div style={{ fontSize: 9, color: "#94a3b8" }}>
+              {modoGraoState.totalTrades > 0
+                ? `${modoGraoState.wins} wins • ${modoGraoState.losses} losses • $${modoGraoState.totalProfitUSD} lucro`
+                : "WETH/USDC (Base) — $3/trade • AND gate (MR+MM) • target $0.02 1:1"}
+            </div>
+          </div>
+          <button onClick={alternarModoGrao} style={{
+            padding: "6px 12px", fontSize: 10, fontWeight: "bold",
+            background: modoGraoState.ativo ? "#ef4444" : "#22c55e", color: "#fff",
+            border: "none", borderRadius: 6, cursor: "pointer"
+          }}>
+            {modoGraoState.ativo ? "⏹️ Parar" : "🌾 Iniciar"}
+          </button>
+        </div>
+        {modoGraoState.lastSignal && (
+          <div style={{ fontSize: 9, color: modoGraoState.lastError ? "#ef4444" : "#94a3b8", padding: "4px 8px", background: "rgba(0,0,0,0.3)", borderRadius: 6 }}>
+            {modoGraoState.lastSignal}
+            {modoGraoState.lastError && (
+              <div style={{ color: "#ef4444", marginTop: 2 }}>⚠️ {modoGraoState.lastError}</div>
+            )}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 12, marginTop: 6, fontSize: 9, color: "#64748b" }}>
+          <span>📊 Ciclo {modoGraoState.cycleCount}</span>
+          <span>🟢 {modoGraoState.openPositions} abertas</span>
+          <span>⏳ {modoGraoState.pendingSignals} sinais</span>
+          <span>{modoGraoState.winRate}% acerto</span>
+        </div>
+      </div>
 
       {/* 📦 Carteira — Posições Abertas + Últimas Operações */}
       <div style={{ marginBottom: 12, background: "rgba(212,165,116,0.05)", borderRadius: 12, padding: 12, border: "1px solid rgba(212,165,116,0.15)" }}>
