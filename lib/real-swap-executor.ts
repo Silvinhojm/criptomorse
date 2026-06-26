@@ -1086,6 +1086,82 @@ class RealSwapExecutor {
     return this.ensureStableViaCCTP(fromToken, amountUsd, log)
   }
 
+  async aggregateCapitalToCheapestChain(log: (msg: string) => void): Promise<{ bridged: number; sourceChains: string[] }> {
+    const targetChain = "polygon"
+    const targetChainName = UB_CHAIN[targetChain]
+    if (!targetChainName || !this.privateKey) {
+      log("⚠️ Agregador: Polygon não disponível ou sem privateKey")
+      return { bridged: 0, sourceChains: [] }
+    }
+
+    let balances: Record<string, number> = {}
+    try {
+      const s = await caixa.getSaldo("mainnet")
+      balances = s.porRede
+      log(`📊 Agregador: capital detectado em ${Object.keys(balances).length} redes — total $${s.totalUSD.toFixed(2)}`)
+    } catch {
+      log("⚠️ Agregador: não foi possível consultar saldos unificados")
+      return { bridged: 0, sourceChains: [] }
+    }
+
+    const CHAIN_TO_KEY: Record<string, string> = {
+      Polygon: "polygon", Base: "base", Arbitrum: "arbitrum", Ethereum: "ethereum",
+    }
+
+    const GAS_RANK: Record<string, number> = {
+      polygon: 1, base: 2, arbitrum: 3, ethereum: 4,
+    }
+
+    let totalBridged = 0
+    const sourceChains: string[] = []
+
+    for (const [chainName, balance] of Object.entries(balances)) {
+      const chainKey = CHAIN_TO_KEY[chainName]
+      if (!chainKey || chainKey === targetChain) continue
+      if (balance < 5) continue
+
+      const targetGasRank = GAS_RANK[targetChain] ?? 99
+      const sourceGasRank = GAS_RANK[chainKey] ?? 99
+      if (sourceGasRank <= targetGasRank) continue
+
+      const bridgeAmount = Math.floor(balance * 0.95 * 100) / 100
+      log(`🌉 Agregador: ${chainName}→Polygon $${bridgeAmount.toFixed(2)} USDC (gas rank ${sourceGasRank} → ${targetGasRank})`)
+
+      try {
+        const srcConfig = CCTP_CONFIG[chainKey as keyof typeof CCTP_CONFIG]
+        if (!srcConfig) continue
+        const srcProvider = this._createProxyProvider(srcConfig.rpcUrl)
+        const srcSigner = new ethers.Wallet(this.privateKey, srcProvider)
+
+        const result = await cctpService.initiateTransfer({
+          fromChain: chainKey,
+          toChain: targetChain,
+          amount: bridgeAmount,
+          recipient: this.userAddress,
+          signer: srcSigner,
+          onStep: (step) => log(`  CCTP ${step.name}: ${step.state}`),
+        })
+
+        if (result.status === "completed") {
+          totalBridged += bridgeAmount
+          sourceChains.push(chainKey)
+          log(`✅ Ponte concluída: ${chainName}→Polygon | TX: ${result.txHash.slice(0, 10)}...`)
+        }
+      } catch (err: any) {
+        log(`⚠️ Ponte falhou ${chainName}→Polygon: ${err.message?.slice(0, 100)}`)
+      }
+    }
+
+    if (totalBridged > 0) {
+      log(`💰 Agregador: $${totalBridged.toFixed(2)} USDC transferido para Polygon (${sourceChains.join(", ")})`)
+      await this.refreshAllBalances()
+    } else {
+      log("📊 Agregador: capital já está otimizado — nada a bridgear")
+    }
+
+    return { bridged: totalBridged, sourceChains }
+  }
+
   private _fail(
     fromToken: TokenSymbol,
     toToken: TokenSymbol,

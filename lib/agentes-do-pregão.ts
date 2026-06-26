@@ -17,6 +17,8 @@ import { COIN_IDS, TOKENS_WITH_FEED } from "./coin-ids"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 
+let _capitalAggregated = false
+
 // ─── Filtro de Tendência (ADX simplificado) ───
 // Armazena histórico de preços para detectar tendências fortes
 // Em tendência forte (>2% no período), pausa o lado perdedor do delta neutro
@@ -516,6 +518,21 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       try {
         const saldoCaixa = await caixa.getSaldo("mainnet")
         totalUnificado = saldoCaixa.totalUSD
+
+        if (!_capitalAggregated && totalUnificado > 10) {
+          _capitalAggregated = true
+          const otherChains = Object.entries(saldoCaixa.porRede)
+            .filter(([name]) => name !== "Polygon")
+            .filter(([, bal]) => bal >= 5)
+          if (otherChains.length > 0) {
+            pregão.adicionarLog(`💰 Capital disperso em ${otherChains.length} rede(s): ${otherChains.map(([n, b]) => `${n} ($${b.toFixed(2)})`).join(", ")}. Agregando para Polygon...`)
+            realSwap.aggregateCapitalToCheapestChain((m) => pregão.adicionarLog(m))
+              .then((res) => {
+                if (res.bridged > 0) pregão.adicionarLog(`✅ Agregador: $${res.bridged.toFixed(2)} movido para Polygon`)
+              })
+              .catch(() => {})
+          }
+        }
       } catch {
         totalUnificado = 0
       }
@@ -533,7 +550,9 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     const posAbertas = positionManager.getOpenPositions().length;
     // Usa o maior minTradeSize entre as redes alvo (garante que cabe em todas)
     const minTradeSize = Math.max(...networksToScan.map(n => getMinTradeSize(n)))
-    maxPositions = Math.max(1, Math.floor((saldoEfetivo * 0.9) / minTradeSize))
+    const gasRoundTrip = (GAS_COST_ESTIMATE[redeAtual] ?? 0.01) * 2
+    const marginPerPosition = Math.max(minTradeSize, gasRoundTrip * 20)
+    maxPositions = Math.max(1, Math.floor((saldoEfetivo * 0.9) / marginPerPosition))
     const vagas = Math.max(1, maxPositions - posAbertas);
 
     if (saldoEfetivo < minTradeSize) {
