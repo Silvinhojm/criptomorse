@@ -779,7 +779,25 @@ class RealSwapExecutor {
     const nativeBal = await this.refreshNativeBalance();
     if (nativeBal >= 0.50) return;
 
-    const usdcBal = this.getBalance("USDC");
+    let usdcBal = this.getBalance("USDC");
+    // Fallback: ler saldo USDC direto da RPC se cache tá zerado
+    if (usdcBal < 0.50 && this.provider && this.userAddress) {
+      try {
+        const usdcAddr = NETWORKS[this.networkKey].tokens["USDC"];
+        if (usdcAddr) {
+          const contract = new ethers.Contract(usdcAddr, ERC20_ABI, this.provider);
+          const [raw, dec] = await Promise.all([
+            contract.balanceOf(this.userAddress),
+            contract.decimals().catch(() => 6),
+          ]);
+          const realBal = parseFloat(ethers.formatUnits(raw, Number(dec)));
+          if (realBal > usdcBal) {
+            usdcBal = realBal;
+            this.tokenBalances.set("USDC", { symbol: "USDC", balance: realBal, address: usdcAddr, decimals: Number(dec) });
+          }
+        }
+      } catch {}
+    }
     const swapAmount = Math.min(usdcBal * 0.1, amountUsd * 2, 5);
     if (swapAmount < 0.50) return;
 
