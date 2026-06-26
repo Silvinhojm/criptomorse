@@ -6,6 +6,7 @@ import { NETWORKS, TRADING_PAIRS, type NetworkKey, type TokenSymbol } from './re
 import { stableStability } from './stable-stability'
 import { volatilityTracker } from './volatility-tracker'
 import { gasPriceOracle } from './gas-price-oracle'
+import { FOREIGN_STABLES, getStablesComLiquidez, temLiquidezMinima, estimarSpread, alertaRegulatorio, usdToForeign } from './stablecoins-internacionais'
 
 export interface StablePairInfo {
   pair: string
@@ -139,6 +140,44 @@ class StablePairScanner {
           arbitragemCrossChain: arb,
           recomendacao,
           motivo,
+        })
+      }
+    }
+
+    // ── Pares Internacionais (JPYC, BRLA, QCAD...) com gate de liquidez ──
+    const internacionais = getStablesComLiquidez().filter(c => c.symbol !== 'EURC') // EURC já tá nos nativos
+    for (const coin of internacionais) {
+      for (const net of coin.networks) {
+        const chainKey = net.chain as string
+        const gasCost = GAS_COSTS[chainKey] ?? 0.01
+        if (gasCost > 0.05) continue
+        if (!(TRADING_PAIRS as any)[chainKey]) continue // rede sem suporte
+
+        const spreadEstimate = estimarSpread(net.poolTvl)
+        if (spreadEstimate > 0.01) continue // spread >1% → inviável
+
+        const batchMinimo = Math.max(5, Math.ceil(gasCost * 2 / 0.0005))
+        const lucroPorBatch = batchMinimo * 0.001 - gasCost * 2 - batchMinimo * spreadEstimate * 2
+        const score = lucroPorBatch > 0 ? 25 + (net.poolTvl! > 50000 ? 20 : net.poolTvl! > 25000 ? 10 : 0) : 0
+
+        const alerta = alertaRegulatorio(coin.symbol)
+
+        results.push({
+          pair: `USDC→${coin.symbol}`,
+          network: chainKey as NetworkKey,
+          fromToken: 'USDC',
+          toToken: coin.symbol,
+          gasCost: Math.round(gasCost * 10000) / 10000,
+          gasRoundTrip: Math.round(gasCost * 2 * 10000) / 10000,
+          spreadEstimate,
+          slippageEstimate: spreadEstimate * 2,
+          currentPrice: 1 / coin.forexRate,
+          volumeRank: net.poolTvl! > 100000 ? 'high' : net.poolTvl! > 25000 ? 'medium' : 'low',
+          batchMinimo,
+          lucroPorBatch: Math.round(lucroPorBatch * 10000) / 10000,
+          score: alerta ? Math.min(score, 10) : score, // regulatório reduz score
+          recomendacao: alerta ? 'IGNORAR' : score >= 40 ? 'MONITORAR' : 'IGNORAR',
+          motivo: alerta ?? (net.poolTvl! > 50000 ? `Pool $${(net.poolTvl!/1000).toFixed(0)}K` : 'Baixa liquidez'),
         })
       }
     }
