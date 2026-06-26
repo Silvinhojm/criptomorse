@@ -436,17 +436,23 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     if (isMultiChain && networksToScan.length > 2) {
       const topSet = new Set(quantumScan.networks.slice(0, 2).map(n => n.network))
       const filtered = networksToScan.filter(n => topSet.has(n))
-      if (filtered.length >= 1) {
+      const comSaldo = networksToScan.filter(n => !topSet.has(n))
+      if (comSaldo.length > 0) {
+        filtered.push(...comSaldo)
+        pregão.adicionarLog(`🔍 Foco: ${filtered.map(n => NETWORKS[n]?.name).join(", ")} — top 2 por custo + redes com saldo`)
+      } else {
         const excluidas = networksToScan.filter(n => !topSet.has(n))
         if (excluidas.length > 0) {
           pregão.adicionarLog(`🔍 Foco: avaliando apenas ${filtered.map(n => NETWORKS[n]?.name).join(", ")} — ${excluidas.map(n => NETWORKS[n]?.name).join(", ")} ignoradas (gas alto)`)
         }
+      }
+      if (filtered.length >= 1) {
         networksToScan.length = 0
         networksToScan.push(...filtered)
         networksToScan.sort((a, b) => {
           const idxA = quantumScan.networks.findIndex(n => n.network === a)
           const idxB = quantumScan.networks.findIndex(n => n.network === b)
-          return idxA - idxB
+          return (idxA === -1 ? 99 : idxA) - (idxB === -1 ? 99 : idxB)
         })
       }
     }
