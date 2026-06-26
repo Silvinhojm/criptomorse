@@ -68,6 +68,12 @@ class JobRobot {
     this.kit = new AppKit()
   }
 
+  /** Reseta contadores — útil ao reiniciar o contratante */
+  reset() {
+    this.cycleCount = 0
+    this.consecutiveFails = 0
+  }
+
   getKitKey(): string {
     return process.env.KIT_KEY || (typeof window !== "undefined" ? localStorage.getItem("arcflow_kit_key") : null) || ""
   }
@@ -113,7 +119,6 @@ class JobRobot {
         amountIn: amountUsd,
         config: { slippageBps: 500, kitKey: this.getKitKey() || undefined },
       }).then(result => {
-        this.cycleCount++
         this.consecutiveFails = 0
         return {
           success: true,
@@ -173,7 +178,18 @@ class JobRobot {
       return { success: false, stage: 'init', error: 'AppKit não inicializado', retryCount: 0 }
     }
 
+    this.cycleCount++
     const pair = SWAP_PAIRS[this.cycleCount % SWAP_PAIRS.length]
+
+    // Circuit breaker: após 3 falhas consecutivas de swap para de tentar
+    if (this.consecutiveFails >= 3) {
+      return {
+        success: false,
+        stage: 'circuit-breaker',
+        error: '3 falhas consecutivas de swap — parando para evitar deploys desnecessários',
+        retryCount: this.consecutiveFails,
+      }
+    }
 
     // Uma tentativa rápida de swap
     const bal = await this.checkBalance()

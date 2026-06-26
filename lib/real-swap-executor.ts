@@ -552,6 +552,22 @@ class RealSwapExecutor {
       console.log('↩️ All RPCs failed, restoring previous balances')
       this.tokenBalances.clear()
       previousBalances.forEach((v, k) => this.tokenBalances.set(k, v))
+    } else {
+      // Restore previous non-zero balance for any token that failed (was zeroed)
+      // This handles partial failures where some tokens are precompiles (e.g. USDC on Arc)
+      let restored = 0
+      for (const [symbol, prev] of previousBalances) {
+        if (prev.balance > 0) {
+          const current = this.tokenBalances.get(symbol)
+          if (!current || current.balance === 0) {
+            this.tokenBalances.set(symbol, prev)
+            restored++
+          }
+        }
+      }
+      if (restored > 0) {
+        console.debug(`↩️ Restored ${restored} token(s) from previous balances (partial failure)`)
+      }
     }
 
     return this.tokenBalances;
@@ -992,7 +1008,8 @@ class RealSwapExecutor {
       const gasCostEstimated = await gasPriceOracle.getGasCost(this.networkKey);
       const estimatedProfit = isStable(toToken) ? bestToEstimateUsd - amountUsd : 0;
       const minProfit = await getMinProfitThreshold(this.networkKey);
-      if (isStable(toToken) && estimatedProfit < minProfit) {
+      const isStablePairOnTestnet = net.isTestnet && isStable(fromToken) && isStable(toToken);
+      if (isStable(toToken) && estimatedProfit < minProfit && !isStablePairOnTestnet) {
         return this._fail(fromToken, toToken, amountUsd,
           `Lucro $${estimatedProfit.toFixed(4)} < min $${minProfit} (rota ${bestRoute.label})`, timestamp);
       }

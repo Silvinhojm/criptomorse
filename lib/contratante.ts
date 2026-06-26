@@ -44,6 +44,7 @@ class Contratante {
 
   setPrivateKey(pk: string) {
     this._privateKey = pk
+    jobRobot.reset()
   }
 
   getState(): ContratanteState {
