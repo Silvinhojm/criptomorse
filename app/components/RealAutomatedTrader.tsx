@@ -1,12 +1,11 @@
-"use client";
+﻿"use client";
 // app/components/RealAutomatedTrader.tsx
 // Painel de trading REAL — exibe tx hash clicável, saldos reais e confirmação blockchain
 
 import { useState, useEffect, useRef } from "react";
 import { realAutomatedTrader, type TradeRecord, type TraderStats } from "@/lib/real-automated-trader";
 import { NETWORKS } from "@/lib/real-swap-executor";
-
-const PRIVATE_KEY = process.env.NEXT_PUBLIC_PRIVATE_KEY || "";
+import { ethers } from "ethers";
 
 interface Props {
   account: string;
@@ -21,11 +20,26 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
   const [balances, setBalances] = useState({ usdc: 0, eurc: 0 });
   const [history, setHistory] = useState<TradeRecord[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
-  const [tradeAmount, setTradeAmount] = useState(10);
-  const [intervalSec, setIntervalSec] = useState(90);
+  const [tradeAmount, setTradeAmount] = useState(5);
+  const [intervalSec, setIntervalSec] = useState(30);
+  const [privateKey, setPrivateKey] = useState(() => {
+    if (typeof window !== "undefined") return localStorage.getItem("arcflow_private_key") ?? ""
+    return ""
+  });
+  const [showPkInput, setShowPkInput] = useState(false);
+  const [usingPkMode, setUsingPkMode] = useState(false);
   const logsRef = useRef<HTMLDivElement>(null);
 
-  const net = NETWORKS[currentNetwork] ?? NETWORKS.arc;
+  // Sync private key to localStorage for other components (Contratante)
+  useEffect(() => {
+    if (privateKey) {
+      localStorage.setItem("arcflow_private_key", privateKey)
+    } else {
+      localStorage.removeItem("arcflow_private_key")
+    }
+  }, [privateKey])
+
+  const net = NETWORKS[currentNetwork];
   const isMainnet = currentNetwork !== "arc";
 
   // Auto-scroll logs
@@ -34,15 +48,6 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
       logsRef.current.scrollTop = logsRef.current.scrollHeight;
     }
   }, [logs]);
-
-  // Atualizar rede quando currentNetwork mudar
-  useEffect(() => {
-    if (initialized && currentNetwork !== "arc") {
-      realAutomatedTrader.switchNetwork(currentNetwork);
-      addLog(`🔄 Trader atualizado para ${net.name}`);
-      refreshStats(); // Recarregar saldos da nova rede
-    }
-  }, [currentNetwork, initialized, net.name]);
 
   const addLog = (msg: string) => {
     setLogs((prev) => [...prev.slice(-49), `[${new Date().toLocaleTimeString()}] ${msg}`]);
@@ -56,72 +61,116 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
     setHistory(realAutomatedTrader.getHistory());
   };
 
-  // Inicializar trader
+  // Inicializar trader: private key local > server auto-sign > MetaMask
+  const unsubRef = useRef<Array<() => void>>([])
+
   const handleInit = async () => {
     setIsInitializing(true);
 
-    let walletInput = account.trim();
-    if (!walletInput && PRIVATE_KEY) {
-      walletInput = PRIVATE_KEY;
-    }
-    if (!walletInput && typeof window !== "undefined" && window.ethereum) {
+    // 1. Se tem private key no input, usar direto no frontend
+    if (privateKey.length >= 64) {
+      const cleanKey = privateKey.trim();
+      const pk = cleanKey.startsWith("0x") ? cleanKey : "0x" + cleanKey;
       try {
-        const accounts = (await window.ethereum.request({ method: "eth_accounts" })) as string[];
-        walletInput = accounts?.[0] || "";
-      } catch {
-        walletInput = "";
+        const provider = new ethers.JsonRpcProvider(net.rpcUrl);
+        const wallet = new ethers.Wallet(pk, provider);
+        const address = await wallet.getAddress();
+        addLog(`🔑 Private key detectada — assinando localmente (sem MetaMask)`);
+        addLog(`👤 Wallet: ${address.slice(0, 6)}...${address.slice(-4)}`);
+        setUsingPkMode(true);
+        const ok = await realAutomatedTrader.initialize(address, currentNetwork, wallet);
+        if (ok) {
+          unsubRef.current.push(realAutomatedTrader.onLog(addLog));
+          unsubRef.current.push(realAutomatedTrader.onTrade(() => refreshStats()));
+          setInitialized(true);
+          addLog(`✅ Auto-sign local ativo na ${net.name}`);
+          await refreshStats();
+        } else {
+          addLog("❌ Falha ao conectar — verifique RPC e chave");
+        }
+      } catch (err: any) {
+        addLog(`❌ Chave inválida: ${err?.message?.slice(0, 60) || "erro"}`);
       }
-    }
-
-    if (!walletInput) {
-      addLog("⏳ Aguardando conexão da carteira para inicializar o trader...");
       setIsInitializing(false);
       return;
     }
 
-    addLog(
-      PRIVATE_KEY
-        ? "🔑 Inicializando trader com private key..."
-        : `🔑 Inicializando trader com a conta conectada ${walletInput.slice(0, 6)}...`
-    );
-    const ok = await realAutomatedTrader.initialize(walletInput, currentNetwork);
+    // 2. Verificar se o servidor tem PRIVATE_KEY configurada
+    try {
+      const signStatus = await fetch("/api/swap/sign").then(r => r.json());
+      if (signStatus.autoSignAvailable) {
+        addLog("🔑 PRIVATE_KEY detectada no servidor — modo auto-sign (sem MetaMask)");
+        realAutomatedTrader.setAutoSignMode(true);
+        const ok = await realAutomatedTrader.initialize(account, currentNetwork);
+        if (ok) {
+          unsubRef.current.push(realAutomatedTrader.onLog(addLog));
+          unsubRef.current.push(realAutomatedTrader.onTrade(() => refreshStats()));
+          setInitialized(true);
+          addLog(`✅ Auto-sign ativo na ${net.name} — wallet: ${account?.slice(0, 6)}...${account?.slice(-4)}`);
+          await refreshStats();
+        } else {
+          addLog("❌ Falha ao conectar — verifique RPC e .env");
+        }
+        setIsInitializing(false);
+        return;
+      }
+    } catch {
+      // servidor sem suporte a auto-sign, fallback para MetaMask
+    }
+
+    // 3. Fallback: MetaMask
+    addLog("🔑 Conectando carteira MetaMask...");
+    let externalSigner: ethers.Signer | undefined;
+    try {
+      if (typeof window !== "undefined" && (window as any).ethereum) {
+        const provider = new ethers.BrowserProvider((window as any).ethereum);
+        externalSigner = await provider.getSigner();
+        addLog(`✅ Signer obtido do MetaMask: ${account?.slice(0, 6)}...`);
+      }
+    } catch {
+      addLog("⚠️ MetaMask nao disponivel, modo somente leitura");
+    }
+
+    const ok = await realAutomatedTrader.initialize(account, currentNetwork, externalSigner);
     if (ok) {
-      realAutomatedTrader.onLog(addLog);
-      realAutomatedTrader.onTrade(() => refreshStats());
+      unsubRef.current.push(realAutomatedTrader.onLog(addLog));
+      unsubRef.current.push(realAutomatedTrader.onTrade(() => refreshStats()));
       setInitialized(true);
-      addLog(`✅ Conectado à ${net.name}`);
+      addLog(`✅ Conectado à ${net.name} — wallet: ${account?.slice(0, 6)}...${account?.slice(-4)}`);
       await refreshStats();
     } else {
-      addLog("❌ Falha ao inicializar — verifique PRIVATE_KEY, conta conectada e RPC");
+      addLog("❌ Falha ao conectar — verifique conexao com MetaMask e RPC");
     }
     setIsInitializing(false);
   };
 
-  const handleStart = () => {
-    if (!initialized) return;
-    realAutomatedTrader.startAutomatedTrading(intervalSec, tradeAmount);
-    setIsRunning(true);
-    addLog(`🚀 Trading REAL iniciado — $${tradeAmount} a cada ${intervalSec}s`);
-  };
+  useEffect(() => {
+    return () => {
+      for (const unsub of unsubRef.current) unsub()
+      unsubRef.current = []
+    }
+  }, [])
 
-  const handleStop = () => {
+  const handleDisconnect = () => {
     realAutomatedTrader.stopAutomatedTrading();
+    setInitialized(false);
     setIsRunning(false);
-    refreshStats();
-  };
-
-  const handleManual = async () => {
-    if (!initialized) return;
-    addLog("🔄 Ciclo manual iniciado...");
-    await realAutomatedTrader.runTradingCycle(tradeAmount);
-    await refreshStats();
+    setUsingPkMode(false);
+    for (const unsub of unsubRef.current) unsub()
+    unsubRef.current = []
+    addLog("🔌 Desconectado");
   };
 
   useEffect(() => {
-    if (account && !initialized && !isInitializing) {
-      void handleInit();
-    }
-  }, [account, currentNetwork, initialized, isInitializing]);
+    setInitialized(false);
+    setIsRunning(false);
+    setStats(null);
+    setBalances({ usdc: 0, eurc: 0 });
+    setHistory([]);
+    setLogs([]);
+    setUsingPkMode(false);
+    setPrivateKey("");
+  }, [currentNetwork]);
 
   useEffect(() => {
     const id = setInterval(refreshStats, 8000);
@@ -195,7 +244,7 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
             { label: "Trades", value: stats.totalTrades, color: "#fbbf24" },
             { label: "On-chain ✅", value: stats.confirmedTrades, color: "#4ade80" },
             { label: "Win Rate", value: `${stats.winRate}%`, color: "#a78bfa" },
-            { label: "Lucro", value: `$${isNaN(parseFloat(stats.totalProfit)) ? "0.0000" : stats.totalProfit}`, color: parseFloat(stats.totalProfit) >= 0 ? "#4ade80" : "#f87171" },
+            { label: "Lucro", value: `$${stats.totalProfit}`, color: parseFloat(stats.totalProfit) >= 0 ? "#4ade80" : "#f87171" },
           ].map((s) => (
             <div key={s.label} style={{ background: "#0f172a", borderRadius: 8, padding: 8, textAlign: "center" }}>
               <div style={{ fontSize: 9, color: "#475569" }}>{s.label}</div>
@@ -205,26 +254,60 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
         </div>
       )}
 
-      {/* Configurações */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
-        <div>
-          <div style={{ fontSize: 9, color: "#64748b", marginBottom: 4 }}>💵 Valor por trade ($)</div>
-          <input
-            type="number"
-            value={tradeAmount}
-            onChange={(e) => setTradeAmount(Math.max(1, parseFloat(e.target.value) || 10))}
-            min={1}
-            max={isMainnet ? 50 : 1000}
-            style={{ width: "100%", background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, padding: "8px 10px", color: "#e2e8f0", fontSize: 13 }}
-          />
+      {/* Private Key (opcional) — assinatura local sem MetaMask */}
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+          <span style={{ fontSize: 9, color: "#64748b" }}>🔑 Private Key (opcional — auto-sign local)</span>
+          <button
+            onClick={() => setShowPkInput(!showPkInput)}
+            style={{ background: "none", border: "none", color: "#3b82f6", cursor: "pointer", fontSize: 10, padding: 0 }}
+          >
+            {showPkInput ? "esconder" : "mostrar"}
+          </button>
         </div>
-        <div>
-          <div style={{ fontSize: 9, color: "#64748b", marginBottom: 4 }}>⏱️ Intervalo (segundos)</div>
+        {showPkInput && (
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              type="password"
+              value={privateKey}
+              onChange={(e) => setPrivateKey(e.target.value)}
+              placeholder="0x... ou 64 hex chars (não sai do navegador)"
+              style={{ flex: 1, background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, padding: "8px 10px", color: "#e2e8f0", fontSize: 11, fontFamily: "monospace" }}
+            />
+            {privateKey.length > 0 && (
+              <button
+                onClick={() => setPrivateKey("")}
+                style={{ background: "#1e293b", border: "none", borderRadius: 8, color: "#64748b", cursor: "pointer", padding: "0 10px", fontSize: 11 }}
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        )}
+        {usingPkMode && (
+          <div style={{ fontSize: 9, color: "#22c55e", marginTop: 4 }}>
+            ✅ Assinando localmente com private key
+          </div>
+        )}
+        {!usingPkMode && initialized && (
+          <div style={{ fontSize: 9, color: "#f59e0b", marginTop: 4 }}>
+            ⚠️ Conectado via MetaMask. Digite uma private key e clique em "Conectar" para trocar.
+          </div>
+        )}
+      </div>
+
+      {/* Configurações */}
+      <div style={{ display: "flex", gap: 10, marginBottom: 14, alignItems: "center" }}>
+        <div style={{ flex: 1, padding: "8px 10px", borderRadius: 8, background: "rgba(212,165,116,0.08)", border: "1px solid rgba(212,165,116,0.2)", fontSize: 10, color: "#d4a574" }}>
+          💰 Valor do trade definido pelo <strong>Pregão</strong> — configure o saldo permitido na seção Pregão
+        </div>
+        <div style={{ width: 140 }}>
+          <div style={{ fontSize: 9, color: "#64748b", marginBottom: 4 }}>⏱️ Intervalo (s)</div>
           <input
             type="number"
             value={intervalSec}
-            onChange={(e) => setIntervalSec(Math.max(90, parseInt(e.target.value) || 60))}
-            min={30}
+            onChange={(e) => setIntervalSec(Math.max(15, parseInt(e.target.value) || 30))}
+            min={15}
             max={600}
             style={{ width: "100%", background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, padding: "8px 10px", color: "#e2e8f0", fontSize: 13 }}
           />
@@ -233,35 +316,26 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
 
       {/* Botões */}
       <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-        {!initialized ? (
+        {!initialized || (initialized && privateKey.length >= 64 && !usingPkMode) ? (
           <button
-            onClick={handleInit}
+            onClick={initialized ? () => { handleDisconnect(); setTimeout(handleInit, 100); } : handleInit}
             disabled={isInitializing}
             style={{ flex: 1, background: "#1d4ed8", color: "#fff", border: "none", borderRadius: 10, padding: 12, fontWeight: 700, cursor: "pointer", fontSize: 12 }}
           >
-            {isInitializing ? "⏳ Conectando..." : "🔑 CONECTAR CARTEIRA REAL"}
+            {isInitializing ? "⏳ Conectando..." : privateKey.length >= 64 ? "🔑 CONECTAR (PRIVATE KEY)" : "🔑 CONECTAR CARTEIRA REAL"}
           </button>
-        ) : !isRunning ? (
-          <>
-            <button
-              onClick={handleStart}
-              style={{ flex: 2, background: isMainnet ? "#ef4444" : "#10b981", color: "#fff", border: "none", borderRadius: 10, padding: 12, fontWeight: 700, cursor: "pointer", fontSize: 12 }}
-            >
-              🤖 INICIAR TRADING REAL
-            </button>
-            <button
-              onClick={handleManual}
-              style={{ flex: 1, background: "#7c3aed", color: "#fff", border: "none", borderRadius: 10, padding: 12, fontWeight: 700, cursor: "pointer", fontSize: 12 }}
-            >
-              🔄 Manual
-            </button>
-          </>
         ) : (
+          <div style={{ fontSize: 10, color: "#22c55e", textAlign: "center", marginBottom: 14 }}>
+            ✅ Conectado — Pregão usa este signer para executar ordens automaticamente
+          </div>
+        )}
+        {initialized && (
           <button
-            onClick={handleStop}
-            style={{ flex: 1, background: "#ef4444", color: "#fff", border: "none", borderRadius: 10, padding: 12, fontWeight: 700, cursor: "pointer", fontSize: 12 }}
+            onClick={handleDisconnect}
+            style={{ background: "#1e293b", border: "none", borderRadius: 8, color: "#64748b", cursor: "pointer", padding: "0 10px", fontSize: 10 }}
+            title="Desconectar"
           >
-            ⏹️ PARAR TRADING
+            🔌
           </button>
         )}
       </div>
@@ -284,14 +358,14 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
                   gap: 8,
                 }}
               >
-                <span style={{ color: t.action === "HOLD" ? "#64748b" : t.profit >= 0 ? "#4ade80" : "#f87171", minWidth: 40 }}>
+                <span style={{ color: t.action === "HOLD" ? "#64748b" : (t.profit ?? 0) >= 0 ? "#4ade80" : "#f87171", minWidth: 40 }}>
                   {t.action}
                 </span>
                 <span style={{ color: "#94a3b8", flex: 1 }}>
-                  ${t.fromAmount.toFixed(2)}
+                  ${(t.fromAmount ?? 0).toFixed(2)}
                 </span>
-                <span style={{ color: t.profit >= 0 ? "#4ade80" : "#f87171", minWidth: 60 }}>
-                  {t.profit >= 0 ? "+" : ""}${t.profit.toFixed(4)}
+                <span style={{ color: (t.profit ?? 0) >= 0 ? "#4ade80" : "#f87171", minWidth: 60 }}>
+                  {(t.profit ?? 0) >= 0 ? "+" : ""}${(t.profit ?? 0).toFixed(4)}
                 </span>
                 {t.txHash ? (
                   <a
@@ -306,7 +380,7 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
                 ) : (
                   <span style={{ color: "#475569" }}>sem tx</span>
                 )}
-                <span style={{ color: "#475569" }}>{new Date(t.timestamp).toLocaleTimeString()}</span>
+                <span style={{ color: "#475569" }}>{t.timestamp ? new Date(t.timestamp).toLocaleTimeString() : "-"}</span>
               </div>
             ))}
           </div>

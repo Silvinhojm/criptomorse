@@ -11,19 +11,31 @@ class MarketAgent {
   private losses = 0;
   private trades = 0;
 
-  async updateMarketInsights() {
-    this.lastInsights = {
-      trend: Math.random() > 0.5 ? "bullish" : Math.random() > 0.5 ? "bearish" : "neutral",
-      dominance: 45 + Math.random() * 10,
-      fear: 30 + Math.random() * 40,
-    };
+  async updateMarketInsights(externalData?: any) {
+    try {
+      const data = externalData ?? await (await fetch('/api/market-data', { signal: AbortSignal.timeout(5000) })).json();
+      const fg = data.fearGreed ?? {};
+      const mkt = data.market ?? {};
+
+      const fear = fg.value ?? 50;
+      const dominance = mkt.btcDominance ?? 55;
+
+      this.lastInsights = {
+        trend: fear < 25 ? "bearish" : fear > 60 ? "bullish" : "neutral",
+        dominance: Math.round(dominance * 100) / 100,
+        fear,
+      };
+    } catch {
+      /* keep last insights */
+    }
   }
 
   getAdvice(): MarketOpinion {
     const { trend, fear } = this.lastInsights;
     const action: "buy" | "sell" | "hold" = trend === "bullish" ? "buy" : trend === "bearish" ? "sell" : "hold";
-    const confidence = Math.round(50 + Math.abs(fear - 50) * 0.5);
-    return { agentName: "Market", action, confidence, reason: `Trend: ${trend}, Fear: ${Math.round(fear)}` };
+    const confidence = Math.round(30 + Math.abs(fear - 50) * 0.3);
+    const fgLabel = fear < 25 ? 'Extreme Fear' : fear < 45 ? 'Fear' : fear < 55 ? 'Neutral' : fear < 75 ? 'Greed' : 'Extreme Greed';
+    return { agentName: "Market", action, confidence, reason: `Fear & Greed: ${Math.round(fear)} (${fgLabel}), Dominance: ${this.lastInsights.dominance}%` };
   }
 
   getScore() {
@@ -33,7 +45,7 @@ class MarketAgent {
       losses: this.losses,
       totalTrades: this.trades,
       winRate: this.trades > 0 ? (this.wins / this.trades) * 100 : 0,
-      avgConfidence: 65,
+      avgConfidence: 30,
       color: "#f97316",
       icon: "📈",
     };

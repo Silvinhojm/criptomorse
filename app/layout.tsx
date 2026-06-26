@@ -13,8 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Criptomorse",
-  description: "Banking-grade stablecoin wallet on Arc Testnet with ERC-8183 agentic jobs",
+  title: "CriptoMorse — Trading Automatizado Multi-Chain",
+  description: "Robôs que leem velas RSI e Bollinger como código Morse — detectam quedas falsas, subidas falsas e flutuações iminentes. Trading multi-chain 24/7 com agentes inteligentes.",
+  icons: { icon: "/favicon.ico" },
 };
 
 export default function RootLayout({

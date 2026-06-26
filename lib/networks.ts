@@ -53,6 +53,8 @@ export const SUPPORTED_NETWORKS: Network[] = [
     tokens: [
       { symbol: 'USDC', name: 'USD Coin', address: '0x3600000000000000000000000000000000000000', decimals: 6, icon: '💵' },
       { symbol: 'EURC', name: 'Euro Coin', address: '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a', decimals: 6, icon: '💶' },
+      { symbol: 'cirBTC', name: 'Circle Wrapped Bitcoin', address: '0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF', decimals: 8, icon: '₿' },
+      { symbol: 'mcirBTC', name: 'Mock cirBTC', address: '0x8cad4951192853D14f8Cb813695146b5Ae00EA6d', decimals: 8, icon: '₿' },
     ],
     icon: '🔵',
     isTestnet: true,
@@ -104,6 +106,9 @@ export const SUPPORTED_NETWORKS: Network[] = [
       { symbol: 'USDT', name: 'Tether', address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 6, icon: '💰' },
       { symbol: 'ETH', name: 'Ethereum', address: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', decimals: 18, icon: '⬜' },
       { symbol: 'DAI', name: 'Dai', address: '0x6B175474E89094C44Da98b954EedeAC495271d0F', decimals: 18, icon: '🟡' },
+      { symbol: 'cirBTC', name: 'Circle Wrapped Bitcoin', address: '0x72DFB2E44f59C5AD2bAFE84314E5b99a7cd5075E', decimals: 8, icon: '₿' },
+      { symbol: 'WBTC', name: 'Wrapped Bitcoin', address: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599', decimals: 8, icon: '₿' },
+      { symbol: 'EURC', name: 'Euro Coin', address: '0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c', decimals: 6, icon: '💶' },
     ],
     icon: '⬜',
     isTestnet: false,
@@ -118,7 +123,7 @@ export const SUPPORTED_NETWORKS: Network[] = [
     shortName: 'POL',
     chainId: 137,
     chainIdHex: '0x89',
-    rpcUrl: 'https://polygon-rpc.com',
+    rpcUrl: 'https://polygon.publicnode.com',
     explorerUrl: 'https://polygonscan.com',
     nativeCurrency: {
       name: 'Polygon',
@@ -162,6 +167,30 @@ export const SUPPORTED_NETWORKS: Network[] = [
     lifiId: 42161,
   },
   
+  // Ethereum Sepolia (testnet)
+  {
+    id: 'sepolia',
+    name: 'Ethereum Sepolia',
+    shortName: 'Sepolia',
+    chainId: 11155111,
+    chainIdHex: '0xaa36a7',
+    rpcUrl: 'https://rpc.sepolia.org',
+    explorerUrl: 'https://sepolia.etherscan.io',
+    nativeCurrency: {
+      name: 'Sepolia ETH',
+      symbol: 'ETH',
+      decimals: 18,
+    },
+    tokens: [
+      { symbol: 'USDC', name: 'USD Coin', address: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238', decimals: 6, icon: '💵' },
+      { symbol: 'WETH', name: 'Wrapped Ether', address: '0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14', decimals: 18, icon: '⬜' },
+    ],
+    icon: '🧪',
+    isTestnet: true,
+    isActive: true,
+    lifiId: 11155111,
+  },
+
   // Optimism
   {
     id: 'optimism',

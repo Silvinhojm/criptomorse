@@ -4,13 +4,20 @@ import { PSBTOfferSystem } from '../../../lib/bitcoin-psbt-offer';
 export async function GET() {
   try {
     const psbtSystem = new PSBTOfferSystem();
-    
-    // Tentamos acessar a propriedade interna 'offers' se ela existir, caso contrário, inicializamos um array vazio para o build passar
-    const offers = (psbtSystem as any).offers || []; 
+    const offers = await psbtSystem.getPendingOffers();
 
     return NextResponse.json({
       success: true,
-      offers: offers
+      offers: offers.map(o => ({
+        id: o.id,
+        amountBTC: o.amountBTC,
+        feeBTC: o.feeBTC,
+        returnBTC: o.returnBTC,
+        ownerAddress: o.ownerAddress,
+        targetAddress: o.targetAddress,
+        status: o.status,
+        expiresAt: o.expiresAt,
+      }))
     });
   } catch (error: any) {
     console.error('Erro ao listar ofertas:', error);

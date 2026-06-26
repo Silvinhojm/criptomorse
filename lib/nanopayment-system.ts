@@ -58,13 +58,13 @@ class NanopaymentSystem {
       });
     });
 
-    // CatÃ¡logo de serviÃ§os
+    // Catálogo de serviços
     this.serviceCatalog = [
       { serviceId: 'market-data', agentProvider: 'MarketAgent', pricePerCall: 0.01, description: 'Dados de mercado' },
-      { serviceId: 'sentiment', agentProvider: 'NewsAgent', pricePerCall: 0.005, description: 'AnÃ¡lise de sentimento' },
-      { serviceId: 'quantum-forecast', agentProvider: 'QuantumAgent', pricePerCall: 0.02, description: 'PrevisÃ£o quÃ¢ntica' },
-      { serviceId: 'technical-indicators', agentProvider: 'TechnicalAgent', pricePerCall: 0.008, description: 'Indicadores tÃ©cnicos' },
-      { serviceId: 'volume-analysis', agentProvider: 'VolumeAgent', pricePerCall: 0.007, description: 'AnÃ¡lise de volume' }
+      { serviceId: 'sentiment', agentProvider: 'NewsAgent', pricePerCall: 0.005, description: 'Análise de sentimento' },
+      { serviceId: 'quantum-forecast', agentProvider: 'QuantumAgent', pricePerCall: 0.02, description: 'Previsão quântica' },
+      { serviceId: 'technical-indicators', agentProvider: 'TechnicalAgent', pricePerCall: 0.008, description: 'Indicadores técnicos' },
+      { serviceId: 'volume-analysis', agentProvider: 'VolumeAgent', pricePerCall: 0.007, description: 'Análise de volume' }
     ];
   }
 
@@ -186,6 +186,55 @@ class NanopaymentSystem {
     console.log(`ðŸ’° CrÃ©dito adicionado: ${agentId} +$${amount}`);
   }
 
+  /**
+   * Recompensa um agente por performance em trade lucrativo.
+   * Cria carteira se nao existir, credita o valor e registra com memoId via transactionMemos.
+   */
+  rewardAgentForTrade(
+    agentName: string,
+    profitShare: number,
+    tradeId: string,
+    pair: string
+  ): Nanopayment {
+    let wallet = this.agentWallets.get(agentName)
+    if (!wallet) {
+      wallet = {
+        agentId: agentName,
+        balance: 0,
+        dailySpent: 0,
+        dailyLimit: this.dailyLimitDefault,
+        totalSpent: 0,
+        totalReceived: 0,
+        lastReset: Date.now(),
+      }
+      this.agentWallets.set(agentName, wallet)
+    }
+
+    wallet.balance += profitShare
+    wallet.totalReceived += profitShare
+
+    const payment: Nanopayment = {
+      id: `reward_${tradeId}_${agentName}`,
+      fromAgent: 'Sistema',
+      toAgent: agentName,
+      amount: profitShare,
+      reason: `🎯 Performance trade ${pair} (${tradeId.slice(0, 8)})`,
+      timestamp: Date.now(),
+      status: 'completed',
+    }
+    this.payments.push(payment)
+
+    console.log(`🏆 Recompensa: ${agentName} recebeu $${profitShare.toFixed(4)} por trade ${pair} (${tradeId.slice(0, 8)})`)
+    return payment
+  }
+
+  /** Total recebido por performance de trades (exclui pagamentos de servicos) */
+  getPerformanceEarnings(agentId: string): number {
+    return this.payments
+      .filter(p => p.toAgent === agentId && p.id.startsWith('reward_'))
+      .reduce((sum, p) => sum + p.amount, 0)
+  }
+
   getServiceCatalog(): ServicePricing[] {
     return this.serviceCatalog;
   }
@@ -223,7 +272,7 @@ class NanopaymentSystem {
       }
       return false;
     } else {
-      return await realBalance.transferUSDC(userAddress, amount);
+      return false;
     }
   }
 }

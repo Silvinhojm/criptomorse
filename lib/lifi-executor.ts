@@ -3,21 +3,49 @@
 // Retorna txHash confirmado na blockchain
 
 import { ethers } from 'ethers';
+import { enforceArcFee } from './arc-gas';
 
 const LI_FI_API = 'https://li.quest/v1';
 const INTEGRATOR_ID = 'CriptoMorse-ARC---Main';
+const REQUEST_TIMEOUT = 15000; // 15s timeout para requests LI.FI
 
-// ─── Tipos ─────────────────────────────────────────────────────────────────────
+// Rate limiter global com cooldown inteligente
+let lastRequestTime = 0;
+let cooldownUntil = 0;
+const MIN_INTERVAL_MS = 2000;
+const COOLDOWN_MS = 60000; // 60s sem chamadas após um 429
+
+export function isLifiCooldown(): boolean {
+  return Date.now() < cooldownUntil;
+}
+
+export function resetCooldown(): void {
+  cooldownUntil = 0;
+}
+
+async function rateLimit(): Promise<boolean> {
+  const now = Date.now();
+  if (now < cooldownUntil) return false;
+  const elapsed = now - lastRequestTime;
+  if (elapsed < MIN_INTERVAL_MS) {
+    const wait = MIN_INTERVAL_MS - elapsed + Math.random() * 300;
+    await new Promise(r => setTimeout(r, wait));
+  }
+  lastRequestTime = Date.now();
+  return true;
+}
+
+// --- Tipos ---
 
 export interface SwapParams {
   fromChain: number;
   toChain: number;
   fromToken: string;
   toToken: string;
-  fromAmount: string;       // em unidades do token (ex: "10000000" = 10 USDC)
+  fromAmount: string;
   fromAddress: string;
   toAddress?: string;
-  slippage?: number;        // ex: 0.005 = 0.5%
+  slippage?: number;
 }
 
 export interface QuoteResult {
@@ -45,7 +73,25 @@ export interface SwapResult {
   error?: string;
 }
 
-// ─── Explorer por chainId ──────────────────────────────────────────────────────
+// Gerenciamento de nonce por chainId (evita nonce mismatch em envios concorrentes)
+const nonceTracker: Map<number, { nextNonce: number; timestamp: number }> = new Map();
+const NONCE_EXPIRY = 120000; // 2 minutos
+
+async function getNextNonce(provider: ethers.Provider, chainId: number, address: string): Promise<number> {
+  const chainNonce = nonceTracker.get(chainId);
+  const onChainNonce = await provider.getTransactionCount(address);
+
+  if (!chainNonce || Date.now() - chainNonce.timestamp > NONCE_EXPIRY) {
+    nonceTracker.set(chainId, { nextNonce: onChainNonce, timestamp: Date.now() });
+    return onChainNonce;
+  }
+
+  const nextNonce = Math.max(chainNonce.nextNonce, onChainNonce);
+  nonceTracker.set(chainId, { nextNonce: nextNonce + 1, timestamp: Date.now() });
+  return nextNonce;
+}
+
+// --- Explorer por chainId ---
 
 const EXPLORERS: Record<number, string> = {
   8453:    'https://basescan.org',
@@ -61,80 +107,91 @@ function explorerTx(chainId: number, txHash: string): string {
   return `${base}/tx/${txHash}`;
 }
 
-// ─── 1. Buscar cotação ─────────────────────────────────────────────────────────
+// --- 1. Buscar cotacao ---
 
 export async function getQuote(params: SwapParams): Promise<QuoteResult | null> {
+  // Se está em cooldown global (429 recente), retorna null imediatamente
+  if (Date.now() < cooldownUntil) {
+    console.warn(`LI.FI em cooldown (mais ${Math.round((cooldownUntil - Date.now())/1000)}s) — pulando`);
+    return null;
+  }
+
   try {
-    const url = new URL(`${LI_FI_API}/quote`);
-    url.searchParams.set('fromChain',   params.fromChain.toString());
-    url.searchParams.set('toChain',     params.toChain.toString());
-    url.searchParams.set('fromToken',   params.fromToken);
-    url.searchParams.set('toToken',     params.toToken);
-    url.searchParams.set('fromAmount',  params.fromAmount);
-    url.searchParams.set('fromAddress', params.fromAddress);
-    url.searchParams.set('slippage',    (params.slippage ?? 0.005).toString());
-    url.searchParams.set('integrator',  INTEGRATOR_ID);
-    if (params.toAddress) url.searchParams.set('toAddress', params.toAddress);
+    const searchParams = new URLSearchParams({
+      fromChain:   params.fromChain.toString(),
+      toChain:     params.toChain.toString(),
+      fromToken:   params.fromToken,
+      toToken:     params.toToken,
+      fromAmount:  params.fromAmount,
+      fromAddress: params.fromAddress,
+      slippage:    (params.slippage ?? 0.005).toString(),
+      integrator:  INTEGRATOR_ID,
+    });
+    if (params.toAddress) searchParams.set('toAddress', params.toAddress);
 
-    console.log(`📊 LI.FI: Buscando cotação ${params.fromChain} → ${params.toChain}`);
+    if (!(await rateLimit())) return null;
+    console.log(`LI.FI: Buscando cotacao ${params.fromChain} -> ${params.toChain}`);
 
-    const res = await fetch(url.toString(), {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+
+    const res = await fetch(`/api/lifi/quote?${searchParams.toString()}`, {
       headers: { 'Accept': 'application/json' },
+      signal: controller.signal,
     });
 
+    clearTimeout(timeoutId);
+
     if (res.status === 429) {
-      console.warn('⏳ Rate limit LI.FI — aguardando 2s...');
-      await new Promise(r => setTimeout(r, 2000));
-      return getQuote(params);
+      cooldownUntil = Date.now() + COOLDOWN_MS;
+      console.warn(`LI.FI 429 — cooldown global de ${COOLDOWN_MS/1000}s ativado`);
+      return null; // não retry, só volta depois do cooldown
     }
 
     if (!res.ok) {
       const err = await res.text();
-      console.error(`❌ LI.FI quote erro ${res.status}:`, err);
+      console.warn(`LI.FI quote erro ${res.status}: amount too small or no route`, err.slice(0, 200));
       return null;
     }
 
     const data = await res.json();
 
     if (!data.transactionRequest) {
-      console.warn('⚠️ LI.FI: Sem transactionRequest na resposta');
+      console.warn('LI.FI: Sem transactionRequest na resposta');
       return null;
     }
 
-    console.log(`✅ LI.FI cotação via ${data.tool} | saída: ${data.toAmount}`);
+    // LI.FI v1 coloca toAmount em estimate.toAmount (não no top-level).
+    // Algumas rotas "fly" retornam "0" ou undefined.
+    const rawToAmount = data.estimate?.toAmount ?? data.toAmount ?? params.fromAmount;
+
+    if (data.tool === 'fly' && (!rawToAmount || rawToAmount === '0')) {
+      console.warn(`LI.FI: "fly" sem toAmount — usando fromAmount como estimativa`);
+    }
+
+    const toAmount = rawToAmount === '0' ? params.fromAmount : rawToAmount;
+
+    console.log(`LI.FI cotacao via ${data.tool} | saida: ${toAmount}`);
 
     return {
       fromAmount:          data.fromAmount,
-      toAmount: data.estimate?.toAmount ?? data.toAmount ?? "0",
+      toAmount,
       tool:                data.tool ?? 'unknown',
       estimatedGas:        data.estimate?.gasCosts?.[0]?.amount ?? '0',
       expectedTime:        data.estimate?.executionDuration ?? 30,
       transactionRequest:  data.transactionRequest,
     };
-  } catch (err) {
-    console.error('❌ LI.FI getQuote erro:', err);
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      console.error('LI.FI getQuote timeout');
+    } else {
+      console.error('LI.FI getQuote erro:', err);
+    }
     return null;
   }
 }
 
-/** Tenta cotações com slippage crescente (útil quando price impact > 10% no LI.FI) */
-export async function getQuoteWithRetry(
-  params: SwapParams,
-  slippageLevels: number[] = [0.005, 0.05, 0.12]
-): Promise<QuoteResult | null> {
-  for (const slippage of slippageLevels) {
-    const quote = await getQuote({ ...params, slippage });
-    if (quote) {
-      if (slippage > (params.slippage ?? 0.005)) {
-        console.log(`✅ LI.FI cotação obtida com slippage ${(slippage * 100).toFixed(1)}%`);
-      }
-      return quote;
-    }
-  }
-  return null;
-}
-
-// ─── 2. Aprovar token ERC-20 se necessário ─────────────────────────────────────
+// --- 2. Aprovar token ERC-20 se necessario ---
 
 const ERC20_ABI = [
   'function allowance(address owner, address spender) view returns (uint256)',
@@ -151,16 +208,16 @@ async function ensureApproval(
   const allowance: bigint = await token.allowance(signer.address, spender);
 
   if (allowance < amount) {
-    console.log(`🔓 Aprovando ${amount} tokens para ${spender}...`);
+    console.log(`Aprovando ${amount} tokens para ${spender}...`);
     const tx = await token.approve(spender, ethers.MaxUint256);
     await tx.wait();
-    console.log(`✅ Aprovação confirmada: ${tx.hash}`);
+    console.log(`Aprovacao confirmada: ${tx.hash}`);
   } else {
-    console.log(`✅ Allowance já suficiente (${allowance})`);
+    console.log(`Allowance ja suficiente (${allowance})`);
   }
 }
 
-// ─── 3. Executar swap REAL ─────────────────────────────────────────────────────
+// --- 3. Executar swap REAL ---
 
 export async function executeSwap(
   params: SwapParams,
@@ -170,23 +227,22 @@ export async function executeSwap(
   const log = (msg: string) => { console.log(msg); onLog?.(msg); };
 
   try {
-    // 3a. Buscar cotação
-    log(`🔍 Obtendo cotação LI.FI...`);
+    log(`Obtendo cotacao LI.FI...`);
     const quote = await getQuote(params);
 
     if (!quote) {
-      return { success: false, error: 'Nenhuma rota LI.FI disponível' };
+      return { success: false, error: 'Nenhuma rota LI.FI disponivel' };
     }
 
     const { transactionRequest: tx, tool, toAmount } = quote;
-    log(`🛣️ Rota via ${tool} | Estimativa saída: ${toAmount}`);
+    log(`Rota via ${tool} | Estimativa saida: ${toAmount}`);
 
-    // 3b. Aprovação ERC-20 (se não for token nativo)
+    // Aprovacao ERC-20 (se nao for token nativo)
     const isNative = params.fromToken.toLowerCase() === '0x0000000000000000000000000000000000000000'
                   || params.fromToken.toLowerCase() === ethers.ZeroAddress.toLowerCase();
 
     if (!isNative && tx.to) {
-      log(`🔓 Verificando allowance...`);
+      log(`Verificando allowance...`);
       await ensureApproval(
         signer,
         params.fromToken,
@@ -195,33 +251,43 @@ export async function executeSwap(
       );
     }
 
-    // 3c. Enviar transação
-    log(`📝 Assinando e enviando transação...`);
+    // Nonce management
+    let nonce: number | undefined;
+    try {
+      nonce = await getNextNonce(signer.provider!, params.fromChain, signer.address);
+      log(`Nonce: ${nonce}`);
+    } catch {
+      log(`Nonce padrao (sem gerenciamento)`);
+    }
+
+    const arcFeeParams = await enforceArcFee(signer.provider!);
+
+    log(`Assinando e enviando transacao...`);
     const txResponse = await signer.sendTransaction({
       to:       tx.to,
       data:     tx.data,
       value:    BigInt(tx.value ?? '0'),
       gasLimit: tx.gasLimit ? BigInt(tx.gasLimit) : undefined,
-      // gasPrice omitido: ethers usará EIP-1559 automaticamente
+      nonce,
+      ...arcFeeParams,
     });
 
-    log(`🔗 TX enviada: ${txResponse.hash}`);
-    log(`⏳ Aguardando confirmação na blockchain...`);
+    log(`TX enviada: ${txResponse.hash}`);
+    log(`Aguardando confirmacao na blockchain...`);
 
-    // 3d. Aguardar confirmação (1 bloco)
     const receipt = await txResponse.wait(1);
 
     if (!receipt || receipt.status === 0) {
       return {
         success:  false,
         txHash:   txResponse.hash,
-        error:    'Transação falhou on-chain (status 0)',
+        error:    'Transacao falhou on-chain (status 0)',
       };
     }
 
     const explorerUrl = explorerTx(params.fromChain, txResponse.hash);
-    log(`✅ CONFIRMADO no bloco ${receipt.blockNumber}!`);
-    log(`🔗 Explorer: ${explorerUrl}`);
+    log(`CONFIRMADO no bloco ${receipt.blockNumber}!`);
+    log(`Explorer: ${explorerUrl}`);
 
     return {
       success:        true,
@@ -234,32 +300,34 @@ export async function executeSwap(
   } catch (err: any) {
     let msg = 'Erro desconhecido';
     if (err?.code === 'ACTION_REJECTED' || err?.message?.includes('user rejected')) {
-      msg = 'Transação rejeitada pelo usuário';
+      msg = 'Transacao rejeitada pelo usuario';
     } else if (err?.message?.includes('insufficient')) {
       msg = 'Saldo insuficiente (inclua gas)';
     } else if (err?.message?.includes('nonce')) {
-      msg = 'Erro de nonce — tente novamente';
+      nonceTracker.delete(params.fromChain);
+      msg = 'Erro de nonce - nonce resetado, tente novamente';
     } else if (err?.message) {
       msg = err.message;
     }
-    console.error('❌ executeSwap erro:', err);
+    console.error('executeSwap erro:', err);
     return { success: false, error: msg };
   }
 }
 
-// ─── 4. Helpers ────────────────────────────────────────────────────────────────
+// --- 4. Helpers ---
 
-/** Converte valor humano para unidades do token */
 export function toTokenUnits(amount: number, decimals = 6): string {
   return Math.floor(amount * Math.pow(10, decimals)).toString();
 }
 
-/** Converte unidades do token para valor humano */
 export function fromTokenUnits(amount: string, decimals = 6): number {
-  return parseInt(amount) / Math.pow(10, decimals);
+  try {
+    return Number(BigInt(amount)) / Math.pow(10, decimals);
+  } catch {
+    return parseInt(amount) / Math.pow(10, decimals);
+  }
 }
 
-/** Chains suportadas com endereços USDC */
 export const SUPPORTED_CHAINS = {
   base:     { id: 8453,    name: 'Base',     usdc: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' },
   polygon:  { id: 137,     name: 'Polygon',  usdc: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359' },

@@ -13,12 +13,18 @@ export function NanopaymentDashboard({ agentScores, network, privateKey }: { age
   const [selectedService, setSelectedService] = useState("");
   const [isPaying, setIsPaying] = useState(false);
   const [stats, setStats] = useState({ totalPayments: 0, totalVolume: 0, avgPayment: 0 });
+  const [performanceEarnings, setPerformanceEarnings] = useState<Record<string, number>>({});
 
   const refreshData = () => {
     setWallets(nanopaymentSystem.getAllWallets());
     setPayments(nanopaymentSystem.getPaymentHistory());
     setServices(nanopaymentSystem.getServiceCatalog());
     setStats(nanopaymentSystem.getStats());
+    const earnings: Record<string, number> = {};
+    for (const w of nanopaymentSystem.getAllWallets()) {
+      earnings[w.agentId] = nanopaymentSystem.getPerformanceEarnings(w.agentId);
+    }
+    setPerformanceEarnings(earnings);
   };
 
   useEffect(() => {
@@ -72,15 +78,23 @@ export function NanopaymentDashboard({ agentScores, network, privateKey }: { age
       <div style={{ marginBottom: '16px' }}>
         <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '8px' }}>💰 Saldo dos Agentes:</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-          {wallets.map(wallet => (
-            <div key={wallet.agentId} style={{ background: '#0a0a2e', padding: '8px 12px', borderRadius: '10px', flex: '1 1 auto', minWidth: '100px' }}>
-              <div style={{ fontSize: '11px', color: '#a78bfa' }}>{wallet.agentId}</div>
-              <div style={{ fontSize: '14px', fontWeight: 'bold', color: wallet.balance > 0 ? '#4ade80' : '#ef4444' }}>
-                ${wallet.balance.toFixed(4)}
+          {wallets.map(wallet => {
+            const perfEarn = performanceEarnings[wallet.agentId] ?? 0;
+            return (
+              <div key={wallet.agentId} style={{ background: '#0a0a2e', padding: '8px 12px', borderRadius: '10px', flex: '1 1 auto', minWidth: '120px' }}>
+                <div style={{ fontSize: '11px', color: '#a78bfa' }}>{wallet.agentId}</div>
+                <div style={{ fontSize: '14px', fontWeight: 'bold', color: wallet.balance > 0 ? '#4ade80' : '#ef4444' }}>
+                  ${wallet.balance.toFixed(4)}
+                </div>
+                {perfEarn > 0 && (
+                  <div style={{ fontSize: '9px', color: '#fbbf24' }}>
+                    🏆 +${perfEarn.toFixed(4)} em trades
+                  </div>
+                )}
+                <div style={{ fontSize: '9px', color: '#94a3b8' }}>Limite: ${wallet.dailyLimit}/dia</div>
               </div>
-              <div style={{ fontSize: '9px', color: '#94a3b8' }}>Limite: ${wallet.dailyLimit}/dia</div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
@@ -119,19 +133,28 @@ export function NanopaymentDashboard({ agentScores, network, privateKey }: { age
         <div>
           <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '8px' }}>📜 Últimos Pagamentos:</div>
           <div style={{ maxHeight: '150px', overflowY: 'auto' }}>
-            {payments.slice(-5).reverse().map(p => (
-              <div key={p.id} style={{ fontSize: '10px', padding: '6px 0', borderBottom: '1px solid #2a2a4e', display: 'flex', justifyContent: 'space-between' }}>
-                <span>{p.fromAgent} → {p.toAgent}</span>
-                <span style={{ color: '#fbbf24' }}>${p.amount.toFixed(4)}</span>
-                <span style={{ color: '#94a3b8' }}>{new Date(p.timestamp).toLocaleTimeString()}</span>
-              </div>
-            ))}
+              {payments.slice(-5).reverse().map(p => {
+              const isReward = p.id.startsWith('reward_');
+              return (
+                <div key={p.id} style={{ fontSize: '10px', padding: '6px 0', borderBottom: '1px solid #2a2a4e', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    {isReward ? '🏆' : '💸'}
+                    <span>{isReward ? p.toAgent : `${p.fromAgent}→${p.toAgent}`}</span>
+                  </span>
+                  <span style={{ color: '#fbbf24' }}>${p.amount.toFixed(4)}</span>
+                  <span style={{ color: '#94a3b8', fontSize: '9px' }}>{new Date(p.timestamp).toLocaleTimeString()}</span>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
 
       <div style={{ fontSize: '9px', color: '#6b7280', marginTop: '12px', textAlign: 'center' }}>
-        ⚡ Nanopagamentos TLAY - Machine-to-Machine na Arc Network
+        ⚡ Nanopagamentos TLAY — Machine-to-Machine na Arc Network
+      </div>
+      <div style={{ fontSize: '9px', color: '#fbbf24', marginTop: '4px', textAlign: 'center' }}>
+        🏆 Agentes recebem bônus por trades lucrativos — simulado na Arc
       </div>
     </div>
   );

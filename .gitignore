@@ -30,9 +30,11 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files
+# env files (can opt-in for committing if needed)
 .env*
-!.env.example
+
+# data
+.data/
 
 # vercel
 .vercel
@@ -41,9 +43,4 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# local junk / backups
-*.backup
-*.backup*
-dump*.txt
-arquivos.txt
-/cache/
+.vercel

@@ -1,118 +1,88 @@
-// lib/persistence.ts - Persistência de dados local
+const TRADE_HISTORY_KEY = "arcflow_trade_history";
+const TRADER_STATE_KEY = "arcflow_trader_state";
+const CIRCUIT_BREAKER_KEY = "arcflow_circuit_breaker";
 
-export interface PersistedData {
-  agentScores: any[];
-  memoryStats: any;
-  tradeHistory: any[];
-  totalProfit: number;
-  tradeCount: number;
-  grossProfit: number;
-  lastUpdated: number;
+async function apiCall(url: string, method: string, body?: any): Promise<any> {
+  try {
+    const opts: RequestInit = { method, headers: { "Content-Type": "application/json" } };
+    if (body) opts.body = JSON.stringify(body);
+    const res = await fetch(url, opts);
+    if (!res.ok) throw new Error(`API ${res.status}`);
+    return await res.json();
+  } catch { return null; }
 }
 
-class PersistenceManager {
-  private readonly STORAGE_KEY = 'criptomorse_data';
-  
-  // Salvar todos os dados
-  saveData(data: Partial<PersistedData>): void {
-    try {
-      const existing = this.loadData();
-      const merged = { ...existing, ...data, lastUpdated: Date.now() };
-      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(merged));
-      console.log('💾 Dados salvos com sucesso');
-    } catch (error) {
-      console.error('Erro ao salvar dados:', error);
-    }
-  }
-  
-  // Carregar todos os dados
-  loadData(): PersistedData {
-    try {
-      const raw = localStorage.getItem(this.STORAGE_KEY);
-      if (raw) {
-        const data = JSON.parse(raw);
-        console.log(`📂 Dados carregados: ${data.tradeCount || 0} trades, ${data.memoryStats?.totalTrades || 0} memórias`);
-        return data;
-      }
-    } catch (error) {
-      console.error('Erro ao carregar dados:', error);
-    }
-    
-    // Dados padrão
-    return {
-      agentScores: [],
-      memoryStats: null,
-      tradeHistory: [],
-      totalProfit: 0,
-      tradeCount: 0,
-      grossProfit: 0,
-      lastUpdated: Date.now()
-    };
-  }
-  
-  // Salvar histórico de trade
-  saveTrade(trade: any): void {
-    const data = this.loadData();
-    data.tradeHistory = [trade, ...(data.tradeHistory || [])].slice(0, 100); // Últimos 100 trades
-    data.tradeCount = (data.tradeCount || 0) + 1;
-    data.totalProfit = (data.totalProfit || 0) + (trade.profit || 0);
-    data.grossProfit = (data.grossProfit || 0) + (trade.grossProfit || 0);
-    this.saveData(data);
-  }
-  
-  // Salvar scores dos agentes
-  saveAgentScores(scores: any[]): void {
-    const data = this.loadData();
-    data.agentScores = scores;
-    this.saveData(data);
-  }
-  
-  // Salvar memória
-  saveMemory(memoryStats: any): void {
-    const data = this.loadData();
-    data.memoryStats = memoryStats;
-    this.saveData(data);
-  }
-  
-  // Limpar todos os dados
-  clearAll(): void {
-    localStorage.removeItem(this.STORAGE_KEY);
-    console.log('🗑️ Todos os dados foram limpos');
-  }
-  
-  // Exportar dados para backup
-  exportData(): string {
-    const data = this.loadData();
-    return JSON.stringify(data, null, 2);
-  }
-  
-  // Importar dados de backup
-  importData(jsonString: string): boolean {
-    try {
-      const data = JSON.parse(jsonString);
-      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(data));
-      console.log('📥 Dados importados com sucesso');
-      return true;
-    } catch (error) {
-      console.error('Erro ao importar dados:', error);
-      return false;
-    }
-  }
-  
-  // Verificar se há dados salvos
-  hasData(): boolean {
-    return localStorage.getItem(this.STORAGE_KEY) !== null;
-  }
-  
-  // Obter estatísticas resumidas
-  getStats(): { trades: number; profit: number; lastTrade: any } {
-    const data = this.loadData();
-    return {
-      trades: data.tradeCount || 0,
-      profit: data.totalProfit || 0,
-      lastTrade: data.tradeHistory?.[0] || null
-    };
+function getLocal<T>(key: string, fallback: T): T {
+  try {
+    if (typeof window === "undefined") return fallback
+    const data = localStorage.getItem(key);
+    return data ? JSON.parse(data) : fallback;
+  } catch { return fallback; }
+}
+
+function setLocal(key: string, value: any): void {
+  try {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch { /* ignore */ }
+}
+
+function isRealTrade(record: any): boolean {
+  return record.txHash && typeof record.txHash === "string" && record.txHash.startsWith("0x")
+}
+
+export async function saveTradeHistory(history: any[]): Promise<void> {
+  const merged = [...getLocal<any[]>(TRADE_HISTORY_KEY, []), ...history];
+  const unique = merged.filter(
+    (item, idx, self) => idx === self.findIndex(t => t.id === item.id)
+  ).slice(-500);
+  // Só persiste trades com txHash real (0x...) — descarta simulações testnet
+  const realOnly = unique.filter(isRealTrade)
+  setLocal(TRADE_HISTORY_KEY, realOnly);
+  for (const record of history) {
+    if (isRealTrade(record)) await apiCall("/api/trades", "POST", record);
   }
 }
 
-export const persistence = new PersistenceManager();
+export async function loadTradeHistory(): Promise<any[]> {
+  const local = getLocal<any[]>(TRADE_HISTORY_KEY, []).filter(isRealTrade);
+  const server = await apiCall("/api/trades", "GET");
+  if (!server || !Array.isArray(server) || server.length === 0) return local;
+  const merged = [...server.filter(isRealTrade), ...local];
+  const unique = merged.filter(
+    (item, idx, self) => idx === self.findIndex(t => t.id === item.id || t.txHash === item.txHash)
+  );
+  setLocal(TRADE_HISTORY_KEY, unique.slice(-500));
+  return unique;
+}
+
+export async function saveTraderState(state: { totalProfit: number; lastAction: string }): Promise<void> {
+  setLocal(TRADER_STATE_KEY, state);
+  await apiCall("/api/state", "POST", state);
+}
+
+export async function loadTraderState(): Promise<{ totalProfit: number; lastAction: string } | null> {
+  const local = getLocal<{ totalProfit: number; lastAction: string } | null>(TRADER_STATE_KEY, null);
+  const server = await apiCall("/api/state", "GET");
+  if (server) {
+    setLocal(TRADER_STATE_KEY, server);
+    return server;
+  }
+  return local;
+}
+
+export function clearPersistence(): void {
+  try {
+    localStorage.removeItem(TRADE_HISTORY_KEY);
+    localStorage.removeItem(TRADER_STATE_KEY);
+    localStorage.removeItem(CIRCUIT_BREAKER_KEY);
+  } catch { /* ignore */ }
+}
+
+export function saveCircuitBreakerState(state: any): void {
+  setLocal(CIRCUIT_BREAKER_KEY, state);
+}
+
+export function loadCircuitBreakerState<T>(fallback: T): T {
+  return getLocal(CIRCUIT_BREAKER_KEY, fallback);
+}

@@ -59,6 +59,13 @@ export function BridgeWidget({ userAddress, onBridgeComplete }: BridgeWidgetProp
       return;
     }
     
+    if (fromNetwork.chainId === toNetwork.chainId && fromToken.address.toLowerCase() === toToken.address.toLowerCase()) {
+      toast.error('Selecione tokens diferentes para origem e destino');
+      setQuote(null);
+      setIsLoading(false);
+      return;
+    }
+    
     setIsLoading(true);
     setQuote(null);
     
