@@ -1130,7 +1130,7 @@ class RealSwapExecutor {
     for (const [chainName, balance] of Object.entries(balances)) {
       const chainKey = CHAIN_TO_KEY[chainName]
       if (!chainKey || chainKey === targetChain) continue
-      if (balance < 5) continue
+      if (balance < 2) continue
 
       const sourceCost = networkCosts.get(chainKey as NetworkKey) ?? 0
       const savingsPerTrade = sourceCost - targetCost
