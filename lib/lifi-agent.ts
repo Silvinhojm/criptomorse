@@ -1,6 +1,8 @@
 // lib/lifi-agent.ts
 // Agente Oficial LI.FI - Integração via REST API
 
+import { parseUnits, formatUnits } from 'ethers';
+
 const LI_FI_API = 'https://li.quest/v1';
 const INTEGRATOR_ID = 'CriptoMorse-ARC---Main';
 const USER_AGENT = 'CriptoMorse-ARC-Agent/1.0';
@@ -51,20 +53,20 @@ export async function getQuote(params: QuoteParams): Promise<QuoteResponse | nul
     url.searchParams.append('fromAddress', params.fromAddress);
     url.searchParams.append('slippage', (params.slippage || 0.005).toString());
     url.searchParams.append('integrator', INTEGRATOR_ID);
-    
+
     if (params.toAddress) {
       url.searchParams.append('toAddress', params.toAddress);
     }
-    
+
     console.log(`🤖 LI.FI Agent: Buscando cotação...`);
-    
+
     const response = await fetch(url.toString(), {
       headers: {
         'User-Agent': USER_AGENT,
         'Accept': 'application/json',
       },
     });
-    
+
     if (!response.ok) {
       if (response.status === 429) {
         console.warn('⚠️ Rate limit atingido! Aguardando...');
@@ -74,9 +76,9 @@ export async function getQuote(params: QuoteParams): Promise<QuoteResponse | nul
       console.error(`❌ LI.FI API erro: ${response.status}`);
       return null;
     }
-    
+
     const data = await response.json();
-    
+
     if (data.transactionRequest) {
       console.log(`✅ Cotação obtida via ${data.tool}`);
       return {
@@ -89,7 +91,7 @@ export async function getQuote(params: QuoteParams): Promise<QuoteResponse | nul
         expectedTime: data.expectedTime || 30,
       };
     }
-    
+
     return null;
   } catch (error) {
     console.error('❌ Erro ao buscar cotação:', error);
@@ -107,18 +109,18 @@ export async function checkTransferStatus(
     url.searchParams.append('txHash', txHash);
     url.searchParams.append('fromChain', fromChain.toString());
     url.searchParams.append('toChain', toChain.toString());
-    
+
     const response = await fetch(url.toString(), {
       headers: {
         'User-Agent': USER_AGENT,
         'Accept': 'application/json',
       },
     });
-    
+
     if (!response.ok) return null;
-    
+
     const data = await response.json();
-    
+
     return {
       status: data.status,
       substatus: data.substatus,
@@ -137,22 +139,32 @@ export async function prepareSwapTransaction(params: QuoteParams): Promise<{
   quote: QuoteResponse;
 } | null> {
   const quote = await getQuote(params);
-  
+
   if (!quote || !quote.transactionRequest) {
     console.error('❌ Não foi possível obter cotação');
     return null;
   }
-  
+
   return {
     transaction: quote.transactionRequest,
     quote,
   };
 }
 
-export function toTokenUnits(amount: number, decimals: number = 6): string {
-  return (amount * Math.pow(10, decimals)).toString();
+/**
+ * Converte valor legível (ex: 2) para unidades brutas do token (ex: "2000000000000000000")
+ * @param amount  Valor que o usuário digitou (ex: 2)
+ * @param decimals Decimais do token: USDC=6, EURC/EURA=18, MATIC=18
+ */
+export function toTokenUnits(amount: number | string, decimals: number): string {
+  return parseUnits(amount.toString(), decimals).toString();
 }
 
-export function fromTokenUnits(amount: string, decimals: number = 6): number {
-  return parseInt(amount) / Math.pow(10, decimals);
+/**
+ * Converte unidades brutas do token (ex: "2000000") para valor legível (ex: 2)
+ * @param amount  Valor bruto em string (ex: "2000000")
+ * @param decimals Decimais do token: USDC=6, EURC/EURA=18, MATIC=18
+ */
+export function fromTokenUnits(amount: string, decimals: number): number {
+  return parseFloat(formatUnits(amount, decimals));
 }

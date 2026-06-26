@@ -11,6 +11,7 @@ import {
   BRIDGE_TARGET_NETWORKS,
   type WalletNetwork,
 } from "@/lib/wallet-config";
+import { realSwap } from "@/lib/real-swap-executor";
 
 interface SwapBridgeModalProps {
   account: string;
@@ -22,8 +23,6 @@ interface SwapBridgeModalProps {
 const AVAILABLE_TOKENS = [
   { symbol: "USDC", name: "USD Coin", icon: "💵" },
   { symbol: "EURC", name: "Euro Coin", icon: "💶" },
-  { symbol: "USDT", name: "Tether", icon: "🪙" },
-  { symbol: "DAI", name: "Dai", icon: "🏦" },
 ];
 
 function getTokenAddress(network: WalletNetwork, tokenSymbol: string): string {
@@ -40,64 +39,143 @@ export function SwapBridgeModal({
 }: SwapBridgeModalProps) {
   const [mode, setMode] = useState<"swap" | "bridge">("swap");
   const [fromToken, setFromToken] = useState("USDC");
-  const [toToken, setToToken] = useState("USDC");
+  const [toToken, setToToken] = useState("EURC");
   const [swapAmount, setSwapAmount] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [targetNetwork, setTargetNetwork] = useState<WalletNetwork>(BASE_MAINNET);
   const [bridgeToken, setBridgeToken] = useState("USDC");
+  const [txHash, setTxHash] = useState<string>("");
 
-  const getSwapUrl = () => {
-    const fromTokenAddress = getTokenAddress(currentNetwork, fromToken);
-    const toTokenAddress = getTokenAddress(currentNetwork, toToken);
-    const amountInWei = parseFloat(swapAmount) * 1000000 || 0;
-    return `https://jumper.exchange/?fromChain=${currentNetwork.chainId}&fromToken=${fromTokenAddress}&toChain=${currentNetwork.chainId}&toToken=${toTokenAddress}&integrator=arcflow${account ? `&toAddress=${account}` : ""}&fromAmount=${amountInWei}`;
+  // 🔥 FUNÇÃO PARA SWAP DIRETO VIA API LI.FI
+  const handleSwapDirect = async () => {
+    const amount = parseFloat(swapAmount);
+    
+    if (isNaN(amount) || amount <= 0) {
+      toast.error("Digite um valor válido (ex: 5 ou 5.50)");
+      return;
+    }
+    
+    // Verificar se é um swap válido (USDC ↔ EURC)
+    const isValidSwap = (fromToken === "USDC" && toToken === "EURC") || 
+                        (fromToken === "EURC" && toToken === "USDC");
+    
+    if (!isValidSwap) {
+      toast.error("Swap suportado apenas entre USDC e EURC");
+      return;
+    }
+    
+    const action = fromToken === "USDC" && toToken === "EURC" ? "BUY" : "SELL";
+    
+    setIsProcessing(true);
+    setTxHash("");
+    
+    try {
+      toast.loading(`🔄 Executando swap de ${amount.toFixed(4)} ${fromToken} → ${toToken}...`, { 
+        id: "swap",
+        duration: 30000,
+      });
+      
+      const result = await realSwap.executeSwap(action, amount, (msg) => {
+        console.log("📡", msg);
+        toast.loading(msg, { id: "swap" });
+      });
+      
+      if (result.success) {
+        toast.success(result.message, { id: "swap", duration: 8000 });
+        setTxHash(result.txHash);
+        
+        // Abrir explorer em nova aba
+        if (result.explorerUrl) {
+          setTimeout(() => {
+            toast.success(`🔗 Ver transação: ${result.txHash.slice(0, 10)}...`, { 
+              id: "swap-link",
+              duration: 10000,
+              icon: "🔗",
+            });
+          }, 1000);
+        }
+        
+        if (onComplete) setTimeout(onComplete, 3000);
+        setTimeout(() => onClose(), 5000);
+      } else {
+        toast.error(result.message, { id: "swap", duration: 5000 });
+      }
+    } catch (error: any) {
+      console.error("Erro no swap:", error);
+      toast.error(`❌ Erro: ${error.message?.slice(0, 100) || "Erro desconhecido"}`, { 
+        id: "swap",
+        duration: 5000,
+      });
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
+  // Bridge usando Jumper (mantido igual)
   const getBridgeUrl = () => {
     const fromTokenAddress = getTokenAddress(currentNetwork, bridgeToken);
     const toTokenAddress = getTokenAddress(targetNetwork, bridgeToken);
-    const amountInWei = parseFloat(swapAmount) * 1000000 || 0;
+    const amountNum = parseFloat(swapAmount);
+    if (isNaN(amountNum) || amountNum <= 0) return "";
+    
+    // Bridge usa Jumper com 6 decimais (padrão)
+    const amountInWei = Math.floor(amountNum * 1_000_000);
+    
     return `https://jumper.exchange/?fromChain=${currentNetwork.chainId}&fromToken=${fromTokenAddress}&toChain=${targetNetwork.chainId}&toToken=${toTokenAddress}&integrator=arcflow${account ? `&toAddress=${account}` : ""}&fromAmount=${amountInWei}`;
   };
 
-  const handleSwap = async () => {
-    if (!swapAmount || parseFloat(swapAmount) <= 0) {
-      toast.error("Digite um valor válido");
+  const handleBridge = async () => {
+    const amount = parseFloat(swapAmount);
+    
+    if (isNaN(amount) || amount <= 0) {
+      toast.error("Digite um valor válido (ex: 5 ou 5.50)");
       return;
     }
+    
     setIsProcessing(true);
     try {
-      toast.loading("Preparando swap...", { id: "swap" });
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      window.open(getSwapUrl(), "_blank");
-      toast.success("Redirecionando para LI.FI para concluir!", { id: "swap" });
+      toast.loading(`🌉 Preparando bridge de ${amount.toFixed(2)} ${bridgeToken}...`, { id: "bridge" });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      
+      const url = getBridgeUrl();
+      if (url) {
+        window.open(url, "_blank");
+        toast.success(`🌉 Bridge de ${amount.toFixed(2)} ${bridgeToken} aberta no Jumper!`, { id: "bridge" });
+      } else {
+        toast.error("Erro ao gerar URL da bridge", { id: "bridge" });
+      }
+      
       if (onComplete) setTimeout(onComplete, 3000);
-      onClose();
-    } catch {
-      toast.error("Erro ao processar", { id: "swap" });
+      setTimeout(() => onClose(), 2000);
+    } catch (error: any) {
+      toast.error(`Erro: ${error.message?.slice(0, 80)}`, { id: "bridge" });
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const handleBridge = async () => {
-    if (!swapAmount || parseFloat(swapAmount) <= 0) {
-      toast.error("Digite um valor válido");
-      return;
+  const getEstimatedOutput = () => {
+    if (!swapAmount || parseFloat(swapAmount) <= 0) return "";
+    const amount = parseFloat(swapAmount);
+    // Estimativa simplificada (1:1 para USDC/EURC)
+    if (fromToken === "USDC" && toToken === "EURC") {
+      return `≈ ${amount.toFixed(4)} EURC`;
+    } else if (fromToken === "EURC" && toToken === "USDC") {
+      return `≈ ${amount.toFixed(4)} USDC`;
     }
-    setIsProcessing(true);
-    try {
-      toast.loading("Preparando bridge...", { id: "bridge" });
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      window.open(getBridgeUrl(), "_blank");
-      toast.success("Redirecionando para LI.FI para fazer bridge!", { id: "bridge" });
-      if (onComplete) setTimeout(onComplete, 3000);
-      onClose();
-    } catch {
-      toast.error("Erro ao processar bridge", { id: "bridge" });
-    } finally {
-      setIsProcessing(false);
-    }
+    return "";
+  };
+
+  const canSwap = () => {
+    const amount = parseFloat(swapAmount);
+    const isReversible = (fromToken === "USDC" && toToken === "EURC") || 
+                         (fromToken === "EURC" && toToken === "USDC");
+    return !isProcessing && !isNaN(amount) && amount > 0 && isReversible;
+  };
+
+  const canBridge = () => {
+    const amount = parseFloat(swapAmount);
+    return !isProcessing && !isNaN(amount) && amount > 0;
   };
 
   return (
@@ -110,6 +188,9 @@ export function SwapBridgeModal({
         alignItems: "center",
         justifyContent: "center",
         zIndex: 200,
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
       }}
     >
       <div
@@ -137,7 +218,7 @@ export function SwapBridgeModal({
               fontWeight: 600,
             }}
           >
-            🔄 Swap na {currentNetwork.shortName}
+            🔄 Swap (Direto)
           </button>
           <button
             onClick={() => setMode("bridge")}
@@ -156,7 +237,13 @@ export function SwapBridgeModal({
           </button>
           <button
             onClick={onClose}
-            style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer" }}
+            style={{
+              background: "none",
+              border: "none",
+              fontSize: 20,
+              cursor: "pointer",
+              color: "#6b7280",
+            }}
           >
             ×
           </button>
@@ -165,8 +252,20 @@ export function SwapBridgeModal({
         {mode === "swap" ? (
           <>
             <h3 style={{ margin: "0 0 16px 0", fontSize: 16 }}>
-              🔄 Swap em {currentNetwork.shortName}
+              🔄 Swap Direto em {currentNetwork.shortName}
             </h3>
+            
+            <div style={{ 
+              background: "#dbeafe", 
+              borderRadius: 12, 
+              padding: 12, 
+              marginBottom: 16,
+              fontSize: 12,
+              color: "#1e40af"
+            }}>
+              ⚡ Swap executado diretamente na blockchain via LI.FI<br/>
+              ✅ Transação real com confirmação on-chain
+            </div>
 
             <div style={{ marginBottom: 16 }}>
               <label style={{ fontSize: 12, color: "#6b7280", marginBottom: 6, display: "block" }}>
@@ -176,7 +275,11 @@ export function SwapBridgeModal({
                 {AVAILABLE_TOKENS.map((token) => (
                   <button
                     key={token.symbol}
-                    onClick={() => setFromToken(token.symbol)}
+                    onClick={() => {
+                      setFromToken(token.symbol);
+                      if (token.symbol === "USDC") setToToken("EURC");
+                      else setToToken("USDC");
+                    }}
                     style={{
                       flex: 1,
                       padding: 10,
@@ -185,6 +288,7 @@ export function SwapBridgeModal({
                       border: "none",
                       borderRadius: 10,
                       cursor: "pointer",
+                      fontWeight: fromToken === token.symbol ? 600 : 400,
                     }}
                   >
                     {token.icon} {token.symbol}
@@ -193,30 +297,26 @@ export function SwapBridgeModal({
               </div>
             </div>
 
-            <div style={{ textAlign: "center", marginBottom: 12 }}>↓</div>
+            <div style={{ textAlign: "center", marginBottom: 12, fontSize: 20 }}>↓</div>
 
             <div style={{ marginBottom: 16 }}>
               <label style={{ fontSize: 12, color: "#6b7280", marginBottom: 6, display: "block" }}>
                 Para:
               </label>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {AVAILABLE_TOKENS.map((token) => (
-                  <button
-                    key={token.symbol}
-                    onClick={() => setToToken(token.symbol)}
-                    style={{
-                      flex: 1,
-                      padding: 10,
-                      background: toToken === token.symbol ? BLUE : "#e5e7eb",
-                      color: toToken === token.symbol ? "#fff" : "#374151",
-                      border: "none",
-                      borderRadius: 10,
-                      cursor: "pointer",
-                    }}
-                  >
-                    {token.icon} {token.symbol}
-                  </button>
-                ))}
+                <button
+                  style={{
+                    flex: 1,
+                    padding: 10,
+                    background: BLUE,
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: 10,
+                    fontWeight: 600,
+                  }}
+                >
+                  {toToken === "USDC" ? "💵 USDC" : "💶 EURC"}
+                </button>
               </div>
             </div>
 
@@ -226,6 +326,7 @@ export function SwapBridgeModal({
               </label>
               <input
                 type="number"
+                step="0.01"
                 value={swapAmount}
                 onChange={(e) => setSwapAmount(e.target.value)}
                 placeholder="0.00"
@@ -235,13 +336,40 @@ export function SwapBridgeModal({
                   borderRadius: 10,
                   border: `1px solid ${BORDER}`,
                   boxSizing: "border-box",
+                  fontSize: 16,
                 }}
               />
+              {swapAmount && parseFloat(swapAmount) > 0 && (
+                <div style={{ fontSize: 12, color: "#10b981", marginTop: 6 }}>
+                  ✅ {parseFloat(swapAmount).toFixed(4)} {fromToken} → {getEstimatedOutput()}
+                </div>
+              )}
             </div>
 
+            {txHash && (
+              <div style={{ 
+                background: "#e5e7eb", 
+                borderRadius: 10, 
+                padding: 10, 
+                marginBottom: 16,
+                fontSize: 11,
+                wordBreak: "break-all"
+              }}>
+                🔗 TX: {txHash.slice(0, 16)}...
+                <a 
+                  href={`${currentNetwork.explorer}/tx/${txHash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: BLUE, marginLeft: 8, textDecoration: "none" }}
+                >
+                  Ver no Explorer →
+                </a>
+              </div>
+            )}
+
             <button
-              onClick={handleSwap}
-              disabled={isProcessing}
+              onClick={handleSwapDirect}
+              disabled={!canSwap()}
               style={{
                 width: "100%",
                 background: ORANGE,
@@ -249,17 +377,26 @@ export function SwapBridgeModal({
                 padding: 14,
                 borderRadius: 14,
                 border: "none",
-                cursor: isProcessing ? "not-allowed" : "pointer",
+                cursor: canSwap() ? "pointer" : "not-allowed",
                 fontWeight: 600,
-                opacity: isProcessing ? 0.7 : 1,
+                opacity: canSwap() ? 1 : 0.5,
               }}
             >
-              {isProcessing ? "Processando..." : `🔄 Swappar ${fromToken} → ${toToken}`}
+              {isProcessing 
+                ? "⏳ Processando transação..." 
+                : !swapAmount || parseFloat(swapAmount) <= 0 
+                  ? "💰 Digite um valor" 
+                  : `🔄 Swappar ${parseFloat(swapAmount).toFixed(2)} ${fromToken} → ${toToken}`}
             </button>
+
+            <p style={{ fontSize: 11, color: "#9ca3af", marginTop: 12, textAlign: "center" }}>
+              ⚡ Taxa de rede (gas) será cobrada em {currentNetwork.nativeCurrency.symbol}<br/>
+              ✅ Confirmação leva ~15-30 segundos
+            </p>
           </>
         ) : (
           <>
-            <h3 style={{ margin: "0 0 16px 0", fontSize: 16 }}>🌉 Bridge Cross-Chain</h3>
+            <h3 style={{ margin: "0 0 16px 0", fontSize: 16 }}>🌉 Bridge Cross-Chain (Jumper)</h3>
 
             <div style={{ marginBottom: 20 }}>
               <label style={{ fontSize: 12, color: "#6b7280", marginBottom: 6, display: "block" }}>
@@ -342,6 +479,7 @@ export function SwapBridgeModal({
               </label>
               <input
                 type="number"
+                step="0.01"
                 value={swapAmount}
                 onChange={(e) => setSwapAmount(e.target.value)}
                 placeholder="0.00"
@@ -351,23 +489,25 @@ export function SwapBridgeModal({
                   borderRadius: 10,
                   border: `1px solid ${BORDER}`,
                   boxSizing: "border-box",
+                  fontSize: 16,
                 }}
               />
+              {swapAmount && parseFloat(swapAmount) > 0 && (
+                <div style={{ fontSize: 12, color: "#10b981", marginTop: 6 }}>
+                  ✅ {parseFloat(swapAmount).toFixed(2)} {bridgeToken}
+                </div>
+              )}
             </div>
 
             <div style={{ background: "#fef3c7", borderRadius: 12, padding: 12, marginBottom: 20 }}>
               <p style={{ fontSize: 12, margin: 0, color: "#92400e" }}>
-                ⚠️ <strong>Importante:</strong> Bridge de {currentNetwork.shortName} →{" "}
-                {targetNetwork.shortName}
-                {currentNetwork.isTestnet && !targetNetwork.isTestnet && (
-                  <span> (Testnet → Mainnet)</span>
-                )}
+                ⚠️ Você será redirecionado para o Jumper Exchange para completar a bridge.
               </p>
             </div>
 
             <button
               onClick={handleBridge}
-              disabled={isProcessing}
+              disabled={!canBridge()}
               style={{
                 width: "100%",
                 background: GREEN,
@@ -375,14 +515,16 @@ export function SwapBridgeModal({
                 padding: 14,
                 borderRadius: 14,
                 border: "none",
-                cursor: isProcessing ? "not-allowed" : "pointer",
+                cursor: canBridge() ? "pointer" : "not-allowed",
                 fontWeight: 600,
-                opacity: isProcessing ? 0.7 : 1,
+                opacity: canBridge() ? 1 : 0.5,
               }}
             >
               {isProcessing
-                ? "Processando..."
-                : `🌉 Bridge ${swapAmount || "0"} ${bridgeToken} → ${targetNetwork.shortName}`}
+                ? "⏳ Processando..."
+                : !swapAmount || parseFloat(swapAmount) <= 0
+                  ? "💰 Digite um valor"
+                  : `🌉 Bridge ${parseFloat(swapAmount).toFixed(2)} ${bridgeToken} → ${targetNetwork.shortName}`}
             </button>
           </>
         )}
