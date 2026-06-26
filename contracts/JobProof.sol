@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.20;
 
+/// @title JobProof — Prova on-chain de execução de job pelo CriptoMorse
+/// @notice Cada swap executado pelo robô autônomo gera um deploy deste contrato
+///         como registro imutável na Arc Testnet. Sirve como prova de atividade
+///         para o ecossistema Arc.
 contract JobProof {
     string public robotName;
     uint256 public jobNumber;
