@@ -1,15 +1,20 @@
 import { ethers } from 'ethers';
 
-const IDENTITY_REGISTRY = '0x8004A818BFB912233c491871b3d84c89A494BD9e';
+const IDENTITY_REGISTRY = '0xd2a801e60a0ab36da3fb17d4a7654b494ba8326b';
 const REPUTATION_REGISTRY = '0x8004B663056A597Dffe9eCcC1965A193B7388713';
 const VALIDATION_REGISTRY = '0x8004Cb1BF31DAf7788923b405b754f57acEB4272';
 
 const ARC_TESTNET_RPC = 'https://rpc.testnet.arc.network';
 
 const IDENTITY_ABI = [
-  'function register(string memory metadataURI) external',
+  'function registerAgent(string memory agentURI) external returns (uint256)',
   'function ownerOf(uint256 tokenId) view returns (address)',
   'function tokenURI(uint256 tokenId) view returns (string)',
+  'function getAgentURI(uint256 agentId) view returns (string)',
+  'function getAgentInfo(uint256 agentId) view returns (tuple(uint256 agentId, address owner, address operator, address paymentAddress, uint8 trustLevel, uint256 completedJobs, string agentURI))',
+  'function totalAgents() view returns (uint256)',
+  'function setPaymentAddress(uint256 agentId, address paymentAddr) external',
+  'event AgentRegistered(uint256 indexed agentId, address indexed owner, string agentURI)',
   'event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)',
 ];
 
@@ -49,11 +54,20 @@ class AgentRegistry {
     const signer = await provider.getSigner();
     const contract = new ethers.Contract(IDENTITY_REGISTRY, IDENTITY_ABI, signer);
 
-    const tx = await contract.register(metadataURI);
+    const tx = await contract.registerAgent(metadataURI);
     const receipt = await tx.wait();
 
-    const logs = contract.interface.parseLog(receipt.logs[0]);
-    const agentId = Number(logs?.args?.tokenId ?? 0);
+    // Busca o event AgentRegistered para extrair o agentId
+    let agentId = 0;
+    for (const log of receipt.logs) {
+      try {
+        const parsed = contract.interface.parseLog(log);
+        if (parsed?.name === 'AgentRegistered') {
+          agentId = Number(parsed.args.agentId);
+          break;
+        }
+      } catch { continue; }
+    }
 
     return { agentId, txHash: tx.hash };
   }
@@ -112,14 +126,16 @@ class AgentRegistry {
     const contract = new ethers.Contract(IDENTITY_REGISTRY, IDENTITY_ABI, provider);
 
     try {
+      const total = await contract.totalAgents();
+      return Number(total);
+    } catch {
+      // fallback: query Transfer events
       const currentBlock = await provider.getBlockNumber();
       const fromBlock = Math.max(0, currentBlock - 10000);
       const filter = contract.filters.Transfer(ethers.ZeroAddress);
       const events = await contract.queryFilter(filter, fromBlock, 'latest');
       if (events.length === 0) return 0;
       return Number((events[events.length - 1] as ethers.EventLog).args?.tokenId ?? 0);
-    } catch {
-      return 0;
     }
   }
 

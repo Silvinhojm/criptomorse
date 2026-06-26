@@ -54,7 +54,7 @@ const ARC_TESTNET = {
   chainIdHex: "0x4cef52",
   usdc: "0x3600000000000000000000000000000000000000",
   eurc: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
-  erc8183: "0x0747EEf0706327138c69792bF28Cd525089e4583",
+  erc8183: "0x319227cf1de5c61d11313af8226a8f5309fa70d9",
   explorer: "https://testnet.arcscan.app",
   icon: "🔵",
   isTestnet: true,

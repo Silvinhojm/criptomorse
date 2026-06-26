@@ -84,7 +84,15 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
        │   ├── contracts.ts              ← Bytecode + ABI JobProof (deploy on-chain)
        │   └── networks.ts / real-swap-executor.ts ← Config de redes
        │
-       └── AGENTES DE MERCADO (dados)
+       └── SISTEMA ARC ECOSYSTEM
+            ├── agent-registry.ts         ← Registro de agentes (ERC-8004)
+            ├── job-marketplace.ts        ← Jobs on-chain (ERC-8183)
+            ├── agent-card/[address]      ← API: EIP-8004 agent card JSON
+            ├── agents/register           ← API: prepara registro de agente
+            ├── agents/[address]          ← API: resolve agente por wallet
+            └── jobs/route.ts             ← API: lista jobs do marketplace
+       │
+        └── AGENTES DE MERCADO (dados)
             ├── coingecko-agent.ts (deprecated → SoSoValue via sosovalue-price-agent.ts)
            ├── coinmarketcap-agent.ts
            ├── news-agent.ts
@@ -664,9 +672,10 @@ NVIDIA_API_KEY=
 | CCTP MessageTransmitter V2 (testnet) | `0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275` |
 | CCTP TokenMessenger V2 (mainnet) | `0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d` |
 | CCTP MessageTransmitter V2 (mainnet) | `0x81D40F21F12A8F0E3252Bccb954D722d4c464B64` |
-| IdentityRegistry (ERC-8004) | `0x8004A818BFB912233c491871b3d84c89A494BD9e` |
-| AgenticCommerce (ERC-8183) | `0x0747EEf0706327138c69792bF28Cd525089e4583` |
-| AgentIdentity (deploy próprio) | `0xaeb95e2532a73a097e03584cb244eeca9b5609a5` |
+| IdentityRegistry (ERC-8004, Arc oficial) | `0x8004A818BFB912233c491871b3d84c89A494BD9e` |
+| AgenticCommerce (ERC-8183, Arc oficial) | `0x0747EEf0706327138c69792bF28Cd525089e4583` |
+| **AgentIdentity (ERC-8004, próprio)** | **`0xd2a801e60a0ab36da3fb17d4a7654b494ba8326b`** |
+| **ERC8183 Job Marketplace (próprio)** | **`0x319227cf1de5c61d11313af8226a8f5309fa70d9`** |
 
 ---
 
@@ -2155,3 +2164,165 @@ O ciclo de trading inicia automaticamente ao carregar a página, sem intervenç�
 | Arquivo | Mudança |
 |---------|---------|
 | `app/components/PregãoDashboard.tsx` | `useEffect` de auto-start com `setTimeout`, verifica `isArcLab`, respeita flag `arcflow_auto_ciclo` |
+
+---
+
+## 36. ARC ECOSYSTEM — Contratos Deployados e Verificados (Sessão 26/06)
+
+### 36.1 AgentIdentity (ERC-8004)
+
+Contrato próprio de identidade de agentes, compatível com ERC-8004. Features adicionais: paymentAddress, trustLevel, completedJobs, walletToAgent.
+
+| Campo | Valor |
+|-------|-------|
+| Endereço | `0xd2a801e60a0ab36da3fb17d4a7654b494ba8326b` |
+| Nome | CriptoMorse AgentIdentity (CMAI) |
+| Tipo | ERC-721 + Ownable + IERC8004IdentityRegistry |
+| Arcscan | `https://testnet.arcscan.app/address/0xd2a801E60A0AB36Da3Fb17d4A7654b494bA8326B` |
+| Deployer | `0x77f5C3A1079B86ef8490E7c5Ec1F9bcfbaAE5894` |
+| Compilador | solc 0.8.26, optimizer enabled (200 runs) |
+| Verificado | Sim (standard-input via Blockscout API) |
+| Agentes | 4 registrados (#1-#4) |
+
+**Métodos:**
+- `registerAgent(string agentURI) → uint256 agentId`
+- `getAgentInfo(uint256 agentId) → AgentInfo`
+- `setAgentURI(uint256 agentId, string uri)`
+- `setPaymentAddress(uint256 agentId, address addr)`
+- `setOperator(uint256 agentId, address operator)`
+- `incrementJobs(uint256 agentId)` — chamado pelo ERC-8183 ao pagar job
+- `totalAgents() → uint256`
+- `walletToAgent(address) → uint256` (lookup reverso)
+
+**Agentes registrados:**
+| ID | Nome | Owner |
+|----|------|-------|
+| 1 | CriptoMorse Autonomous Trading Agent | `0x77f5C3...AE5894` |
+| 2 | Morse Signal Agent | `0x77f5C3...AE5894` |
+| 3 | Quantum Wave Oracle | `0x77f5C3...AE5894` |
+| 4 | Volatility Staircase Guardian | `0x77f5C3...AE5894` |
+
+### 36.2 ERC8183 Job Marketplace
+
+Marketplace de jobs on-chain, integrado com AgentIdentity. Fluxo: createJob → fundJob → submitDeliverable → approveJob → payJob.
+
+| Campo | Valor |
+|-------|-------|
+| Endereço | `0x319227cf1de5c61d11313af8226a8f5309fa70d9` |
+| Arcscan | `https://testnet.arcscan.app/address/0x319227cf1de5c61d11313af8226a8f5309fa70d9` |
+| Dependências | USDC (`0x3600...0000`) + AgentIdentity (`0xd2a8...326b`) |
+| Compilador | solc 0.8.26, optimizer enabled (200 runs) |
+| Verificado | Sim |
+| Jobs criados | 5 |
+
+**Jobs ativos:**
+| ID | Descrição | Budget |
+|----|-----------|--------|
+| 1 | Monitor USDC/EURC arbitrage (spread > 0.5%) | 10 USDC |
+| 2 | Bridge 500 USDC Polygon→Arc via CCTP | 5 USDC |
+| 3 | DCA: buy 10 EURC daily for 30 days | 3 USDC |
+| 4 | Monitor gas + swap when gas < 0.005 USDC | 2 USDC |
+| 5 | Volatility analysis cirBTC/USDC | 8 USDC |
+
+**Métodos:**
+- `createJob(address provider, string desc, uint256 budget, uint256 deadline) → uint256`
+- `fundJob(uint256 jobId)` — transfere USDC do creator → contrato
+- `submitDeliverable(uint256 jobId, string uri)`
+- `approveJob(uint256 jobId)`
+- `payJob(uint256 jobId)` — paga provider + fee 0.5% + incrementa jobs no AgentIdentity
+- `cancelJob(uint256 jobId)`
+- `getJob(uint256 jobId) → Job`
+- `totalJobs() → uint256`
+
+### 36.3 Agent Card (EIP-8004)
+
+Rota: `GET /api/agent-card/[address]`
+
+Retorna JSON compatível com EIP-8004 registration-v1, com metadados completos:
+- 8 capabilities (multi_agent_swarm_voting, cross_chain_swap_execution, etc.)
+- 5 services (web, agent_card, agent_info, market_data, price_feed)
+- Chain ID: 5042002 (Arc Testnet)
+- Gas token: USDC
+- Finality: sub-second deterministic
+- Privacy: opt-in confidential transactions
+- Supported chains: arc_testnet, polygon, ethereum, base, sepolia
+
+### 36.4 Widgets no Arcscan
+
+Os widgets da página do contrato são preenchidos com dados reais:
+
+| Widget | AgentIdentity | ERC8183 |
+|--------|:---:|:---:|
+| Transactions | 4+ | 5+ |
+| Token (ERC-721) | 4 holders | — |
+| Logs/Events | AgentRegistered, AgentURIUpdated | JobCreated |
+| Read Contract | 15+ métodos | 8 métodos |
+| Write Contract | Via MetaMask | Via MetaMask |
+| Code | Fonte verificado | Fonte verificado |
+
+### 36.5 Arquivos Novos / Modificados
+
+| Arquivo | Mudança |
+|---------|---------|
+| `contracts/AgentIdentity.sol` | Compilado e deployado (0xd2a8...326b) |
+| `contracts/ERC8183.sol` | Compilado e deployado (0x3192...70d9) |
+| `app/api/agent-card/[address]/route.js` | Metadados enriquecidos, chainId 5042002 |
+| `app/api/agents/register/route.ts` | Novo endereço AgentIdentity |
+| `app/api/agents/[address]/route.ts` | Novo endereço AgentIdentity |
+| `app/api/jobs/route.ts` | Novo endereço ERC8183 |
+| `lib/agent-registry.ts` | ABI completa (registerAgent, getAgentInfo, totalAgents) |
+| `lib/job-marketplace.ts` | Novo endereço ERC8183 |
+| `app/page.tsx` | Novo endereço erc8183 |
+| `public/agent-card-template.json` | chainId 5042002, paymentAddress correto |
+| `.env.local` | `NEXT_PUBLIC_AGENT_IDENTITY_ADDRESS`, `NEXT_PUBLIC_ERC8183_ADDRESS` |
+| `scripts/deployAgentIdentityArc.js` | Script de deploy p/ Arc Testnet |
+| `scripts/deployERC8183Arc.js` | Script de deploy p/ Arc Testnet |
+| `scripts/verifyArcscan.js` | Verificação standard-input via Blockscout API |
+| `scripts/verifyERC8183Arc.js` | Verificação ERC8183 via Blockscout API |
+| `scripts/createArcActivity.js` | Gera atividade on-chain (agentes + jobs) |
+
+### 36.6 Ciclo ArcStack
+
+```
+Carteira (0x77f5C3...)
+  │
+  ├── AgentIdentity (ERC-8004)
+  │     ├── Agente #1: CriptoMorse Principal
+  │     ├── Agente #2: Morse Signal
+  │     ├── Agente #3: Quantum Wave Oracle
+  │     └── Agente #4: Volatility Staircase Guardian
+  │
+  ├── ERC8183 Job Marketplace
+  │     ├── Job #1: Arbitrage USDC/EURC
+  │     ├── Job #2: Bridge Polygon→Arc
+  │     ├── Job #3: DCA EURC 30 dias
+  │     ├── Job #4: Gas Monitor
+  │     └── Job #5: Volatility cirBTC
+  │
+  └── Agent Card API (EIP-8004)
+        └── GET /api/agent-card/0x77f5C3...AE5894 → JSON completo
+```
+
+**Fluxo de pagamento (ERC-8183 → AgentIdentity):**
+```
+1. Creator cria job (createJob)
+2. Creator aprova USDC e financia (fundJob)
+3. Provider entrega (submitDeliverable)
+4. Creator aprova (approveJob)
+5. Qualquer pessoa paga (payJob)
+   ├── USDC → provider (95%)
+   ├── USDC → owner (5% fee)
+   └── agentIdentity.incrementJobs(provider) → trust auto-upgrade
+```
+
+**Trust auto-upgrade (AgentIdentity):**
+- 5+ jobs completados → trustLevel 1 (verified)
+- 50+ jobs completados → trustLevel 2 (trusted)
+
+### 36.7 Variáveis de Ambiente (Novas)
+
+```
+# .env.local
+NEXT_PUBLIC_AGENT_IDENTITY_ADDRESS=0xd2a801e60a0ab36da3fb17d4a7654b494ba8326b
+NEXT_PUBLIC_ERC8183_ADDRESS=0x319227cf1de5c61d11313af8226a8f5309fa70d9
+```

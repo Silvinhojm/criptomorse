@@ -3,6 +3,7 @@
 // Retorna txHash confirmado na blockchain
 
 import { ethers } from 'ethers';
+import { NonceManager } from './nonce-manager';
 import { enforceArcFee } from './arc-gas';
 
 const LI_FI_API = 'https://li.quest/v1';
@@ -12,8 +13,9 @@ const REQUEST_TIMEOUT = 15000; // 15s timeout para requests LI.FI
 // Rate limiter global com cooldown inteligente
 let lastRequestTime = 0;
 let cooldownUntil = 0;
-const MIN_INTERVAL_MS = 2000;
-const COOLDOWN_MS = 60000; // 60s sem chamadas após um 429
+let consecutive429 = 0;
+const MIN_INTERVAL_MS = 3000;
+const COOLDOWN_BASE_MS = 30000; // 30s inicial, dobra a cada 429 consecutivo
 
 export function isLifiCooldown(): boolean {
   return Date.now() < cooldownUntil;
@@ -21,6 +23,7 @@ export function isLifiCooldown(): boolean {
 
 export function resetCooldown(): void {
   cooldownUntil = 0;
+  consecutive429 = 0;
 }
 
 async function rateLimit(): Promise<boolean> {
@@ -73,23 +76,8 @@ export interface SwapResult {
   error?: string;
 }
 
-// Gerenciamento de nonce por chainId (evita nonce mismatch em envios concorrentes)
-const nonceTracker: Map<number, { nextNonce: number; timestamp: number }> = new Map();
-const NONCE_EXPIRY = 120000; // 2 minutos
-
-async function getNextNonce(provider: ethers.Provider, chainId: number, address: string): Promise<number> {
-  const chainNonce = nonceTracker.get(chainId);
-  const onChainNonce = await provider.getTransactionCount(address);
-
-  if (!chainNonce || Date.now() - chainNonce.timestamp > NONCE_EXPIRY) {
-    nonceTracker.set(chainId, { nextNonce: onChainNonce, timestamp: Date.now() });
-    return onChainNonce;
-  }
-
-  const nextNonce = Math.max(chainNonce.nextNonce, onChainNonce);
-  nonceTracker.set(chainId, { nextNonce: nextNonce + 1, timestamp: Date.now() });
-  return nextNonce;
-}
+// Gerenciamento centralizado de nonce (evita conflito entre módulos concorrentes)
+const nonceManager = NonceManager.getInstance();
 
 // --- Explorer por chainId ---
 
@@ -143,9 +131,13 @@ export async function getQuote(params: SwapParams): Promise<QuoteResult | null> 
     clearTimeout(timeoutId);
 
     if (res.status === 429) {
-      cooldownUntil = Date.now() + COOLDOWN_MS;
-      console.warn(`LI.FI 429 — cooldown global de ${COOLDOWN_MS/1000}s ativado`);
-      return null; // não retry, só volta depois do cooldown
+      consecutive429++;
+      const cooldown = Math.min(COOLDOWN_BASE_MS * Math.pow(2, consecutive429 - 1), 300_000);
+      cooldownUntil = Date.now() + cooldown;
+      console.warn(`LI.FI 429 #${consecutive429} — cooldown ${Math.round(cooldown/1000)}s`);
+      return null;
+    } else {
+      consecutive429 = 0; // reset on success
     }
 
     if (!res.ok) {
@@ -251,10 +243,10 @@ export async function executeSwap(
       );
     }
 
-    // Nonce management
+    // Nonce management (centralizado — serializa txs concorrentes)
     let nonce: number | undefined;
     try {
-      nonce = await getNextNonce(signer.provider!, params.fromChain, signer.address);
+      nonce = await nonceManager.getNonce(signer.provider!, params.fromChain, signer.address);
       log(`Nonce: ${nonce}`);
     } catch {
       log(`Nonce padrao (sem gerenciamento)`);
@@ -304,7 +296,7 @@ export async function executeSwap(
     } else if (err?.message?.includes('insufficient')) {
       msg = 'Saldo insuficiente (inclua gas)';
     } else if (err?.message?.includes('nonce')) {
-      nonceTracker.delete(params.fromChain);
+      nonceManager.resetNonce(params.fromChain, signer.address);
       msg = 'Erro de nonce - nonce resetado, tente novamente';
     } else if (err?.message) {
       msg = err.message;

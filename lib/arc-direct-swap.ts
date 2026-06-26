@@ -1,4 +1,5 @@
 import { ethers } from 'ethers';
+import { NonceManager } from './nonce-manager';
 import type { QuoteResult } from './lifi-executor';
 
 // FUTURO: Modo privado com selective disclosure (Arc roadmap)
@@ -69,7 +70,7 @@ export async function executeDirectSwap(
 
     let txHash: string | null = null;
 
-    // 1. Tentar approve + transfer ERC20
+    // 1. Tentar approve + transfer ERC20 (gera transações reais na chain)
     try {
       const token = new ethers.Contract(fromToken, ERC20_ABI, signer);
 
@@ -90,11 +91,14 @@ export async function executeDirectSwap(
       txHash = receipt?.hash || transferTx.hash;
       log(`✅ Transferência confirmada: ${txHash}`);
     } catch (contractErr: any) {
-      // 2. Fallback: native USDC (Arc) — envia value real ao invés de ERC20 transfer
+      // 2. Fallback: native transfer via value
       log(`⚠️ ERC20 não disponível — enviando value transfer`);
+      const address = await signer.getAddress();
+      const nonce = await NonceManager.getInstance().getNonce(signer.provider!, chainId, address).catch(() => undefined);
       const tx = await signer.sendTransaction({
         to: fromAddress,
         value: BigInt(fromAmount),
+        nonce,
       });
       const receipt = await tx.wait();
       txHash = receipt?.hash || tx.hash;

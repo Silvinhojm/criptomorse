@@ -11,10 +11,11 @@ export async function GET(req: NextRequest) {
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT)
 
-    const res = await fetch(url, {
-      headers: { 'Accept': 'application/json' },
-      signal: controller.signal,
-    })
+    const headers: Record<string, string> = { 'Accept': 'application/json' }
+    const apiKey = process.env.LIFI_API_KEY
+    if (apiKey) headers['x-lifi-api-key'] = apiKey
+
+    const res = await fetch(url, { headers, signal: controller.signal })
 
     clearTimeout(timeoutId)
 

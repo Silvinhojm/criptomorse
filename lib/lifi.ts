@@ -2,6 +2,7 @@
 // Integração com LI.FI SDK para cross-chain swaps e bridges
 
 import * as ethers from 'ethers';
+import { NonceManager } from './nonce-manager';
 import { getRoutes, getStepTransaction, type Route, type RoutesResponse, type LiFiStep } from '@lifi/sdk';
 import { lifiClient } from './lifi-config';
 // Re-exportar tipos para uso em outros arquivos
@@ -249,12 +250,14 @@ export async function executeLifiRoute(
         continue;
       }
 
+      const nonce = await NonceManager.getInstance().getNonce(signer.provider!, step.action.fromChainId, fromAddress).catch(() => undefined);
       console.log(`   Enviando transação para ${txReq.to}...`);
       const tx = await signer.sendTransaction({
         to: txReq.to,
         data: txReq.data as `0x${string}`,
         value: BigInt(txReq.value || '0x0'),
         chainId: step.action.fromChainId,
+        nonce,
       });
 
       console.log(`   TX enviada: ${tx.hash}`);

@@ -1,4 +1,4 @@
-import { TRADING_PAIRS, NetworkKey, TokenSymbol, isStable } from './real-swap-executor';
+import { TRADING_PAIRS, NetworkKey, TokenSymbol, isStable, isArcStressMode } from './real-swap-executor';
 import { pairPriceFeed } from './pair-price-feed';
 
 export interface QuantumPair {
@@ -32,10 +32,17 @@ class QuantumWaveTrader {
     // Monta a lista de todos os pares (network + from/to) primeiro, depois busca
     // preço real para cada um em paralelo — bem mais rápido que sequencial.
     const allPairs: { net: NetworkKey; pair: { from: TokenSymbol; to: TokenSymbol; label: string } }[] = [];
-    for (const [networkKey, pairsList] of Object.entries(TRADING_PAIRS)) {
-      const net = networkKey as NetworkKey;
-      for (const pair of pairsList) {
-        allPairs.push({ net, pair });
+    if (isArcStressMode()) {
+      const arcPairs = TRADING_PAIRS.arc ?? [];
+      for (const pair of arcPairs.slice(0, 9)) {
+        allPairs.push({ net: "arc" as NetworkKey, pair });
+      }
+    } else {
+      for (const [networkKey, pairsList] of Object.entries(TRADING_PAIRS)) {
+        const net = networkKey as NetworkKey;
+        for (const pair of pairsList) {
+          allPairs.push({ net, pair });
+        }
       }
     }
 

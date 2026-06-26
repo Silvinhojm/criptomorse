@@ -1,4 +1,5 @@
 import { ethers } from "ethers";
+import { NonceManager } from "@/lib/nonce-manager";
 
 const NETWORK_RPCS = {
   137: "https://polygon.publicnode.com",
@@ -25,11 +26,15 @@ export async function POST(req) {
     const signer = getSigner(chainId);
     if (!signer) return Response.json({ error: "PRIVATE_KEY nao configurada ou rede sem suporte" }, { status: 503 });
 
+    const address = await signer.getAddress();
+    const nonce = await NonceManager.getInstance().getNonce(signer.provider, chainId, address).catch(() => undefined);
+
     const signedTx = await signer.sendTransaction({
       to: tx.to,
       data: tx.data,
       value: BigInt(tx.value ?? "0"),
       gasLimit: tx.gasLimit ? BigInt(tx.gasLimit) : undefined,
+      nonce,
     });
 
     return Response.json({ hash: signedTx.hash });

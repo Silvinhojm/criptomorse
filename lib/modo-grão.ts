@@ -3,7 +3,7 @@
 // Target: $0.02, Stop: -$0.02 (1:1)
 // Batch: executes when 3+ signals accumulate
 
-import { realSwap } from './real-swap-executor'
+import { realSwap, isArcStressMode } from './real-swap-executor'
 import { volatilityTracker } from './volatility-tracker'
 
 function getNetworkPair() {
@@ -60,9 +60,9 @@ const CONFIG = {
   maxPositions: 5,
   cycleMs: 30_000,
   andGateTimeoutMs: 30_000,
-  minConfidence: 50,
-  minVolatility2h: 0.003,
-  minAmplitude: 0.005,
+  minConfidence: 30,
+  minVolatility2h: 0.0015,
+  minAmplitude: 0.002,
   minSpread: 0.001,
 }
 
@@ -79,6 +79,7 @@ class ModoGrao {
   private _lastSignal = ''
   private _lastError: string | null = null
   private _executando = false
+  private _simPrice = 0
 
   private getPair() { return getNetworkPair() }
 
@@ -113,6 +114,9 @@ class ModoGrao {
 
   setTestMode(enabled: boolean) {
     this._testMode = enabled
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('arcflow_modograo_testmode', enabled ? '1' : '0')
+    }
     this.notify()
   }
 
@@ -145,7 +149,8 @@ class ModoGrao {
       }
       this.notify()
       const elapsed = Date.now() - start
-      await new Promise(r => setTimeout(r, Math.max(5_000, CONFIG.cycleMs - elapsed)))
+      const cycleMs = isArcStressMode() ? 10_000 : CONFIG.cycleMs
+      await new Promise(r => setTimeout(r, Math.max(5_000, cycleMs - elapsed)))
     }
   }
 
@@ -227,6 +232,28 @@ class ModoGrao {
     this._executando = true
     try {
       const p = this.getPair()
+      if (this._testMode) {
+        // Simulate swap — avoid LI.FI 429 rate limit
+        const simulatedPrice = p.toToken === 'EURC' ? 0.995 + Math.random() * 0.01 : 1
+        const simulatedAmount = CONFIG.tradeAmountUSD / simulatedPrice
+        const result = { success: true, fromAmount: CONFIG.tradeAmountUSD, toAmount: simulatedAmount, message: '', }
+        this._openPositions.push({
+          id: `grão-${Date.now()}`,
+          boughtToken: p.toToken,
+          paidToken: p.fromToken,
+          amountBought: result.toAmount,
+          amountPaid: result.fromAmount,
+          entryPrice: simulatedPrice,
+          entryTimestamp: Date.now(),
+          targetPrice: simulatedPrice + (CONFIG.targetUSD / result.toAmount),
+          stopPrice: simulatedPrice - (CONFIG.stopUSD / result.toAmount),
+          status: 'open',
+        })
+        this._totalTrades++
+        this._lastError = ''
+        this._lastSignal = `🧪 Compra simulada $${CONFIG.tradeAmountUSD} ${p.toToken} @ $${simulatedPrice.toFixed(4)}`
+        return
+      }
       const result = await realSwap.executeSwap(
         p.fromToken as any,
         p.toToken as any,
@@ -294,4 +321,9 @@ class ModoGrao {
   }
 }
 
-export const modoGrao = new ModoGrao()
+const modoGraoInstance = new ModoGrao()
+if (typeof window !== 'undefined') {
+  const saved = localStorage.getItem('arcflow_modograo_testmode')
+  if (saved === '1') modoGraoInstance.setTestMode(true)
+}
+export const modoGrao = modoGraoInstance

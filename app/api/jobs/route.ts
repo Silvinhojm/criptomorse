@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { ethers } from 'ethers';
 
-const AGENTIC_COMMERCE = '0x0747EEf0706327138c69792bF28Cd525089e4583';
+const AGENTIC_COMMERCE = '0x319227cf1de5c61d11313af8226a8f5309fa70d9';
 const ARC_TESTNET_RPC = 'https://rpc.testnet.arc.network';
 
 const ERC8183_ABI = [

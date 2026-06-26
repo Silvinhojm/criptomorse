@@ -1,3 +1,5 @@
+import { applyCircleProxyFix } from './circle-proxy-fix'
+applyCircleProxyFix()
 import { ethers } from 'ethers';
 import { AppKit } from '@circle-fin/app-kit';
 import { createViemAdapterFromProvider } from '@circle-fin/adapter-viem-v2';

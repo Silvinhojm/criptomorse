@@ -10,7 +10,7 @@ export async function POST(request: NextRequest) {
     }
 
     return Response.json({
-      contract: '0x8004A818BFB912233c491871b3d84c89A494BD9e',
+      contract: '0xd2a801e60a0ab36da3fb17d4a7654b494ba8326b',
       metadataURI,
       message: 'Use MetaMask to sign the registration transaction on Arc Testnet',
     });
