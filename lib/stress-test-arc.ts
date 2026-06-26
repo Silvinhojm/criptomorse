@@ -101,6 +101,7 @@ export class StressTestArc {
         }
         case "transfer_memo": {
           const provider = await realSwap.getProvider()
+          if (!provider) return { success: false, error: "No provider" }
           const address = await signer.getAddress()
           const net = await provider.getNetwork()
           const nonce = await NonceManager.getInstance().getNonce(provider, Number(net.chainId), address).catch(() => undefined)
