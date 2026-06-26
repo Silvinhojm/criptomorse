@@ -1,7 +1,15 @@
-// lib/circle-proxy-fix.ts
-// Stub: aplica correção de proxy para Circle API (evita CORS em ambiente de desenvolvimento)
 export function applyCircleProxyFix(): void {
-  // Aplica patch no fetch para redirecionar chamadas Circle via proxy local
   if (typeof window === "undefined") return
-  // No-op: o proxy já é tratado via /api/circle-proxy no servidor
+  const originalFetch = window.fetch.bind(window)
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
+    if (url.includes("api.circle.com")) {
+      const path = url.replace("https://api.circle.com", "")
+      const proxyUrl = `/api/circle-proxy${path}`
+      const newInit = { ...(init ?? {}), headers: { ...((init?.headers as Record<string, string>) ?? {}) } }
+      delete (newInit.headers as Record<string, string>)["x-user-agent"]
+      return originalFetch(proxyUrl, { ...newInit, headers: newInit.headers })
+    }
+    return originalFetch(input, init)
+  }
 }
