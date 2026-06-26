@@ -1,4 +1,5 @@
 import { ethers } from "ethers";
+import { NonceManager } from "@/lib/nonce-manager";
 
 const NETWORKS = {
   polygon: {
@@ -78,11 +79,13 @@ export async function POST(req) {
     }
 
     // 3. Assinar e enviar transacao
+    const nonce = await NonceManager.getInstance().getNonce(signer.provider, net.chainId, address).catch(() => undefined);
     const tx = await signer.sendTransaction({
       to: quote.transactionRequest.to,
       data: quote.transactionRequest.data,
       value: BigInt(quote.transactionRequest.value ?? "0"),
       gasLimit: BigInt(quote.transactionRequest.gasLimit ?? "300000"),
+      nonce,
     });
 
     const receipt = await tx.wait(1);

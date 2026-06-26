@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { ethers } from 'ethers';
 
-const IDENTITY_REGISTRY = '0x8004A818BFB912233c491871b3d84c89A494BD9e';
+const IDENTITY_REGISTRY = '0xd2a801e60a0ab36da3fb17d4a7654b494ba8326b';
 const ARC_TESTNET_RPC = 'https://rpc.testnet.arc.network';
 
 const IDENTITY_ABI = [

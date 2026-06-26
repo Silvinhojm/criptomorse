@@ -1,3 +1,5 @@
+import { applyCircleProxyFix } from './circle-proxy-fix'
+applyCircleProxyFix()
 import { UnifiedBalanceKit } from "@circle-fin/unified-balance-kit"
 import { createViemAdapterFromProvider } from "@circle-fin/adapter-viem-v2"
 

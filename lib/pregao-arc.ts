@@ -1,4 +1,4 @@
-import { TRADING_PAIRS } from "./real-swap-executor"
+import { TRADING_PAIRS, realSwap } from "./real-swap-executor"
 import { pregão } from "./pregão"
 
 interface ArcPairState {
@@ -76,7 +76,15 @@ export function parar() {
 export async function executarCiclo() {
   if (!isRunning) return
 
-  const pair = pickPair()
+  let pair = pickPair()
+  const maxAttempts = 5
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const balance = realSwap.getBalance(pair.fromToken as any)
+    if (balance >= tradeAmount) break
+    log(`⏭️ [ARC] Par ${pair.pair}: saldo ${pair.fromToken}=${balance.toFixed(4)} < $${tradeAmount}, tentando outro...`)
+    pair = pickPair()
+  }
+
   const tradeNum = totalTrades + 1
   const phase = Math.floor(totalTrades / 10)
 

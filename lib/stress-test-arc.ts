@@ -2,6 +2,7 @@
 // Versão simplificada para testar a Arc Testnet
 
 import { ethers } from "ethers"
+import { NonceManager } from "./nonce-manager"
 import { realSwap } from "./real-swap-executor"
 
 export interface StressTestResult {
@@ -100,10 +101,14 @@ export class StressTestArc {
         }
         case "transfer_memo": {
           const provider = await realSwap.getProvider()
+          const address = await signer.getAddress()
+          const net = await provider.getNetwork()
+          const nonce = await NonceManager.getInstance().getNonce(provider, Number(net.chainId), address).catch(() => undefined)
           const tx = await signer.sendTransaction({
-            to: await signer.getAddress(),
+            to: address,
             value: 0,
-            data: "0x"
+            data: "0x",
+            nonce,
           })
           return { success: true, txHash: tx.hash }
         }

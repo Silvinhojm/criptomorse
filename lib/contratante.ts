@@ -134,8 +134,10 @@ class Contratante {
         narrador.jobConcluido(nomeRobo, result.pair ?? "USDC→EURC", amount)
       }
       const contratoMsg = result.contractAddress ? ` | 📜 ${result.contractAddress.slice(0, 10)}...` : ''
-      const amountOut = result.amountOut && result.amountOut !== "0" ? `$${result.amountOut}` : 'deploy'
-      const msg = `✅ Swap #${this._cicloAtual} concluído: ${result.pair} ($${amount} → ${amountOut})${contratoMsg}`
+      const isDeploy = result.stage === 'deployed' || result.stage === 'stress-deploy'
+      const amountOut = result.amountOut && result.amountOut !== "0" ? `$${result.amountOut}` : (isDeploy ? 'deploy' : '$0')
+      const prefix = isDeploy ? '📦' : '✅'
+      const msg = `${prefix} Stress #${this._cicloAtual}: ${result.pair} ($${amount} → ${amountOut})${contratoMsg}`
       this._ultimoResultado = `${msg} | tx: ${result.txHash?.slice(0, 10)}...`
       this._ultimoError = null
       this.notify()
