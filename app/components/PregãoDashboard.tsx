@@ -571,13 +571,13 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       addLog(msg)
     }
     run()
-    contratanteTimerRef.current = setInterval(run, 60000)
+    contratanteTimerRef.current = setInterval(run, 15000)
     const onVis = () => {
       if (document.hidden && contratanteTimerRef.current) {
         clearInterval(contratanteTimerRef.current)
         contratanteTimerRef.current = null
       } else if (!document.hidden && !contratanteTimerRef.current) {
-        contratanteTimerRef.current = setInterval(run, 60000)
+        contratanteTimerRef.current = setInterval(run, 15000)
       }
     }
     document.addEventListener("visibilitychange", onVis)
