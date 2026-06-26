@@ -1087,10 +1087,15 @@ class RealSwapExecutor {
   }
 
   async aggregateCapitalToCheapestChain(log: (msg: string) => void): Promise<{ bridged: number; sourceChains: string[] }> {
-    const targetChain = "polygon"
+    const scan = await gasPriceOracle.scanBestNetwork()
+    const targetChain = scan.best
     const targetChainName = UB_CHAIN[targetChain]
+
+    log(`📡 Scan de redes: ${scan.networks.map(n => `${n.name} gas=$${n.gasUsd.toFixed(4)} spread=${(n.spreadPct*100).toFixed(1)}% total=$${n.totalPerTrade.toFixed(4)}`).join(" | ")}`)
+    log(`🎯 Melhor rede: ${NETWORKS[targetChain]?.name ?? targetChain} ($${scan.networks[0]?.totalPerTrade.toFixed(4)}/trade)`)
+
     if (!targetChainName || !this.privateKey) {
-      log("⚠️ Agregador: Polygon não disponível ou sem privateKey")
+      log(`⚠️ Agregador: ${targetChain} não disponível ou sem privateKey`)
       return { bridged: 0, sourceChains: [] }
     }
 
@@ -1108,9 +1113,8 @@ class RealSwapExecutor {
       Polygon: "polygon", Base: "base", Arbitrum: "arbitrum", Ethereum: "ethereum",
     }
 
-    const GAS_RANK: Record<string, number> = {
-      polygon: 1, base: 2, arbitrum: 3, ethereum: 4,
-    }
+    const networkCosts = new Map(scan.networks.map(n => [n.network, n.totalPerTrade]))
+    const targetCost = networkCosts.get(targetChain) ?? 0
 
     let totalBridged = 0
     const sourceChains: string[] = []
@@ -1120,12 +1124,12 @@ class RealSwapExecutor {
       if (!chainKey || chainKey === targetChain) continue
       if (balance < 5) continue
 
-      const targetGasRank = GAS_RANK[targetChain] ?? 99
-      const sourceGasRank = GAS_RANK[chainKey] ?? 99
-      if (sourceGasRank <= targetGasRank) continue
+      const sourceCost = networkCosts.get(chainKey as NetworkKey) ?? 0
+      const savingsPerTrade = sourceCost - targetCost
+      if (savingsPerTrade <= 0) continue
 
       const bridgeAmount = Math.floor(balance * 0.95 * 100) / 100
-      log(`🌉 Agregador: ${chainName}→Polygon $${bridgeAmount.toFixed(2)} USDC (gas rank ${sourceGasRank} → ${targetGasRank})`)
+      log(`🌉 Agregador: ${chainName}→${NETWORKS[targetChain]?.name ?? targetChain} $${bridgeAmount.toFixed(2)} USDC (economia $${savingsPerTrade.toFixed(4)}/trade)`)
 
       try {
         const srcConfig = CCTP_CONFIG[chainKey as keyof typeof CCTP_CONFIG]
@@ -1145,15 +1149,15 @@ class RealSwapExecutor {
         if (result.status === "completed") {
           totalBridged += bridgeAmount
           sourceChains.push(chainKey)
-          log(`✅ Ponte concluída: ${chainName}→Polygon | TX: ${result.txHash.slice(0, 10)}...`)
+          log(`✅ Ponte concluída: ${chainName}→${NETWORKS[targetChain]?.name ?? targetChain} | TX: ${result.txHash.slice(0, 10)}...`)
         }
       } catch (err: any) {
-        log(`⚠️ Ponte falhou ${chainName}→Polygon: ${err.message?.slice(0, 100)}`)
+        log(`⚠️ Ponte falhou ${chainName}→${NETWORKS[targetChain]?.name ?? targetChain}: ${err.message?.slice(0, 100)}`)
       }
     }
 
     if (totalBridged > 0) {
-      log(`💰 Agregador: $${totalBridged.toFixed(2)} USDC transferido para Polygon (${sourceChains.join(", ")})`)
+      log(`💰 Agregador: $${totalBridged.toFixed(2)} USDC transferido para ${NETWORKS[targetChain]?.name ?? targetChain} (${sourceChains.join(", ")})`)
       await this.refreshAllBalances()
     } else {
       log("📊 Agregador: capital já está otimizado — nada a bridgear")

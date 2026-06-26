@@ -103,6 +103,45 @@ class GasPriceOracle {
       this.cache.clear();
     }
   }
+
+  async scanBestNetwork(tokenForSpread?: string): Promise<{
+    best: NetworkKey
+    networks: { network: NetworkKey; name: string; gasUsd: number; spreadPct: number; totalPerTrade: number; isTestnet: boolean }[]
+  }> {
+    const SPREAD_ESTIMATE: Record<string, number> = {
+      polygon: 0.001, base: 0.002, arbitrum: 0.0015,
+      ethereum: 0.0005, arc: 0.003, sepolia: 0.002,
+    }
+
+    const MAINNETS: NetworkKey[] = ["polygon", "base", "arbitrum", "ethereum"]
+    const results: { network: NetworkKey; name: string; gasUsd: number; spreadPct: number; totalPerTrade: number; isTestnet: boolean }[] = []
+
+    const gasResults = await Promise.allSettled(
+      MAINNETS.map(async (nk) => {
+        const gasUsd = await this.getGasCost(nk)
+        const net = NETWORKS_STATIC[nk]
+        const spreadPct = SPREAD_ESTIMATE[nk] ?? 0.002
+        const isTestnet = net?.isTestnet ?? false
+        return {
+          network: nk,
+          name: net?.name ?? nk,
+          gasUsd,
+          spreadPct,
+          totalPerTrade: gasUsd + spreadPct * 10,
+          isTestnet,
+        }
+      })
+    )
+
+    for (const r of gasResults) {
+      if (r.status === "fulfilled") results.push(r.value)
+    }
+
+    results.sort((a, b) => a.totalPerTrade - b.totalPerTrade)
+
+    const best = results.length > 0 ? results[0].network : "polygon"
+    return { best, networks: results }
+  }
 }
 
 export const gasPriceOracle = new GasPriceOracle();

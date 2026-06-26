@@ -525,7 +525,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
             .filter(([name]) => name !== "Polygon")
             .filter(([, bal]) => bal >= 5)
           if (otherChains.length > 0) {
-            pregão.adicionarLog(`💰 Capital disperso em ${otherChains.length} rede(s): ${otherChains.map(([n, b]) => `${n} ($${b.toFixed(2)})`).join(", ")}. Agregando para Polygon...`)
+            pregão.adicionarLog(`💰 Capital disperso em ${otherChains.length} rede(s): ${otherChains.map(([n, b]) => `${n} ($${b.toFixed(2)})`).join(", ")}. Agregando para rede mais barata...`)
             realSwap.aggregateCapitalToCheapestChain((m) => pregão.adicionarLog(m))
               .then((res) => {
                 if (res.bridged > 0) pregão.adicionarLog(`✅ Agregador: $${res.bridged.toFixed(2)} movido para Polygon`)
