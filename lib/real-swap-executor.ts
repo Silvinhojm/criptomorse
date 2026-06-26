@@ -49,6 +49,7 @@ export const NETWORKS = {
       EURC: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
       cirBTC: "0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF",
       mcirBTC: "0x8cad4951192853D14f8Cb813695146b5Ae00EA6d",
+      NATIVE: "0x0000000000000000000000000000000000000000",
     },
   },
   base: {
@@ -772,7 +773,6 @@ class RealSwapExecutor {
     log: (msg: string) => void
   ): Promise<void> {
     if (this._refuelingGas) return;
-    if (NETWORKS[this.networkKey].isTestnet) return;
     if (!this.signer) return;
     if (!(NETWORKS[this.networkKey].tokens as any)["NATIVE"]) return;
 
