@@ -395,6 +395,63 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     console.warn(`[AGENTES] Nenhuma rede para scanear`)
     return { totalPairs: 0, votes: [], agreedPair: null, agreeingAgents: 0, waveCollapsed: false }
   }
+  const _firstNet = NETWORKS[networksToScan[0]]
+  const _isTestnet = _firstNet?.isTestnet ?? true
+  const _isArc = networksToScan[0] === "arc"
+
+  const quantumScan = !_isTestnet && !_isArc
+    ? await gasPriceOracle.scanBestNetwork().catch(() => null)
+    : null
+
+  if (quantumScan) {
+    const topNetworks = quantumScan.networks.slice(0, 2)
+    pregão.adicionarLog(
+      `🌀 Onda Quântica: melhor rede ${NETWORKS[quantumScan.best]?.name} ` +
+      `($${quantumScan.networks[0].totalPerTrade.toFixed(4)}/trade). ` +
+      `Top pares por volatilidade seguem.`
+    )
+
+    const volTokens = new Map<string, { token: string; vol24h: number }>()
+    for (const n of topNetworks.map(n => n.network)) {
+      const ps = TRADING_PAIRS[n] || []
+      for (const p of ps) {
+        const volToken = !STABLES.has(p.to) ? p.to : (!STABLES.has(p.from) ? p.from : null)
+        if (volToken && !volTokens.has(volToken)) {
+          const data = volatilityTracker.getVolatility(volToken as TokenSymbol)
+          volTokens.set(volToken, { token: volToken, vol24h: data.vol24h })
+        }
+      }
+    }
+
+    const rankedTokens = [...volTokens.values()]
+      .sort((a, b) => b.vol24h - a.vol24h)
+      .slice(0, 5)
+
+    if (rankedTokens.length > 0) {
+      pregão.adicionarLog(
+        `📊 Volatilidade 24h: ${rankedTokens.map(t => `${t.token} ${(t.vol24h * 100).toFixed(1)}%`).join(" | ")}`
+      )
+    }
+
+    if (isMultiChain && networksToScan.length > 2) {
+      const topSet = new Set(quantumScan.networks.slice(0, 2).map(n => n.network))
+      const filtered = networksToScan.filter(n => topSet.has(n))
+      if (filtered.length >= 1) {
+        const excluidas = networksToScan.filter(n => !topSet.has(n))
+        if (excluidas.length > 0) {
+          pregão.adicionarLog(`🔍 Foco: avaliando apenas ${filtered.map(n => NETWORKS[n]?.name).join(", ")} — ${excluidas.map(n => NETWORKS[n]?.name).join(", ")} ignoradas (gas alto)`)
+        }
+        networksToScan.length = 0
+        networksToScan.push(...filtered)
+        networksToScan.sort((a, b) => {
+          const idxA = quantumScan.networks.findIndex(n => n.network === a)
+          const idxB = quantumScan.networks.findIndex(n => n.network === b)
+          return idxA - idxB
+        })
+      }
+    }
+  }
+
   const redeAtual = networksToScan[0]
   const net = NETWORKS[redeAtual]
   const pairs = TRADING_PAIRS[redeAtual] || []
