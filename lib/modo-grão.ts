@@ -54,18 +54,18 @@ const CONFIG = {
   network: 'base' as const,
   fromToken: 'USDC',
   toToken: 'WETH',
-  baseTradeUSD: 3,        // $3 por sinal individual
-  batchThreshold: 4,       // Executa quando N sinais acumulados
+  baseTradeUSD: 5,        // $5 por sinal individual (batch min de 2 = $10 já cobre gas)
+  batchThreshold: 3,       // Executa quando N sinais acumulados (3 × $5 = $15)
   maxBatchAgeMs: 120_000,  // Força execução após 2min mesmo sem atingir threshold
-  targetUSD: 0.02,
-  stopUSD: -0.02,
-  maxPositions: 3,
+  targetUSD: 0.05,         // Cobre gas round-trip (~$0.028) + margem
+  stopUSD: -0.03,          // Stop mais apertado que target (protege capital)
+  maxPositions: 2,         // Menos posições = mais foco em cada
   cycleMs: 30_000,
   andGateTimeoutMs: 30_000,
-  minConfidence: 30,
-  minVolatility2h: 0.0015,
+  minConfidence: 35,       // Confiança maior = menos trades ruins
+  minVolatility2h: 0.0012, // Mais sensível a volatilidade (0.12% vs 0.15%)
   minAmplitude: 0.002,
-  minSpread: 0.001,
+  minSpread: 0.004,        // SÓ entra quando spread é bom (≥0.4% = execução barata LI.FI)
 }
 
 class ModoGrao {
