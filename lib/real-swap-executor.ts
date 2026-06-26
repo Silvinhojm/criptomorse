@@ -293,10 +293,18 @@ class RealSwapExecutor {
       "https://polygon.llamarpc.com",
       "https://polygon-rpc.com",
       "https://rpc-mainnet.maticvigil.com",
+      "https://polygon-mainnet.g.alchemy.com/v2/demo",
+      "https://rpc.ankr.com/polygon",
     ],
     base: [],
-    ethereum: [],
-    arbitrum: [],
+    ethereum: [
+      "https://rpc.ankr.com/eth",
+      "https://ethereum-rpc.publicnode.com",
+    ],
+    arbitrum: [
+      "https://rpc.ankr.com/arbitrum",
+      "https://arb1.arbitrum.io/rpc",
+    ],
     sepolia: [
       "https://sepolia.gateway.tenderly.co",
       "https://ethereum-sepolia.publicnode.com",

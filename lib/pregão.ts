@@ -3,7 +3,7 @@ import { escolaRobos } from "./escola-robos"
 import { isStable } from "./real-swap-executor"
 import { setorPacotes, type TradeIntent } from "./setor-pacotes"
 import { batchApprove, executeBatch } from "./ultraflash"
-import { realSwap, NETWORKS, type NetworkKey, type TokenSymbol, TOKEN_DECIMALS } from "./real-swap-executor"
+import { realSwap, NETWORKS, type NetworkKey, type TokenSymbol, TOKEN_DECIMALS, isArcStressMode } from "./real-swap-executor"
 import { hasDirectDex, getDirectDexQuote, calculateAmountOutMin } from "./direct-dex"
 import { getQuote } from "./lifi-executor"
 import { ethers } from "ethers"
@@ -78,9 +78,9 @@ class Pregão {
     saldosPorRede: {},
     ultimaAtualizacao: Date.now()
   }
-  private LIMIAR_OK = 2
-  private JANELA_MS = 30_000
-  private ORDEM_TIMEOUT_MS = 120_000 // 2 min — trava em "preparando" = falha
+  private get LIMIAR_OK(): number { return isArcStressMode() ? 1 : 2 }
+  private get JANELA_MS(): number { return isArcStressMode() ? 15_000 : 30_000 }
+  private get ORDEM_TIMEOUT_MS(): number { return isArcStressMode() ? 60_000 : 120_000 }
   private onOrdemCallbacks: Array<(ordem: OrdemExecucao) => void> = []
   private onLogCallbacks: Array<(msg: string) => void> = []
   private onCashBoxChangeCallbacks: Array<(state: CashBoxState) => void> = []
@@ -551,9 +551,11 @@ class Pregão {
     pacote.attempts = (pacote.attempts || 0) + 1
     const isUltimaTentativa = pacote.attempts >= 3
 
-    // ─── 1. Threshold relaxa progressivamente: 0.5% → 0.3% → 0.1% ──
-    const pctThreshold = isUltimaTentativa ? 0.001 : Math.max(0.005 - (pacote.attempts - 1) * 0.002, 0.001)
-    const thresholdPorTrade = pacote.trades.map(t => Math.max(t.amount * pctThreshold, 0.002))
+    // ─── 1. Threshold adaptativo por rede ──
+    const gasCost = await gasPriceOracle.getGasCost(pacote.rede).catch(() => 0.02)
+    const basePct = pacote.rede === "ethereum" ? 0.005 : pacote.rede === "base" || pacote.rede === "arbitrum" ? 0.003 : 0.002
+    const pctThreshold = isUltimaTentativa ? basePct * 0.3 : Math.max(basePct - (pacote.attempts - 1) * (basePct * 0.35), basePct * 0.2)
+    const thresholdPorTrade = pacote.trades.map(t => Math.max(t.amount * pctThreshold, 0.005))
     const lucroMinimoTotal = thresholdPorTrade.reduce((s, v) => s + v, 0)
 
     if (pacote.expectedProfitTotal < lucroMinimoTotal && !isUltimaTentativa) {
@@ -590,7 +592,6 @@ class Pregão {
 
     // ─── 3. Gas-aware threshold (relaxa na última tentativa) ──
     const lucroRealEsperado = swaps.reduce((s, sw) => s + sw.expectedToAmount, 0) - swaps.reduce((s, sw) => s + sw.amountUsd, 0)
-    const gasCost = await gasPriceOracle.getGasCost(pacote.rede).catch(() => 0.05)
     const estimatedGasTotal = gasCost * (1 + swaps.length * 0.3)
     const gasMultiplier = isUltimaTentativa ? 1.0 : 2.0
 

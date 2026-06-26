@@ -1,81 +1,36 @@
-import { NextRequest, NextResponse } from 'next/server'
-
-const CIRCLE_API = 'https://api.circle.com'
-const REQUEST_TIMEOUT = 30000
+import { NextRequest, NextResponse } from "next/server"
 
 export async function GET(req: NextRequest) {
-  return proxyRequest(req, 'GET')
+  return proxyCircle(req)
 }
 
 export async function POST(req: NextRequest) {
-  return proxyRequest(req, 'POST')
+  return proxyCircle(req)
 }
 
-export async function PUT(req: NextRequest) {
-  return proxyRequest(req, 'PUT')
-}
-
-export async function PATCH(req: NextRequest) {
-  return proxyRequest(req, 'PATCH')
-}
-
-export async function DELETE(req: NextRequest) {
-  return proxyRequest(req, 'DELETE')
-}
-
-async function proxyRequest(req: NextRequest, method: string) {
+async function proxyCircle(req: NextRequest) {
   try {
-    const path = req.nextUrl.pathname.replace('/api/circle-proxy', '')
-    const searchParams = req.nextUrl.searchParams.toString()
-    const url = `${CIRCLE_API}${path}${searchParams ? `?${searchParams}` : ''}`
-
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT)
+    const url = new URL(req.url)
+    const path = url.pathname.replace("/api/circle-proxy", "")
+    const circleUrl = `https://api.circle.com${path}${url.search}`
 
     const headers: Record<string, string> = {}
     req.headers.forEach((value, key) => {
       const lower = key.toLowerCase()
-      if (lower === 'host') return
+      if (lower === "host" || lower === "origin" || lower === "referer" || lower === "x-user-agent") return
       headers[key] = value
     })
 
-    let body: BodyInit | undefined
-    if (method !== 'GET' && method !== 'DELETE') {
-      try {
-        const raw = await req.text()
-        if (raw) body = raw
-        else console.log('[CircleProxy] empty body for', url)
-      } catch (e) {
-        console.warn(`[CircleProxy] body read error:`, e?.message)
-        body = '{}'
-      }
-    }
-
-    console.log(`[CircleProxy] ${method} ${path}: forwarding to Circle (body=${body ? body.length : 0} chars)`)
-
-    const res = await fetch(url, {
-      method,
+    const res = await fetch(circleUrl, {
+      method: req.method,
       headers,
-      ...(body ? { body } : {}),
-      signal: controller.signal,
+      body: req.method === "GET" ? undefined : await req.text(),
+      signal: AbortSignal.timeout(30000),
     })
 
-    clearTimeout(timeoutId)
-
-    const data = await res.text()
-    return new NextResponse(data, {
-      status: res.status,
-      headers: {
-        'Content-Type': res.headers.get('content-type') || 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
-    })
+    const data = await res.json()
+    return NextResponse.json(data, { status: res.status })
   } catch (e: any) {
-    console.error(`[CircleProxy] ${req.method} ${req.nextUrl.pathname}:`, e?.message ?? e, e?.cause ?? '')
-    if (e?.name === 'AbortError') {
-      return NextResponse.json({ error: 'timeout', detail: `upstream timeout after ${REQUEST_TIMEOUT}ms` }, { status: 504 })
-    }
-    const detail = e?.cause ? `cause=${e.cause?.code ?? e.cause}` : e?.message ?? 'unknown'
-    return NextResponse.json({ error: e?.message ?? 'unknown', detail }, { status: 502 })
+    return NextResponse.json({ error: e.message }, { status: 502 })
   }
 }
