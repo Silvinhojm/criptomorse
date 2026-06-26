@@ -23,12 +23,7 @@ const STORK_FEED_IDS: Record<string, string> = {
   BTC: "0x7404e3d104ea7841c3d9e6fd20adfe99b4ad586bc08d8f3bd3afef894cf184de",
 };
 
-const COIN_IDS: Record<string, string> = {
-  WETH: "1673723677362319867", WMATIC: "1730847291434274818", WBTC: "1673723677362319866",
-  USDC: "1673723677362319870", USDT: "1673723677362319868", DAI: "1673723677362319879", EURC: "1673723677362320241",
-  ARB: "1673723677362319902", SOL: "1673723677362319875",
-  cirBTC: "1673723677362319866", mcirBTC: "1673723677362319866",
-};
+import { COIN_IDS } from "./coin-ids";
 
 // FIX: Cache estendido para reduzir requisições à SoSoValue
 // Stablecoins mudam muito pouco — cache de 60s
@@ -66,6 +61,8 @@ class PairPriceFeed {
   private arcProvider: ethers.JsonRpcProvider | null = null;
   private storkContract: ethers.Contract | null = null;
   private useStorkForArc = false;
+  private storkFailureCache: Map<string, number> = new Map();
+  private storkLoggedTokens: Set<string> = new Set();
 
   setUseStork(active: boolean): void {
     this.useStorkForArc = active;
@@ -100,6 +97,11 @@ class PairPriceFeed {
     }
     if (!feedKey) return null;
 
+    const lastFail = this.storkFailureCache.get(token) ?? 0;
+    if (lastFail > 0 && Date.now() - lastFail < 60_000) {
+      return null;
+    }
+
     try {
       const contract = this.ensureStorkContract();
       const result = await contract.getTemporalNumericValueUnsafeV1(feedKey);
@@ -107,7 +109,11 @@ class PairPriceFeed {
       const price = parseFloat(ethers.formatUnits(rawValue, 18));
       if (price > 0) return price;
     } catch (err) {
-      console.warn(`[Stork] Fallback para ${token}: ${err instanceof Error ? err.message : err}`);
+      this.storkFailureCache.set(token, Date.now());
+      if (!this.storkLoggedTokens.has(token)) {
+        this.storkLoggedTokens.add(token);
+        console.warn(`[Stork] Fallback para ${token}: ${err instanceof Error ? err.message : err}`);
+      }
     }
     return null;
   }
@@ -126,7 +132,8 @@ class PairPriceFeed {
       const res = await fetch(`/api/price?ids=${idsParam}`, { signal: AbortSignal.timeout(8000) })
       if (!res.ok) return result
       const body = await res.json()
-      const prices = body.prices ?? body
+      const prices = body?.prices
+      if (!prices) return result
       for (const id of unique) {
         const price = prices[id]
         if (typeof price === "number" && price > 0) {

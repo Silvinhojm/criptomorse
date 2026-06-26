@@ -162,11 +162,12 @@ class Accountant {
     score.totalTrades++;
     if (report.profit > 0) {
       score.wins++;
-      score.streak = Math.max(score.streak + 1, 1);
+      score.streak = score.streak * 0.7 + 5 * 0.3
     } else {
       score.losses++;
-      score.streak = Math.min(score.streak - 1, -1);
+      score.streak = score.streak * 0.7 + (-5) * 0.3
     }
+    score.streak = Math.round(score.streak * 100) / 100
     score.totalProfit += report.profit;
     score.avgProfit = score.totalProfit / score.totalTrades;
     score.winRate = (score.wins / score.totalTrades) * 100;
@@ -174,8 +175,9 @@ class Accountant {
     if (report.profit < score.worstTrade) score.worstTrade = report.profit;
 
     // Score composto: winRate * 0.6 + lucroMedio * 0.3 + streak * 0.1
-    score.score = (score.winRate * 0.6) + (Math.min(score.avgProfit, 1.0) * 30) + (Math.max(0, score.streak) * 1);
-    score.score = Math.max(0, score.score);
+    const profitBonus = Math.min(Math.max(0, score.totalProfit), 5) * 4
+    score.score = (score.winRate * 0.5) + (Math.min(score.avgProfit, 1.0) * 20) + profitBonus + (Math.max(0, score.streak) * 0.5)
+    score.score = Math.max(0, score.score)
 
     this.agentScores.set(report.agentName, score);
   }

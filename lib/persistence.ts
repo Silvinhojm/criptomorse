@@ -14,13 +14,17 @@ async function apiCall(url: string, method: string, body?: any): Promise<any> {
 
 function getLocal<T>(key: string, fallback: T): T {
   try {
+    if (typeof window === "undefined") return fallback
     const data = localStorage.getItem(key);
     return data ? JSON.parse(data) : fallback;
   } catch { return fallback; }
 }
 
 function setLocal(key: string, value: any): void {
-  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore */ }
+  try {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch { /* ignore */ }
 }
 
 function isRealTrade(record: any): boolean {

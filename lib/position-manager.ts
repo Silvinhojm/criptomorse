@@ -7,6 +7,7 @@
 import { realSwap, isStable, type NetworkKey, type TokenSymbol } from "./real-swap-executor";
 import { pregão } from "./pregão";
 import { gasPriceOracle } from "./gas-price-oracle";
+import { COIN_IDS } from "./coin-ids";
 
 export interface OpenPosition {
   id: string;
@@ -40,6 +41,19 @@ const MIN_PROFIT_HOLD_MS = 30 * 1000; // 30 segundos — flip mais rápido em mi
 // $0.01 é suficiente com gas realista (Polygon $0.005, Base $0.003) e spread ~$0.005
 // Permite lucrar com movimentos de $0.01-0.02 em trades de $2-5
 const MIN_LUCRO_LIQUIDO_USD = 0.01
+
+const MIN_LUCRO_LIQUIDO_POR_REDE: Record<string, number> = {
+  polygon: 0.02,
+  base: 0.03,
+  arbitrum: 0.05,
+  ethereum: 0.50,
+  arc: 0.001,
+  sepolia: 0.02,
+}
+
+function getMinProfitUsd(networkKey: string): number {
+  return MIN_LUCRO_LIQUIDO_POR_REDE[networkKey] ?? MIN_LUCRO_LIQUIDO_USD
+}
 
 class PositionManager {
   private positions: Map<string, OpenPosition> = new Map();
@@ -161,8 +175,8 @@ class PositionManager {
       const custoTotalVenda = sellGasCost + sellSpread
       const lucroLiquido = currentProfitUsd - custoTotalVenda
 
-      if (lucroLiquido >= MIN_LUCRO_LIQUIDO_USD) {
-        pregão.adicionarLog(`✅ ${pos.boughtToken}: lucro bruto $${currentProfitUsd.toFixed(4)} - custos (gas $${sellGasCost.toFixed(4)} + spread $${sellSpread.toFixed(4)}) = líquido $${lucroLiquido.toFixed(4)} — fechando (mín $${MIN_LUCRO_LIQUIDO_USD.toFixed(2)})`)
+      if (lucroLiquido >= getMinProfitUsd(pos.networkKey)) {
+        pregão.adicionarLog(`✅ ${pos.boughtToken}: lucro bruto $${currentProfitUsd.toFixed(4)} - custos (gas $${sellGasCost.toFixed(4)} + spread $${sellSpread.toFixed(4)}) = líquido $${lucroLiquido.toFixed(4)} — fechando (mín $${getMinProfitUsd(pos.networkKey).toFixed(2)})`)
         for (const cb of this.onStaircaseCloseCallbacks) cb(pos);
         return "close";
       }
@@ -194,11 +208,7 @@ class PositionManager {
     const cached = this.priceCache.get(token);
     if (cached && Date.now() - cached.timestamp < 15000) return cached.price;
 
-    const coinIds: Record<string, string> = {
-      WETH: "1673723677362319867", WMATIC: "1730847291434274818", ARB: "1673723677362319902",
-      WBTC: "1673723677362319866", SOL: "1673723677362319875", cirBTC: "1673723677362319866",
-    };
-    const coinId = coinIds[token];
+    const coinId = COIN_IDS[token];
     if (!coinId) {
       // Fallback: usa entryPrice de posição aberta como preço real
       for (const pos of this.positions.values()) {
@@ -214,8 +224,8 @@ class PositionManager {
       const res = await fetch(`/api/price?ids=${coinId}`);
       if (!res.ok) return this.priceCache.get(token)?.price ?? 1.0;
       const body = await res.json();
-      const data = body.prices ?? body;
-      const price = data[coinId] ?? 1.0;
+      const prices = body?.prices;
+      const price = (prices && prices[coinId]) ?? 1.0;
       if (price > 0) {
         this.priceCache.set(token, { price, timestamp: Date.now() });
       }

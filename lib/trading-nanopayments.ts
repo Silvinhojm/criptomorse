@@ -8,6 +8,7 @@ import { saveTradeHistory, loadTradeHistory } from "./persistence";
 import { positionManager, type OpenPosition } from "./position-manager";
 import { accountant, type TradeReport } from "./accountant";
 import { agentVoting, type AgentVote } from "./agent-voting";
+import { COIN_IDS } from "./coin-ids";
 
 export interface TradeOrder {
   id: string;
@@ -55,11 +56,7 @@ async function getTokenPrice(token: TokenSymbol): Promise<number> {
   const cached = priceCache.find(p => p.token === token);
   if (cached && Date.now() - cached.timestamp < 60000) return cached.price;
 
-  const coinIds: Record<string, string> = {
-    WETH: "1673723677362319867", WMATIC: "1730847291434274818", ARB: "1673723677362319902",
-    WBTC: "1673723677362319866", USDC: "1673723677362319870", EURC: "1673723677362320241",
-  };
-  const coinId = coinIds[token];
+  const coinId = COIN_IDS[token];
   if (!coinId) return 1.0;
 
   try {

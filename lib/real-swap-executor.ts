@@ -3,6 +3,7 @@
 // Suporte a múltiplos pares e saldo real por rede
 
 import { ethers } from "ethers";
+import { NonceManager } from "./nonce-manager";
 import { getQuote, isLifiCooldown, toTokenUnits } from "./lifi-executor";
 import type { QuoteResult } from "./lifi-executor";
 import { getCircuitBreakerState, recordError, setTestnetMode } from "./circuit-breaker";
@@ -212,6 +213,16 @@ export function isStable(token: TokenSymbol): boolean {
   return STABLE_TOKENS.has(token);
 }
 
+function getDynamicSlippageBps(token: TokenSymbol): number {
+  if (isStable(token)) return 30
+  return 100
+}
+
+function getDynamicSlippage(token: TokenSymbol): number {
+  if (isStable(token)) return 0.003
+  return 0.005
+}
+
 // Lucro mínimo dinâmico por rede (cobre gas real da RPC + margem)
 // ETH: margem 3x (conservador) | Demais redes: margem 1.5x (micro-trades)
 async function getMinProfitThreshold(networkKey: NetworkKey): Promise<number> {
@@ -262,14 +273,7 @@ export interface BestPairResult {
 }
 
 // ─── Executor principal ───────────────────────────────────────────────────────
-const COIN_IDS: Record<string, string> = {
-  WETH: "1673723677362319867", WMATIC: "1730847291434274818", WBTC: "1673723677362319866",
-  USDC: "1673723677362319870", USDT: "1673723677362319868", DAI: "1673723677362319879", EURC: "1673723677362320241",
-  ARB: "1673723677362319902", SOL: "1673723677362319875",
-  cirBTC: "1673723677362319866", mcirBTC: "1673723677362319866",
-  // Tokens nativos (usados por _fetchNativePrice)
-  ETH: "1673723677362319867", POL: "1730847291434274818", ARC: "1673723677362319870",
-};
+import { COIN_IDS } from "./coin-ids";
 
 const UB_CHAIN: Record<string, string> = {
   arc: "Arc_Testnet",
@@ -328,8 +332,8 @@ class RealSwapExecutor {
       const res = await fetch(`/api/price?ids=${coinId}`);
       if (!res.ok) return cached?.price ?? (isStable(token) ? 1.0 : 0)
       const body = await res.json();
-      const data = body.prices ?? body;
-      const price = data[coinId] ?? 0;
+      const prices = body?.prices;
+      const price = (prices && prices[coinId]) ?? 0;
       if (price > 0) {
         this.priceCache.set(token, { price, timestamp: Date.now() });
         return price;
@@ -489,7 +493,7 @@ class RealSwapExecutor {
       );
       if (tokenCount > 0) {
         anyProviderSucceeded = true
-        console.log(`🔁 Balance via ${label}: ${nonZero} non-zero of ${Object.keys(net.tokens).length}`)
+        console.debug(`🔁 Balance via ${label}: ${nonZero} non-zero of ${Object.keys(net.tokens).length}`)
       }
       return nonZero
     }
@@ -587,8 +591,8 @@ class RealSwapExecutor {
       const res = await fetch(`/api/price?ids=${coinId}`);
       if (!res.ok) return 0;
       const body = await res.json();
-      const prices = body.prices ?? body;
-      const price = prices[coinId] ?? 0;
+      const prices = body?.prices;
+      const price = (prices && prices[coinId]) ?? 0;
       return price > 0 ? price : 0;
     } catch {
       return 0;
@@ -850,7 +854,7 @@ class RealSwapExecutor {
       if (!net.isTestnet && hasDirectDex(this.networkKey)) {
         const dexQuote = await getDirectDexQuote(this.networkKey, this.provider, fromTokenAddr, toTokenAddr, BigInt(fromAmountRaw));
         if (dexQuote && dexQuote.amountOut > 0n) {
-          const amountOutMin = calculateAmountOutMin(dexQuote.amountOut, 100);
+          const amountOutMin = calculateAmountOutMin(dexQuote.amountOut, getDynamicSlippageBps(toToken));
           routes.push({
             label: `DEX ${this.networkKey}`,
             spender: dexQuote.router,
@@ -878,7 +882,7 @@ class RealSwapExecutor {
           fromChain: net.chainId, toChain: net.chainId,
           fromToken: fromTokenAddr, toToken: toTokenAddr,
           fromAmount: fromAmountRaw, fromAddress: this.userAddress,
-          toAddress: this.userAddress, slippage: 0.005,
+          toAddress: this.userAddress, slippage: getDynamicSlippage(toToken),
         });
       } catch { /* LI.FI falhou */ }
       if (lifiQuote && lifiQuote.transactionRequest?.data && lifiQuote.transactionRequest?.to) {
@@ -918,12 +922,14 @@ class RealSwapExecutor {
                   }
                 }
               }
+              const nonce = await NonceManager.getInstance().getNonce(this.signer!.provider!, net.chainId, this.userAddress).catch(() => undefined);
               try {
                 const txResp = await this.signer!.sendTransaction({
                   to: lifiQuote.transactionRequest!.to,
                   data: lifiQuote.transactionRequest!.data,
                   value: BigInt(lifiQuote.transactionRequest!.value ?? "0"),
                   gasLimit: arcGasLimit,
+                  nonce,
                   ...arcFeeParams,
                 });
                 log(`🔗 LI.FI TX: ${txResp.hash}`);
@@ -940,6 +946,30 @@ class RealSwapExecutor {
 
       // Escolhe a melhor rota (maior output estimado)
       if (routes.length === 0) {
+        if (net.isTestnet && this.signer) {
+          log(`🧪 Nenhuma rota LI.FI/DEX — executando transação direta na testnet (stress)`);
+          const directResult = await executeDirectSwap(this.signer, fromTokenAddr, toTokenAddr, fromAmountRaw, this.userAddress, net.chainId, (m) => log(m));
+          if (directResult.success) {
+            const amountReceived = parseFloat(directResult.amountReceived ?? "0") / Math.pow(10, toDecimals);
+            const toAmountUsd = amountReceived * toPrice;
+            const preSwapBalance = this.getBalance(toToken);
+            const action: "BUY" | "SELL" | "HOLD" = !isStable(toToken) && isStable(fromToken) ? "BUY" : "SELL";
+            log(`💵 Transação direta: ${amountReceived.toFixed(6)} ${toToken} ($${toAmountUsd.toFixed(2)}) | tx: ${directResult.txHash?.slice(0, 10)}`);
+            return {
+              success: true,
+              txHash: directResult.txHash ?? `direct_${Date.now()}`,
+              explorerUrl: directResult.explorerUrl,
+              fromToken, toToken,
+              fromAmount: amountUsd,
+              toAmount: amountReceived,
+              fromAmountUsd: amountUsd,
+              toAmountUsd,
+              feeUsd: 0,
+              action,
+              preSwapBalance,
+            } as any;
+          }
+        }
         const motivo = !lifiQuote ? (isLifiCooldown() ? "LI.FI em cooldown" : "Nenhuma rota disponível") : "Rota inválida";
         return this._fail(fromToken, toToken, amountUsd, motivo, timestamp);
       }
@@ -989,7 +1019,7 @@ class RealSwapExecutor {
           const postSwapBalance = this.getBalance(toToken);
           const actualToAmount = Math.max(0, postSwapBalance - preSwapBalance);
           const toAmountUsd = actualToAmount * toPrice;
-          const profit = isStable(toToken) ? actualToAmount - amountUsd : 0;
+          const profit = isStable(toToken) ? toAmountUsd - amountUsd : 0;
           const explorerUrl = `${net.explorer}/tx/${fallbackResult.txHash}`;
 
           log(`✅ ${fallbackRoute.label} concluído: ${actualToAmount.toFixed(6)} ${toToken} ($${toAmountUsd.toFixed(4)})`);
@@ -1009,7 +1039,7 @@ class RealSwapExecutor {
       const postSwapBalance = this.getBalance(toToken);
       const actualToAmount = Math.max(0, postSwapBalance - preSwapBalance);
       const toAmountUsd = actualToAmount * toPrice;
-      const profit = isStable(toToken) ? actualToAmount - amountUsd : 0;
+      const profit = isStable(toToken) ? toAmountUsd - amountUsd : 0;
       const explorerUrl = `${net.explorer}/tx/${result.txHash}`;
 
       log(`✅ ${bestRoute.label} concluído: ${actualToAmount.toFixed(6)} ${toToken} ($${toAmountUsd.toFixed(4)})`);
@@ -1025,7 +1055,7 @@ class RealSwapExecutor {
       const msg =
         err?.code === "ACTION_REJECTED" ? "Rejeitado pelo usuário"
         : err?.message?.includes("insufficient") ? "Saldo insuficiente para gas"
-        : err?.message || "Erro desconhecido";
+        : err?.message?.slice(0, 200) || "Erro desconhecido";
       log(`❌ ${msg}`);
       recordError("executeSwap", msg);
       return this._fail(fromToken, toToken, amountUsd, msg, timestamp);
@@ -1075,3 +1105,7 @@ class RealSwapExecutor {
 }
 
 export const realSwap = new RealSwapExecutor();
+
+export function isArcStressMode(): boolean {
+  return realSwap.getNetworkKey() === "arc";
+}

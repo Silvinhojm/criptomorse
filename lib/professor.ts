@@ -7,6 +7,7 @@ import { accountant } from "./accountant"
 import { setorPacotes, type TradeIntent } from "./setor-pacotes"
 import { pregão } from "./pregão"
 import { TRADING_PAIRS, NETWORKS, realSwap, type TokenSymbol, type NetworkKey } from "./real-swap-executor"
+import { COIN_IDS } from "./coin-ids"
 
 export interface PalpiteRobo {
   roboNome: string
@@ -112,10 +113,7 @@ class Professor {
   private async _avaliar(palpite: PalpiteRobo) {
     const tokenVolatil = palpite.direcao === "buy" ? palpite.toToken : palpite.fromToken
     // Pula tokens sem price feed real (SoSoValue) — evita streak negativo falso
-    const COIN_IDS: Record<string, string> = {
-      WETH: "1673723677362319867", WMATIC: "1730847291434274818", ARB: "1673723677362319902",
-      WBTC: "1673723677362319866", SOL: "1673723677362319875", cirBTC: "1673723677362319866",
-    }
+
     if (!COIN_IDS[tokenVolatil]) return
 
     const precoAtual = await positionManager.fetchTokenPrice(tokenVolatil as TokenSymbol)

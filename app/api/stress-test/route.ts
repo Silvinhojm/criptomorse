@@ -1,6 +1,7 @@
 ﻿// app/api/stress-test/route.ts
 import { NextResponse } from "next/server"
 import { ethers } from "ethers"
+import { NonceManager } from "@/lib/nonce-manager"
 
 const ARC_RPC_URL = "https://rpc.testnet.arc.io"
 const LI_FI_API = "https://li.quest/v1/quote"
@@ -17,7 +18,7 @@ async function getLifiQuote(fromToken: string, toToken: string, amount: string, 
 export async function POST(req: Request) {
   try {
     const body = await req.json()
-    const privateKey = body.privateKey || process.env.PRIVATE_KEY
+    const privateKey = process.env.PRIVATE_KEY
     
     if (!privateKey) {
       return NextResponse.json(
@@ -29,6 +30,7 @@ export async function POST(req: Request) {
     const provider = new ethers.JsonRpcProvider(ARC_RPC_URL)
     const signer = new ethers.Wallet(privateKey, provider)
     const address = await signer.getAddress()
+    const nonceManager = NonceManager.getInstance()
     console.log(`🔑 Stress Test signer: ${address}`)
 
     const results = []
@@ -43,7 +45,8 @@ export async function POST(req: Request) {
           case "swap_USDC_EURC": {
             const quote = await getLifiQuote(USDC_ARC, EURC_ARC, "1000000", address)
             if (quote?.transactionRequest) {
-              const tx = await signer.sendTransaction(quote.transactionRequest)
+              const nonce = await nonceManager.getNonce(provider, 5042002, address)
+              const tx = await signer.sendTransaction({ ...quote.transactionRequest, nonce })
               const receipt = await tx.wait()
               result = { success: true, txHash: receipt?.hash || tx.hash }
             } else {
@@ -54,7 +57,8 @@ export async function POST(req: Request) {
           case "swap_EURC_USDC": {
             const quote = await getLifiQuote(EURC_ARC, USDC_ARC, "1000000", address)
             if (quote?.transactionRequest) {
-              const tx = await signer.sendTransaction(quote.transactionRequest)
+              const nonce = await nonceManager.getNonce(provider, 5042002, address)
+              const tx = await signer.sendTransaction({ ...quote.transactionRequest, nonce })
               const receipt = await tx.wait()
               result = { success: true, txHash: receipt?.hash || tx.hash }
             } else {
@@ -63,10 +67,12 @@ export async function POST(req: Request) {
             break
           }
           case "transfer_memo": {
+            const nonce = await nonceManager.getNonce(provider, 5042002, address)
             const tx = await signer.sendTransaction({
               to: address,
               value: 0,
-              data: "0x"
+              data: "0x",
+              nonce,
             })
             result = { success: true, txHash: tx.hash }
             break

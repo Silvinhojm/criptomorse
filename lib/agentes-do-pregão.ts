@@ -1,7 +1,7 @@
 import { quantumAgent, technicalAgent } from "./multi-agent-system"
 import { quantumWaveTrader } from "./quantum-wave"
 import { pregão } from "./pregão"
-import { NETWORKS, TRADING_PAIRS, realSwap, type NetworkKey, type TokenSymbol } from "./real-swap-executor"
+import { NETWORKS, TRADING_PAIRS, GAS_COST_ESTIMATE, realSwap, type NetworkKey, type TokenSymbol, isArcStressMode } from "./real-swap-executor"
 import { positionManager } from "./position-manager"
 import { volatilityTracker } from "./volatility-tracker"
 import { accountant } from "./accountant"
@@ -13,6 +13,7 @@ import { caixa, UB_CHAIN } from "./caixa"
 import { professor } from "./professor"
 import { parametrosRobos } from "./parametros-robos"
 import { pairSector } from "./pair-sector"
+import { COIN_IDS, TOKENS_WITH_FEED } from "./coin-ids"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 
@@ -63,13 +64,16 @@ function aplicarFiltroTendencia(votes: AgentPairVote[]): AgentPairVote[] {
     // Se tendência forte UP → pausa vendas (não vende em tendência de alta)
     // Se tendência forte DOWN → pausa compras (não compra em tendência de baixa)
     if ((direcao === "up" && v.action === "sell") || (direcao === "down" && v.action === "buy")) {
-      tokensAfetados.add(v.agentName)
+      tokensAfetados.add(tokenVolatil)
     }
   }
 
   if (tokensAfetados.size === 0) return votes
 
-  const filtrados = votes.filter(v => !tokensAfetados.has(v.agentName))
+  const filtrados = votes.filter(v => {
+    const vt = v.action === "buy" ? v.toToken : v.fromToken
+    return !tokensAfetados.has(vt)
+  })
   const removidos = votes.length - filtrados.length
   pregão.adicionarLog(`🧭 Filtro de Tendência: ${removidos} votos removidos (${[...tokensAfetados].join(", ")} foram contra tendência forte)`)
   return filtrados
@@ -89,10 +93,11 @@ export function setPaperMode(enabled: boolean): void {
 function getMinTradeSize(network: NetworkKey): number {
   const net = NETWORKS[network]
   if (!net || net.isTestnet) return 2
-  if (network === "ethereum") return 50
-  if (network === "polygon") return 6.50
-  if (network === "base" || network === "arbitrum") return 2
-  return 20
+  const gasCost = GAS_COST_ESTIMATE[network] ?? 0.02
+  if (network === "ethereum") return Math.max(50, gasCost * 33)
+  if (network === "polygon") return Math.max(2, gasCost * 100)
+  if (network === "base" || network === "arbitrum") return Math.max(2, gasCost * 50)
+  return Math.max(2, gasCost * 40)
 }
 
 function getMinProfitReal(network: NetworkKey): number {
@@ -282,30 +287,20 @@ async function getTokenPrice(token: TokenSymbol): Promise<number> {
   const cached = priceFetchCache.get(token)
   if (cached && Date.now() - cached.ts < PRICE_CACHE_TTL) return cached.price
 
-  const coinIds: Record<string, string> = {
-    WETH: "1673723677362319867", WMATIC: "1730847291434274818", ARB: "1673723677362319902",
-    WBTC: "1673723677362319866", USDC: "1673723677362319870", EURC: "1673723677362320241",
-    cirBTC: "1673723677362319866",
-  }
-  const coinId = coinIds[token]
+  const coinId = COIN_IDS[token]
   if (!coinId) { priceFetchCache.set(token, { price: 1.0, ts: Date.now() }); return 1.0 }
   try {
     const res = await fetch(`/api/price?ids=${coinId}`)
     if (!res.ok) return 1.0
     const body = await res.json()
-    const data = body.prices ?? body
-    const price = data[coinId] ?? 1.0
+    const prices = body?.prices
+    const price = (prices && prices[coinId]) ?? 1.0
     priceFetchCache.set(token, { price, ts: Date.now() })
     return price
   } catch { return 1.0 }
 }
 
 async function fetchPricesBatch(tokens: TokenSymbol[]): Promise<Map<string, number>> {
-  const coinIds: Record<string, string> = {
-    WETH: "1673723677362319867", WMATIC: "1730847291434274818", ARB: "1673723677362319902",
-    WBTC: "1673723677362319866", USDC: "1673723677362319870", EURC: "1673723677362320241",
-    cirBTC: "1673723677362319866",
-  }
   const needed = tokens.filter(t => {
     const cached = priceFetchCache.get(t)
     return !cached || Date.now() - cached.ts >= PRICE_CACHE_TTL
@@ -315,17 +310,19 @@ async function fetchPricesBatch(tokens: TokenSymbol[]): Promise<Map<string, numb
     for (const t of tokens) result.set(t, priceFetchCache.get(t)!.price)
     return result
   }
-  const idsToFetch = needed.map(t => coinIds[t]).filter(Boolean)
+  const idsToFetch = needed.map(t => COIN_IDS[t]).filter(Boolean)
   const uniqueIds = [...new Set(idsToFetch)]
   try {
     const res = await fetch(`/api/price?ids=${uniqueIds.join(",")}`)
     if (res.ok) {
       const body = await res.json()
-      const prices = body.prices ?? body
-      for (const t of needed) {
-        const id = coinIds[t]
-        if (id && prices[id] !== undefined) {
-          priceFetchCache.set(t, { price: prices[id], ts: Date.now() })
+      const prices = body.prices
+      if (prices) {
+        for (const t of needed) {
+          const id = COIN_IDS[t]
+          if (id && prices[id] !== undefined) {
+            priceFetchCache.set(t, { price: prices[id], ts: Date.now() })
+          }
         }
       }
     }
@@ -411,6 +408,14 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   // 🔥 FIX CRÍTICO: wrapper só INTERCEPTA (não encaminha) sinais de agentes na TESTNET.
   // Em mainnet, registra aprendizado E encaminha ao pregão para execução real.
   const originalReceberOK = pregão.receberOK.bind(pregão)
+  interface AgreedPairCandidates {
+    pair: AgentPairVote
+    agents: AgentPairVote[]
+  }
+  let candidatePairs: AgreedPairCandidates[] = []
+  let votes: AgentPairVote[] = []
+  let allUniqueAgents = new Set<string>()
+  try {
   pregão.receberOK = (signal) => {
     if (signal.pregueiro.startsWith("Agente:")) {
       const nomeRobo = signal.pregueiro.replace("Agente:", "")
@@ -423,9 +428,8 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
           if (isArc) return  // só bloqueia cross-network na testnet
         }
         if (signal.rede === redeAtual || !isArc) {
-          const coinIds: Record<string, number> = { WETH: 1, WMATIC: 1, ARB: 1, WBTC: 1, SOL: 1, USDC: 1, EURC: 1, cirBTC: 1, mcirBTC: 1 }
           const tokenVolatil = signal.direcao === "buy" ? signal.toToken : signal.fromToken
-          if (coinIds[tokenVolatil]) {
+          if (TOKENS_WITH_FEED.has(tokenVolatil)) {
             professor.registrarPalpite({
               roboNome: nomeRobo,
               rede: signal.rede,
@@ -499,9 +503,8 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     for (let i = historicoVotos.length - 1; i >= 0; i--) {
       if (historicoVotos[i].agentName === nome) historicoVotos.splice(i, 1)
     }
-  // Garante pool de 500pts distribuido igualmente apos remover Grid/GridRef
-  accountant.rebalancePool()
   }
+  accountant.rebalancePool()
 
   let maxPositions = 10
   gridTrader.init(redeAtual)
@@ -957,12 +960,12 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   // ⚡ Merge dos resultados paralelos
   for (const result of pairResults) {
     allVotes.push(...result.votes)
-    if (result.votes.length >= 2) {
+    if (result.votes.length >= (isArcStressMode() ? 1 : 2)) {
       const pair = pairs.find(p => p.label === result.pairLabel)
       const avgConfidence = result.votes.reduce((s, v) => s + v.confidence, 0) / result.votes.length
       const topConfidence = Math.max(...result.votes.map(v => v.confidence))
       const isStablePair = pair ? (STABLES.has(pair.from) && STABLES.has(pair.to)) : false
-      const MIN_CONFIDENCE = net.isTestnet && isStablePair ? 30 : 40
+      const MIN_CONFIDENCE = isArcStressMode() ? 25 : (net.isTestnet && isStablePair ? 30 : 40)
       
       if (avgConfidence >= MIN_CONFIDENCE) {
         pregão.adicionarLog(`✅ Consenso em ${result.pairLabel}: ${result.votes.length} agentes, confiança média ${avgConfidence.toFixed(1)}%, top ${topConfidence.toFixed(0)}%`)
@@ -1070,7 +1073,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     }
   }
 
-  let votes = allVotes
+  votes = allVotes
   if (allVotes.length === 0) {
     pregão.adicionarLog(`🔄 Fallback: nenhum voto nos pares prioritários — usando análise tradicional`)
     try {
@@ -1149,10 +1152,11 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   const ranking = accountant.getRanking()
     .filter(s => s.agentName !== "Grid" && s.agentName !== "GridRef")
     .filter(s => votes.some(v => v.agentName === s.agentName))
-  const top3Nomes = new Set(ranking.slice(0, 3).map(s => s.agentName))
-  const topVotes = votes.filter(v => top3Nomes.has(v.agentName) && v.confidence > 0)
+  const topLimit = isArcStressMode() ? 999 : 3
+  const topNomes = new Set(ranking.slice(0, topLimit).map(s => s.agentName))
+  const topVotes = votes.filter(v => topNomes.has(v.agentName) && v.confidence > 0)
 
-  pregão.adicionarLog(`🏆 Top 3 (${votes.length} votantes): ${ranking.slice(0, 3).map(s => `${s.agentName}(${s.score.toFixed(0)})`).join(', ')} — ${topVotes.length} votos com confiança > 0`)
+  pregão.adicionarLog(`🏆 Top ${Math.min(topLimit, ranking.length)} (${votes.length} votantes): ${ranking.slice(0, topLimit).map(s => `${s.agentName}(${s.score.toFixed(0)})`).join(', ')} — ${topVotes.length} votos com confiança > 0`)
 
   const pairCount = new Map<string, { votes: AgentPairVote[]; count: number }>()
   for (const v of topVotes) {
@@ -1164,24 +1168,22 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   }
 
   // 🔥 Execução paralela: encontra até 3 pares com consenso
-  interface AgreedPairCandidates {
-    pair: AgentPairVote
-    agents: AgentPairVote[]
-  }
-  const candidatePairs: AgreedPairCandidates[] = []
+  const stressMode = isArcStressMode()
+  const maxPairs = stressMode ? 999 : 3
+  const minVotes = stressMode ? 1 : 2
 
-  // 1º passada: pares com >= 2 votos diretos (pairCount = top3 consensus)
+  // 1º passada: pares com consenso
   for (const [, data] of pairCount) {
-    if (data.count >= 2 && candidatePairs.length < 3) {
+    if (data.count >= minVotes && candidatePairs.length < maxPairs) {
       candidatePairs.push({ pair: data.votes[0], agents: data.votes })
     }
   }
 
   // 2º passada: Tendência Express (confidence > 70 + 1 supporter)
-  if (candidatePairs.length === 0) {
+  if (candidatePairs.length === 0 && !stressMode) {
     const tendenciaVotes = votes.filter(v => v.confidence > 70)
     for (const tv of tendenciaVotes) {
-      if (candidatePairs.length >= 3) break
+      if (candidatePairs.length >= maxPairs) break
       const supporters = votes.filter(v =>
         v.agentName !== tv.agentName &&
         v.pair === tv.pair &&
@@ -1198,7 +1200,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
 
   // 3º passada: fallback — qualquer par com >= 2 votos
   if (candidatePairs.length === 0) {
-    pregão.adicionarLog(`🤔 Top 3 não chegou a consenso — ${topVotes.length} votos em ${pairCount.size} pares`)
+    pregão.adicionarLog(`🤔 Top ${topLimit} não chegou a consenso — ${topVotes.length} votos em ${pairCount.size} pares`)
     const allPairCount = new Map<string, { votes: AgentPairVote[]; count: number }>()
     for (const v of votes) {
       if (v.confidence <= 0) continue
@@ -1209,7 +1211,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       allPairCount.set(key, existing)
     }
     for (const [, data] of allPairCount) {
-      if (data.count >= 2 && candidatePairs.length < 3) {
+      if (data.count >= minVotes && candidatePairs.length < maxPairs) {
         candidatePairs.push({ pair: data.votes[0], agents: data.votes })
         pregão.adicionarLog(`🔄 Fallback: ${data.votes.length} agentes concordaram em ${data.votes[0].pair}`)
       }
@@ -1220,7 +1222,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     return { totalPairs: pairs.length, votes, agreedPair: null, agreeingAgents: 0, waveCollapsed: false }
   }
 
-  const allUniqueAgents = new Set<string>()
+  allUniqueAgents = new Set<string>()
   for (const cp of candidatePairs) {
     for (const v of cp.agents) allUniqueAgents.add(v.agentName)
   }
@@ -1232,6 +1234,13 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     const agreeingAgents = cp.agents
     const uniqueAgents = new Set(agreeingAgents.map(v => v.agentName))
     const agentesStr = [...uniqueAgents].join(", ")
+    const isGroupthink = uniqueAgents.size >= 8
+    if (isGroupthink) {
+      for (const v of agreeingAgents) {
+        v.confidence = Math.round(v.confidence * 0.7)
+      }
+      pregão.adicionarLog(`🧠 Groupthink detectado: ${uniqueAgents.size} agentes no mesmo par (${agreedPair.pair}) — confiança reduzida em 30%`)
+    }
     const comprandoVolatil = STABLES.has(agreedPair.fromToken) && !STABLES.has(agreedPair.toToken)
 
     // Pula se não há vagas para compra volátil
@@ -1505,8 +1514,9 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     }
   }
 
-  // 🔁 Restaura receberOK original
-  pregão.receberOK = originalReceberOK
+  } finally {
+    pregão.receberOK = originalReceberOK
+  }
 
   return {
     totalPairs: pairs.length,

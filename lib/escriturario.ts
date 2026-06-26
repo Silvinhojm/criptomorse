@@ -3,6 +3,7 @@ import { pregão, type OrdemExecucao } from "./pregão"
 import { corretor } from "./corretor"
 import { unifiedBalance } from "./unified-balance"
 import { caixa } from "./caixa"
+import { COIN_IDS } from "./coin-ids"
 
 const VALOR_PADRAO_TRADE = 5
 
@@ -20,17 +21,13 @@ class Escriturário {
   }
 
   private async fetchTokenPrice(token: string): Promise<number> {
-    const coinIds: Record<string, string> = {
-      WETH: "1673723677362319867", WMATIC: "1730847291434274818", ARB: "1673723677362319902",
-      WBTC: "1673723677362319866", SOL: "1673723677362319875", cirBTC: "1673723677362319866",
-    }
-    const coinId = coinIds[token] ?? token.toLowerCase()
+    const coinId = COIN_IDS[token] ?? token.toLowerCase()
     try {
       const res = await fetch(`/api/price?ids=${coinId}`)
       if (!res.ok) return 1
       const body = await res.json()
-      const data = body.prices ?? body
-      return data[coinId] ?? 1
+      const prices = body?.prices
+      return (prices && prices[coinId]) ?? 1
     } catch {
       return 1
     }

@@ -12,6 +12,7 @@ import { getQuote } from "./lifi-executor"
 import { hasDirectDex, getDirectDexQuote, calculateAmountOutMin } from "./direct-dex"
 import { ethers } from "ethers"
 import { gasPriceOracle } from "./gas-price-oracle"
+import { COIN_IDS } from "./coin-ids"
 
 const AGENTES_CONHECIDOS = new Set([
   "Quantum", "Technical", "TrendFollower", "MeanReversion",
@@ -357,7 +358,9 @@ class Corretor {
         const isStableTo = ["USDC", "USDT", "DAI", "EURC"].includes(ordem.toToken)
         const isStableFrom = ["USDC", "USDT", "DAI", "EURC"].includes(ordem.fromToken)
         const isBuyOpening = isStableFrom && !isStableTo
-        const profit = isStableTo ? r.swap.expectedToAmount - r.swap.amountUsd : 0
+        const profit = isStableTo
+          ? (r.swap.expectedToAmount * (await realSwap.fetchTokenPrice(ordem.toToken as TokenSymbol).catch(() => 1))) - r.swap.amountUsd
+          : 0
 
         if (isBuyOpening) {
           const entryPrice = r.swap.expectedToAmount > 0
@@ -429,16 +432,12 @@ class Corretor {
   }
 
   private async buscarPreco(token: TokenSymbol): Promise<number> {
-    const coinIds: Record<string, string> = {
-      WETH: "1673723677362319867", WMATIC: "1730847291434274818", WBTC: "1673723677362319866",
-      ARB: "1673723677362319902", SOL: "1673723677362319875", cirBTC: "1673723677362319866",
-    }
-    const coinId = coinIds[token] || token.toLowerCase()
+    const coinId = COIN_IDS[token] || token.toLowerCase()
     try {
       const res = await fetch(`/api/price?ids=${coinId}`)
       const body = await res.json()
-      const data = body.prices ?? body
-      return data[coinId] ?? 1
+      const prices = body?.prices
+      return (prices && prices[coinId]) ?? 1
     } catch {
       return 1
     }

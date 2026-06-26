@@ -1,5 +1,5 @@
 ﻿import { ethers } from 'ethers'
-import { realSwap } from './real-swap-executor'
+import { realSwap, isArcStressMode } from './real-swap-executor'
 import type { SwapResult } from './real-swap-executor'
 
 // ─── Interface para ordem em lote ─────────────────────────────────────────────
@@ -32,7 +32,7 @@ export interface BatchResult {
 
 class BatchExecutor {
   private pendingOrders: BatchOrder[] = []
-  private readonly MAX_BATCH_SIZE = 5
+  private get MAX_BATCH_SIZE(): number { return isArcStressMode() ? 10 : 5 }
   private readonly BATCH_WINDOW_MS = 8000 // 8 segundos
   private timer: NodeJS.Timeout | null = null
   private lastExecution = 0
@@ -191,7 +191,7 @@ class BatchExecutor {
   // ─── Timer para execução automática ────────────────────────────────────────
 
   private _startTimer(): void {
-    setInterval(() => {
+    this.timer = setInterval(() => {
       if (this.pendingOrders.length > 0 && Date.now() - this.lastExecution > this.BATCH_WINDOW_MS) {
         this.executeBatch()
       }

@@ -70,7 +70,6 @@ const BASE_MAINNET = {
   chainIdHex: "0x2105",
   usdc: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
   eurc: "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42",
-  erc8183: "0x0747EEf0706327138c69792bF28Cd525089e4583",
   explorer: "https://basescan.org",
   icon: "🟢",
   isTestnet: false,
@@ -86,7 +85,6 @@ const POLYGON_MAINNET = {
   chainIdHex: "0x89",
   usdc: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
   eurc: "0xc52d20D70d2B1E27C2cb85AA0E3a9F5b4AEBf7e7",
-  erc8183: "0x0747EEf0706327138c69792bF28Cd525089e4583",
   explorer: "https://polygonscan.com",
   icon: "🟣",
   isTestnet: false,
@@ -102,7 +100,6 @@ const ETHEREUM_MAINNET = {
   chainIdHex: "0x1",
   usdc: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
   eurc: "0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c",
-  erc8183: "0x0747EEf0706327138c69792bF28Cd525089e4583",
   explorer: "https://etherscan.io",
   icon: "💙",
   isTestnet: false,
@@ -118,7 +115,6 @@ const SEPOLIA_TESTNET = {
   chainIdHex: "0xaa36a7",
   usdc: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
   eurc: "",
-  erc8183: "0x0747EEf0706327138c69792bF28Cd525089e4583",
   explorer: "https://sepolia.etherscan.io",
   icon: "🧪",
   isTestnet: true,
@@ -727,8 +723,9 @@ export default function Home() {
         setAccount(accts[0]);
         loadAllBalances(accts[0]);
       }
-      _chainChangedListener = () => {
-        if (account) loadAllBalances(account);
+      _chainChangedListener = async () => {
+        const accts: string[] = await window.ethereum.request({ method: "eth_accounts" });
+        if (accts.length > 0) loadAllBalances(accts[0]);
       }
       window.ethereum.on("accountsChanged", _accountsChangedListener)
       window.ethereum.on("chainChanged", _chainChangedListener)

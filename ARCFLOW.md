@@ -1929,3 +1929,103 @@ npm run dev:sepolia  # Sepolia testnet (porta 3003)
 e0b7c0a fix: 3 gargalos de velocidade no pipeline de pacotes
 9846d10 perf: parallel swap prep + allowance checks + static imports
 ```
+
+---
+
+## 32. AJUSTES DE ESTRATÉGIA (Sessão 26/06/2026)
+
+Análise profunda via DeepSeek V4-Pro identificou e corrigiu 5 áreas críticas do sistema de trading.
+
+### 32.1 Streak EWMA — Decaimento Exponencial (accountant.ts)
+
+**Antes**: `streak = Math.max(streak + 1, 1)` / `Math.min(streak - 1, -1)` — salto linear.
+Agente com 5 acertos seguidos (streak=5) perdia tudo com 1 erro (streak=-1).
+
+**Depois**: EWMA com α=0.3:
+```
+acerto → streak = streak * 0.7 + 5 * 0.3   // converge pra +5
+erro   → streak = streak * 0.7 + (-5) * 0.3  // converge pra -5
+```
+Após 5 acertos (streak≈4.2) + 1 erro → streak≈2.6 (não zera). Transições suaves.
+
+### 32.2 MIN_LUCRO_LIQUIDO por Rede (position-manager.ts)
+
+**Antes**: `MIN_LUCRO_LIQUIDO_USD = 0.01` fixo para todas as redes.
+
+**Depois**: Mapa por rede via `getMinProfitUsd(networkKey)`:
+```
+polygon: $0.02  |  base: $0.03  |  arbitrum: $0.05
+ethereum: $0.50  |  arc: $0.001  |  sepolia: $0.02
+```
+Staircase só fecha se `lucroBruto - gas - spread ≥ getMinProfitUsd(rede)`.
+Ethereum exige $0.50 líquido (cobre $1.50 gas + spread).
+
+### 32.3 Groupthink Detection (agentes-do-pregão.ts)
+
+Quando **8+ agentes** votam no mesmo par simultaneamente:
+- Confiança de todos os votos naquele par é reduzida em **30%**
+- Log: `"🧠 Groupthink detectado: X agentes no mesmo par — confiança reduzida em 30%"`
+- Previne manada onde agentes copiam votos alheios
+
+### 32.4 Slippage Dinâmico (real-swap-executor.ts)
+
+Funções `getDynamicSlippageBps(token)` e `getDynamicSlippage(token)`:
+
+| Token | DEX (slippageBps) | LI.FI (slippage) |
+|-------|-------------------|-------------------|
+| Stable (USDC, EURC, etc.) | 30 bps (0.3%) | 0.003 (0.3%) |
+| Volátil (WETH, WMATIC, etc.) | 100 bps (1%) | 0.005 (0.5%) |
+
+Antes: 100 bps / 0.5% fixo para tudo. Stables agora têm slippage mais justo.
+
+### 32.5 getMinTradeSize por Custo de Gas (agentes-do-pregão.ts)
+
+**Antes**: valores hardcoded (Ethereum=$50, Polygon=$6.50, Base/Arb=$2).
+
+**Depois**: usa `GAS_COST_ESTIMATE[network]` como base:
+```
+ethereum: max(50, gasCost * 33)   // gas=$1.50 → min=$50
+polygon:  max(2, gasCost * 100)   // gas=$0.005 → min=$2
+base/arb: max(2, gasCost * 50)    // gas=$0.03 → min=$2
+```
+Trade mínimo escala automaticamente com custo operacional da rede.
+
+### 32.6 Score com Peso do Lucro Real (accountant.ts)
+
+**Antes**: `score = winRate*0.6 + avgProfit*30 + streak*1`. Lucro total ignorado.
+
+**Depois**:
+```
+profitBonus = min(max(0, totalProfit), 5) * 4   // cap $5 → max 20pts
+score = winRate*0.5 + avgProfit*20 + profitBonus + max(0, streak)*0.5
+```
+Agentes que geram $0 de lucro total não dominam o ranking só por terem winRate alta.
+
+### 32.7 Consolidação COIN_IDS (coin-ids.ts)
+
+Extraído `COIN_IDS` de 6 arquivos duplicados para `lib/coin-ids.ts` unificado.
+Atualizados: `real-swap-executor.ts`, `pair-price-feed.ts`, `volatility-tracker.ts`,
+`professor.ts`, `agentes-do-pregão.ts`, `corretor.ts`, `escriturario.ts`,
+`trading-nanopayments.ts`, `position-manager.ts`.
+
+Adicionar token agora requer **1 edição** (em vez de 9 arquivos).
+
+### 32.8 Arquivos Modificados
+
+| Arquivo | Mudanças |
+|---------|----------|
+| `lib/accountant.ts` | Streak EWMA (F1), Score com lucro real (F6) |
+| `lib/position-manager.ts` | `getMinProfitUsd()` por rede (F2) |
+| `lib/agentes-do-pregão.ts` | Groupthink detection (F3), `getMinTradeSize` por gas (F5), filtro de tendência corrigido, try/finally monkey-patch, `rebalancePool` fora do loop, `COIN_IDS` unificado, `body.prices` sanitizado |
+| `lib/real-swap-executor.ts` | Slippage dinâmico (F4), `COIN_IDS` unificado, `body.prices` sanitizado |
+| `lib/coin-ids.ts` | **NOVO** — mapeamento único token→SoSoValue currency_id |
+| `lib/pair-price-feed.ts` | `COIN_IDS` → import de coin-ids |
+| `lib/volatility-tracker.ts` | `COIN_IDS` → import de coin-ids |
+| `lib/professor.ts` | `COIN_IDS` → import de coin-ids |
+| `lib/corretor.ts` | `COIN_IDS` → import de coin-ids, `body.prices` sanitizado |
+| `lib/escriturario.ts` | `COIN_IDS` → import de coin-ids, `body.prices` sanitizado |
+| `lib/trading-nanopayments.ts` | `COIN_IDS` → import de coin-ids |
+| `lib/persistence.ts` | Guard `typeof window` para SSR safety |
+| `lib/batch-executor.ts` | `setInterval` armazena timer ID |
+| `app/page.tsx` | `_chainChangedListener` usa `eth_accounts`, ERC-8183 removido de non-Arc |
+| `app/api/stress-test/route.ts` | `body.privateKey` removido (security) |
