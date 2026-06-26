@@ -14,6 +14,7 @@ import { professor } from "./professor"
 import { parametrosRobos } from "./parametros-robos"
 import { pairSector } from "./pair-sector"
 import { COIN_IDS, TOKENS_WITH_FEED } from "./coin-ids"
+import { stablePairScanner } from "./stable-pair-scanner"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 
@@ -740,6 +741,25 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     }
   }
   // 💰 Filtrar pares com saldo < $1 para evitar ruído
+  // 🌾 Grão Stable: injetar pares stablecoin viáveis no topo da análise
+  if (!net.isTestnet || redeAtual === "arc") {
+    try {
+      const stableReport = await stablePairScanner.scan()
+      const topStables = stableReport.filter(p => p.recomendacao === 'AGORA' || p.recomendacao === 'MONITORAR')
+      if (topStables.length > 0) {
+        const stablePairs = topStables.map(p => ({ net: p.network, label: p.pair }))
+        // Remove duplicatas que já estão na lista
+        const existing = new Set(pairsToAnalyze.map(p => `${p.net}:${p.label}`))
+        const newStables = stablePairs.filter(p => !existing.has(`${p.net}:${p.label}`))
+        // Insere no INÍCIO (prioridade máxima)
+        pairsToAnalyze = [...newStables, ...pairsToAnalyze]
+        if (newStables.length > 0) {
+          pregão.adicionarLog(`🌾 ${newStables.length} pares stablecoin com micro-trend (score ≥${topStables[0]?.score ?? 0}) no topo da análise`)
+        }
+      }
+    } catch {}
+  }
+
   const antesFiltro = pairsToAnalyze.length
   const tokenPrices = await Promise.all(
     [...new Set(multiPairs.map(p => p.from))].map(async (t) => {

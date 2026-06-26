@@ -25,6 +25,7 @@ import { modoGrao } from "@/lib/modo-grão"
 import { escolaRobos, MIN_JOBS_PROVA, type RoboEscolar } from "@/lib/escola-robos"
 import { professor } from "@/lib/professor"
 import { pairSector } from "@/lib/pair-sector"
+import { StableOpportunities } from "./StableOpportunities"
 
 const COR_PREGÃO = "#d4a574"
 const COR_FUNDO = "#0f172a"
@@ -993,6 +994,11 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
           )}
         </div>
       )}
+
+      {/* 🌾 Stable Micro-Trades — Oportunidades em pares stablecoin */}
+      <div style={{ marginBottom: 12 }}>
+        <StableOpportunities />
+      </div>
 
       {/* 🌾 Modo Grão — Microtrades */}
       <div style={{ marginBottom: 12, background: "rgba(34,197,94,0.05)", borderRadius: 12, padding: 12, border: "1px solid rgba(34,197,94,0.15)" }}>
