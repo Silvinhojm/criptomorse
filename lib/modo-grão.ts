@@ -1,10 +1,11 @@
-// Modo Grão — Microtrade system (WETH/USDC on Base)
-// AND gate: MeanReversion + MarketMaker must agree within 30s
-// Target: $0.02, Stop: -$0.02 (1:1)
-// Batch: executes when 3+ signals accumulate
+// Modo Grão — Microtrade batch system
+// Batching: acumula sinais MR + MM e executa swap único maior
+// Robô Ajustador: recalcula thresholds a cada ciclo (gas, vol, saldo)
+// Target: cobre gas round-trip + margem dinâmica
 
-import { realSwap, isArcStressMode } from './real-swap-executor'
+import { realSwap, isArcStressMode, NETWORKS } from './real-swap-executor'
 import { volatilityTracker } from './volatility-tracker'
+import { gasPriceOracle } from './gas-price-oracle'
 
 function getNetworkPair() {
   const net = realSwap.getNetworkKey() as string
@@ -54,18 +55,22 @@ const CONFIG = {
   network: 'base' as const,
   fromToken: 'USDC',
   toToken: 'WETH',
-  baseTradeUSD: 5,        // $5 por sinal individual (batch min de 2 = $10 já cobre gas)
-  batchThreshold: 3,       // Executa quando N sinais acumulados (3 × $5 = $15)
-  maxBatchAgeMs: 120_000,  // Força execução após 2min mesmo sem atingir threshold
-  targetUSD: 0.05,         // Cobre gas round-trip (~$0.028) + margem
-  stopUSD: -0.03,          // Stop mais apertado que target (protege capital)
-  maxPositions: 2,         // Menos posições = mais foco em cada
+  baseTradeUSD: 5,
+  batchThreshold: 3,
+  maxBatchAgeMs: 90_000,
+  targetUSD: 0.05,
+  stopUSD: -0.03,
+  maxPositions: 2,
   cycleMs: 30_000,
   andGateTimeoutMs: 30_000,
-  minConfidence: 35,       // Confiança maior = menos trades ruins
-  minVolatility2h: 0.0012, // Mais sensível a volatilidade (0.12% vs 0.15%)
+  minConfidence: 35,
+  minVolatility2h: 0.0012,
   minAmplitude: 0.002,
-  minSpread: 0.004,        // SÓ entra quando spread é bom (≥0.4% = execução barata LI.FI)
+  minSpread: 0.004,
+  // Parâmetros ajustáveis pelo robô (sobrescritos a cada ciclo)
+  _gasRoundTrip: 0.028,
+  _vol24h: 0,
+  _ajustadoEm: 0,
 }
 
 class ModoGrao {
@@ -156,9 +161,60 @@ class ModoGrao {
     }
   }
 
+  // ─── Robô Ajustador: recalibra thresholds dinamicamente ───
+  private async ajustarAoMercado() {
+    const netKey = realSwap.getNetworkKey()
+    const net = NETWORKS[netKey]
+    const agora = Date.now()
+
+    // Só reajusta a cada 5 ciclos (~2.5min) ou se for testnet
+    if (!net?.isTestnet && agora - CONFIG._ajustadoEm < 120_000) return
+
+    try {
+      const gasCost = await gasPriceOracle.getGasCost(netKey).catch(() => 0.005)
+      CONFIG._gasRoundTrip = gasCost * 2
+
+      const p = this.getPair()
+      const vol = volatilityTracker.getVolatility(p.toToken as any)
+      CONFIG._vol24h = vol.vol24h
+
+      const usdcBal = realSwap.getBalance("USDC") || 10
+
+      CONFIG.baseTradeUSD = Math.max(3, Math.min(10, Math.round(CONFIG._gasRoundTrip * 80)))
+      if (usdcBal < CONFIG.baseTradeUSD * 2) {
+        CONFIG.baseTradeUSD = Math.max(1, Math.floor(usdcBal * 0.4))
+      }
+
+      if (CONFIG._vol24h > 0.02)        CONFIG.batchThreshold = 2
+      else if (CONFIG._vol24h > 0.008)  CONFIG.batchThreshold = 3
+      else                               CONFIG.batchThreshold = 4
+
+      CONFIG.targetUSD = Math.max(0.03, Math.round(CONFIG._gasRoundTrip * 2 * 100) / 100)
+
+      if (CONFIG._vol24h > 0.02)        CONFIG.minConfidence = 40
+      else if (CONFIG._vol24h > 0.008)  CONFIG.minConfidence = 30
+      else                               CONFIG.minConfidence = 20
+
+      CONFIG.minVolatility2h = Math.max(0.0005, CONFIG._gasRoundTrip * 0.03)
+
+      if (CONFIG._vol24h > 0.02)        CONFIG.maxBatchAgeMs = 45_000
+      else if (CONFIG._vol24h > 0.008)  CONFIG.maxBatchAgeMs = 90_000
+      else                               CONFIG.maxBatchAgeMs = 150_000
+
+      CONFIG._ajustadoEm = agora
+      console.log(`[Grão⚙️] gas=$${gasCost.toFixed(4)} vol=${(CONFIG._vol24h*100).toFixed(2)}% ` +
+        `base=$${CONFIG.baseTradeUSD} thresh=${CONFIG.batchThreshold} target=$${CONFIG.targetUSD.toFixed(2)} ` +
+        `conf=${CONFIG.minConfidence} minVol=${(CONFIG.minVolatility2h*100).toFixed(2)}%`)
+    } catch {
+    }
+  }
+
   private async ciclo() {
     this._cycleCount++
     const now = Date.now()
+
+    // 0. Robô Ajustador: recalibra thresholds conforme mercado
+    await this.ajustarAoMercado()
 
     // 1. Prices + volatility
     await Promise.all([
