@@ -1086,6 +1086,86 @@ class RealSwapExecutor {
     return this.ensureStableViaCCTP(fromToken, amountUsd, log)
   }
 
+  async aggregateCapitalToCheapestChain(log: (msg: string) => void): Promise<{ bridged: number; sourceChains: string[] }> {
+    const scan = await gasPriceOracle.scanBestNetwork()
+    const targetChain = scan.best
+    const targetChainName = UB_CHAIN[targetChain]
+
+    log(`📡 Scan de redes: ${scan.networks.map(n => `${n.name} gas=$${n.gasUsd.toFixed(4)} spread=${(n.spreadPct*100).toFixed(1)}% total=$${n.totalPerTrade.toFixed(4)}`).join(" | ")}`)
+    log(`🎯 Melhor rede: ${NETWORKS[targetChain]?.name ?? targetChain} ($${scan.networks[0]?.totalPerTrade.toFixed(4)}/trade)`)
+
+    if (!targetChainName || !this.privateKey) {
+      log(`⚠️ Agregador: ${targetChain} não disponível ou sem privateKey`)
+      return { bridged: 0, sourceChains: [] }
+    }
+
+    let balances: Record<string, number> = {}
+    try {
+      const s = await caixa.getSaldo("mainnet")
+      balances = s.porRede
+      log(`📊 Agregador: capital detectado em ${Object.keys(balances).length} redes — total $${s.totalUSD.toFixed(2)}`)
+    } catch {
+      log("⚠️ Agregador: não foi possível consultar saldos unificados")
+      return { bridged: 0, sourceChains: [] }
+    }
+
+    const CHAIN_TO_KEY: Record<string, string> = {
+      Polygon: "polygon", Base: "base", Arbitrum: "arbitrum", Ethereum: "ethereum",
+    }
+
+    const networkCosts = new Map(scan.networks.map(n => [n.network, n.totalPerTrade]))
+    const targetCost = networkCosts.get(targetChain) ?? 0
+
+    let totalBridged = 0
+    const sourceChains: string[] = []
+
+    for (const [chainName, balance] of Object.entries(balances)) {
+      const chainKey = CHAIN_TO_KEY[chainName]
+      if (!chainKey || chainKey === targetChain) continue
+      if (balance < 5) continue
+
+      const sourceCost = networkCosts.get(chainKey as NetworkKey) ?? 0
+      const savingsPerTrade = sourceCost - targetCost
+      if (savingsPerTrade <= 0) continue
+
+      const bridgeAmount = Math.floor(balance * 0.95 * 100) / 100
+      log(`🌉 Agregador: ${chainName}→${NETWORKS[targetChain]?.name ?? targetChain} $${bridgeAmount.toFixed(2)} USDC (economia $${savingsPerTrade.toFixed(4)}/trade)`)
+
+      try {
+        const srcConfig = CCTP_CONFIG[chainKey as keyof typeof CCTP_CONFIG]
+        if (!srcConfig) continue
+        const srcProvider = this._createProxyProvider(srcConfig.rpcUrl)
+        const srcSigner = new ethers.Wallet(this.privateKey, srcProvider)
+
+        const result = await cctpService.initiateTransfer({
+          fromChain: chainKey,
+          toChain: targetChain,
+          amount: bridgeAmount,
+          recipient: this.userAddress,
+          signer: srcSigner,
+          onStep: (step) => log(`  CCTP ${step.name}: ${step.state}`),
+        })
+
+        if (result.status === "completed") {
+          totalBridged += bridgeAmount
+          sourceChains.push(chainKey)
+          log(`✅ Ponte concluída: ${chainName}→${NETWORKS[targetChain]?.name ?? targetChain} | TX: ${result.txHash.slice(0, 10)}...`)
+        }
+      } catch (err: any) {
+        log(`⚠️ Ponte falhou ${chainName}→${NETWORKS[targetChain]?.name ?? targetChain}: ${err.message?.slice(0, 100)}`)
+      }
+    }
+
+    if (totalBridged > 0) {
+      log(`💰 Agregador: $${totalBridged.toFixed(2)} USDC transferido para ${NETWORKS[targetChain]?.name ?? targetChain} (${sourceChains.join(", ")})`)
+      await this.refreshAllBalances()
+    } else {
+      log("📊 Agregador: capital já está otimizado — nada a bridgear")
+    }
+
+    return { bridged: totalBridged, sourceChains }
+  }
+
   private _fail(
     fromToken: TokenSymbol,
     toToken: TokenSymbol,

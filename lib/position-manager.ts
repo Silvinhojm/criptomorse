@@ -9,6 +9,10 @@ import { pregão } from "./pregão";
 import { gasPriceOracle } from "./gas-price-oracle";
 import { COIN_IDS } from "./coin-ids";
 
+function isArcLab(): boolean {
+  return realSwap.getNetworkKey() === "arc"
+}
+
 export interface OpenPosition {
   id: string;
   networkKey: NetworkKey;
@@ -32,11 +36,17 @@ export interface OpenPosition {
 const MAX_POSITION_AGE_MS = 12 * 60 * 60 * 1000;
 const POSITIONS_STORAGE_KEY = "arcflow_open_positions";
 const MAX_LOSS_PERCENT = -15;
-const STALE_NO_PROFIT_MS = 4 * 60 * 60 * 1000;
-const STALE_FORCE_CLOSE_MS = 5 * 60 * 1000; // 5min sem lucro → força fechamento
+const STALE_FORCE_CLOSE_MS = 5 * 60 * 1000;
+const STALE_FORCE_CLOSE_ARC = 30 * 1000;
+const MIN_PROFIT_HOLD_MS = 30 * 1000;
+const MIN_PROFIT_HOLD_ARC = 5 * 1000;
 
-// Tempo mínimo antes de considerar fechamento com lucro
-const MIN_PROFIT_HOLD_MS = 30 * 1000; // 30 segundos — flip mais rápido em micro-trades
+function getStaleForceClose(): number {
+  return isArcLab() ? STALE_FORCE_CLOSE_ARC : STALE_FORCE_CLOSE_MS
+}
+function getMinProfitHold(): number {
+  return isArcLab() ? MIN_PROFIT_HOLD_ARC : MIN_PROFIT_HOLD_MS
+}
 // Lucro mínimo real desejado (já descontado gas + spread na abertura)
 // $0.01 é suficiente com gas realista (Polygon $0.005, Base $0.003) e spread ~$0.005
 // Permite lucrar com movimentos de $0.01-0.02 em trades de $2-5
@@ -156,7 +166,7 @@ class PositionManager {
     }
 
     // Stale force close: 5min sem lucro → fecha incondicionalmente
-    if (age > STALE_FORCE_CLOSE_MS && pos.peakProfitPercent <= 0) {
+    if (age > getStaleForceClose() && pos.peakProfitPercent <= 0) {
       pregão.adicionarLog(`⏰ ${pos.boughtToken}: ${(age / 60000).toFixed(0)}min sem lucro — forçando fechamento`);
       return "close";
     }
@@ -169,7 +179,7 @@ class PositionManager {
 
     // 🔒 Só fecha se lucro líquido >= $0.02 (cobre gas + spread + margem)
     // O Pregão é o único com autoridade de abrir/fechar posições
-    if (age >= MIN_PROFIT_HOLD_MS && currentProfitUsd > 0) {
+    if (age >= getMinProfitHold() && currentProfitUsd > 0) {
       const sellGasCost = await gasPriceOracle.getGasCost(pos.networkKey)
       const sellSpread = currentProfitUsd * 0.005
       const custoTotalVenda = sellGasCost + sellSpread

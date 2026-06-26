@@ -2045,3 +2045,113 @@ Adicionar token agora requer **1 edição** (em vez de 9 arquivos).
 | `lib/batch-executor.ts` | `setInterval` armazena timer ID |
 | `app/page.tsx` | `_chainChangedListener` usa `eth_accounts`, ERC-8183 removido de non-Arc |
 | `app/api/stress-test/route.ts` | `body.privateKey` removido (security) |
+
+---
+
+## 33. QUANTUM ROUTER — Orquestrador Unificado (Sessão 26/06)
+
+### 33.1 Motivação
+
+Antes, os componentes do sistema operavam desconectados: gas scan, volatility tracker,
+agentes e pregão rodavam sem coordenação central. O Quantum Router (Onda Quântica)
+atua como maestro que rege a orquestra a cada ciclo.
+
+### 33.2 Fluxo
+
+```
+1. Pré-scan quântico (início do ciclo)
+   └── gasPriceOracle.scanBestNetwork()
+       ├── Busca gas real em Polygon, Base, Arbitrum, Ethereum (paralelo)
+       ├── Estima spread por rede (Polygon 0.1%, Base 0.2%, ...)
+       ├── Calcula totalPerTrade = gasUsd + spreadPct * 10
+       └── Retorna ranking da mais barata pra mais cara
+
+2. Foco dos agentes
+   ├── networksToScan filtrado para top 2 redes mais baratas
+   ├── Redes caras ignoradas (log: "ignoradas — gas alto")
+   └── Volatilidade 24h dos tokens rankeada e logada
+
+3. Agentes votam (existente) — só nos pares das redes selecionadas
+
+4. Execução (existente) — DEX > LI.FI, slippage dinâmico
+```
+
+### 33.3 Log típico
+
+```
+🌀 Onda Quântica: melhor rede Polygon ($0.015/trade). Top pares por volatilidade seguem.
+📊 Volatilidade 24h: WETH 3.2% | WMATIC 2.8% | WBTC 1.9% | ARB 1.5%
+🔍 Foco: avaliando apenas Polygon, Base — Ethereum, Arbitrum ignoradas (gas alto)
+```
+
+### 33.4 Arquivos
+
+| Arquivo | Mudança |
+|---------|---------|
+| `lib/gas-price-oracle.ts` | `scanBestNetwork()` — escaneia gas+spread em todas mainnets |
+| `lib/agentes-do-pregão.ts` | Pre-scan no início do ciclo, filtra `networksToScan` para top 2 |
+| `lib/real-swap-executor.ts` | `aggregateCapitalToCheapestChain()` usa scan dinâmico (não mais Polygon fixo) |
+
+---
+
+## 34. ARC LAB MODE — Laboratório Agressivo (Sessão 26/06)
+
+### 34.1 Motivação
+
+Arc testnet tem execução ultra-rápida e usa tokens de faucet — sem risco financeiro.
+Serve como laboratório para testar parâmetros agressivos impossíveis em mainnet.
+
+### 34.2 Parâmetros Agressivos (Arc vs Mainnet)
+
+| Parâmetro | Mainnet | Arc Lab |
+|-----------|---------|---------|
+| Stale force close | 5 min | **30 segundos** |
+| Min profit hold | 30 segundos | **5 segundos** |
+| Groupthink detection | 6+ agentes | **Desativado** |
+| MinTradeSize via gas | GAS_COST_ESTIMATE | $0.50 fixo |
+| LIMIAR_OK (pregão) | 2 OKs | 1 OK |
+| JANELA_MS | 30s | 15s |
+| ORDEM_TIMEOUT_MS | 120s | 60s |
+| Batch MAX_SIZE | 5 | 10 |
+| minVotes (consenso) | 2 | 1 |
+| maxPairs (por ciclo) | 3 | 999 (todos) |
+| MIN_CONFIDENCE | 40% | 25% |
+
+### 34.3 Arquivos
+
+| Arquivo | Mudança |
+|---------|---------|
+| `lib/position-manager.ts` | `isArcLab()` — `getStaleForceClose()`, `getMinProfitHold()` dinâmicos |
+| `lib/agentes-do-pregão.ts` | Groupthink desativado no Arc (`!isArcStressMode()`) |
+| `lib/pregão.ts` | Já usava `isArcStressMode()` para LIMIAR_OK, JANELA_MS, ORDEM_TIMEOUT |
+| `lib/batch-executor.ts` | Já usava `isArcStressMode()` para MAX_BATCH_SIZE |
+
+---
+
+## 35. AUTO-CICLO — Automação Total (Sessão 26/06)
+
+### 35.1 Funcionamento
+
+O ciclo de trading inicia automaticamente ao carregar a página, sem intervenção humana.
+
+- **Arc testnet**: inicia em **1 segundo** com ciclo de **3 segundos**
+- **Mainnet**: inicia em **3 segundos** com ciclo de **10 segundos**
+- Respeita preferência do usuário: `localStorage.arcflow_auto_ciclo = "false"` desativa
+- Pausa quando a aba fica em segundo plano (`visibilitychange`)
+- Retoma quando a aba volta ao foco
+
+### 35.2 Comportamento
+
+```
+1. Componente monta (PregãoDashboard)
+2. Verifica se wallet está conectada (realSwap.getAddress())
+3. Se Arc: ciclo a cada 3s, parâmetros agressivos
+4. Se Mainnet: ciclo a cada 10s, parâmetros seguros  
+5. Log: "🧪 Arc Lab Mode: ciclo ultra-rápido a cada 3s"
+```
+
+### 35.3 Arquivos
+
+| Arquivo | Mudança |
+|---------|---------|
+| `app/components/PregãoDashboard.tsx` | `useEffect` de auto-start com `setTimeout`, verifica `isArcLab`, respeita flag `arcflow_auto_ciclo` |
