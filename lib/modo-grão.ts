@@ -54,10 +54,12 @@ const CONFIG = {
   network: 'base' as const,
   fromToken: 'USDC',
   toToken: 'WETH',
-  tradeAmountUSD: 3,
+  baseTradeUSD: 3,        // $3 por sinal individual
+  batchThreshold: 4,       // Executa quando N sinais acumulados
+  maxBatchAgeMs: 120_000,  // Força execução após 2min mesmo sem atingir threshold
   targetUSD: 0.02,
   stopUSD: -0.02,
-  maxPositions: 5,
+  maxPositions: 3,
   cycleMs: 30_000,
   andGateTimeoutMs: 30_000,
   minConfidence: 30,
@@ -187,38 +189,35 @@ class ModoGrao {
     // 4. Clean stale signals
     this.cleanStaleSignals(now)
 
-    // 5. MeanReversion evaluation
+    // 5. Push signals de cada agente (não executa no AND gate — acumula)
+    const openCount = this._openPositions.filter(p => p.status === 'open').length
+    if (openCount >= CONFIG.maxPositions) return
+
     const amplitude = vol.vol24h
     if (amplitude >= CONFIG.minAmplitude) {
       const mrConfidence = Math.min(80, Math.round(30 + amplitude * 600))
-      if (mrConfidence >= (this._testMode ? 20 : CONFIG.minConfidence) && this._openPositions.filter(p => p.status === 'open').length < CONFIG.maxPositions) {
-        const mmSignal = this._pendingSignals.find(s => s.agentName === 'MarketMaker')
-        if (mmSignal) {
-          this._pendingSignals = this._pendingSignals.filter(s => s !== mmSignal)
-          this._lastSignal = `AND gate (MR=${mrConfidence} + MM=${mmSignal.confidence})`
-          await this.executarCompra()
-        } else {
-          this._pendingSignals.push({ action: 'buy', agentName: 'MeanReversion', confidence: mrConfidence, timestamp: now })
-        }
+      if (mrConfidence >= (this._testMode ? 20 : CONFIG.minConfidence)) {
+        this._pendingSignals.push({ action: 'buy', agentName: 'MeanReversion', confidence: mrConfidence, timestamp: now })
       }
     }
 
-    // 6. MarketMaker evaluation
     const spreadPct = this._testMode
       ? 0.005
       : fromPrice > 0 ? Math.abs(toPrice - fromPrice) / fromPrice : 0
     if (spreadPct >= CONFIG.minSpread) {
       const mmConfidence = Math.min(70, Math.round(40 + spreadPct * 20))
-      if (mmConfidence >= (this._testMode ? 20 : CONFIG.minConfidence) && this._openPositions.filter(p => p.status === 'open').length < CONFIG.maxPositions) {
-        const mrSignal = this._pendingSignals.find(s => s.agentName === 'MeanReversion')
-        if (mrSignal) {
-          this._pendingSignals = this._pendingSignals.filter(s => s !== mrSignal)
-          this._lastSignal = `AND gate (MM=${mmConfidence} + MR=${mrSignal.confidence})`
-          await this.executarCompra()
-        } else {
-          this._pendingSignals.push({ action: 'buy', agentName: 'MarketMaker', confidence: mmConfidence, timestamp: now })
-        }
+      if (mmConfidence >= (this._testMode ? 20 : CONFIG.minConfidence)) {
+        this._pendingSignals.push({ action: 'buy', agentName: 'MarketMaker', confidence: mmConfidence, timestamp: now })
       }
+    }
+
+    // 6. Verifica se deve executar batch
+    const oldest = this._pendingSignals.length > 0 ? this._pendingSignals[0].timestamp : now
+    const batchReady = this._pendingSignals.length >= CONFIG.batchThreshold
+    const batchExpired = this._pendingSignals.length >= 2 && (now - oldest) >= CONFIG.maxBatchAgeMs
+    if (batchReady || batchExpired) {
+      this._lastSignal = `Batch ${this._pendingSignals.length} sinais (MR+MM) — executando $${(this._pendingSignals.length * CONFIG.baseTradeUSD).toFixed(0)}`
+      await this.executarCompra()
     }
   }
 
@@ -229,41 +228,46 @@ class ModoGrao {
 
   private async executarCompra() {
     if (this._executando) return
+    if (this._pendingSignals.length === 0) return
     this._executando = true
+
+    const batchSize = this._pendingSignals.length
+    const batchAmountUSD = batchSize * CONFIG.baseTradeUSD
+    const signals = [...this._pendingSignals]
+    this._pendingSignals = []
+
     try {
       const p = this.getPair()
       if (this._testMode) {
-        // Simulate swap — avoid LI.FI 429 rate limit
         const simulatedPrice = p.toToken === 'EURC' ? 0.995 + Math.random() * 0.01 : 1
-        const simulatedAmount = CONFIG.tradeAmountUSD / simulatedPrice
-        const result = { success: true, fromAmount: CONFIG.tradeAmountUSD, toAmount: simulatedAmount, message: '', }
+        const simulatedAmount = batchAmountUSD / simulatedPrice
         this._openPositions.push({
           id: `grão-${Date.now()}`,
           boughtToken: p.toToken,
           paidToken: p.fromToken,
-          amountBought: result.toAmount,
-          amountPaid: result.fromAmount,
+          amountBought: simulatedAmount,
+          amountPaid: batchAmountUSD,
           entryPrice: simulatedPrice,
           entryTimestamp: Date.now(),
-          targetPrice: simulatedPrice + (CONFIG.targetUSD / result.toAmount),
-          stopPrice: simulatedPrice - (CONFIG.stopUSD / result.toAmount),
+          targetPrice: simulatedPrice + (CONFIG.targetUSD / simulatedAmount),
+          stopPrice: simulatedPrice - (CONFIG.stopUSD / simulatedAmount),
           status: 'open',
         })
         this._totalTrades++
         this._lastError = ''
-        this._lastSignal = `🧪 Compra simulada $${CONFIG.tradeAmountUSD} ${p.toToken} @ $${simulatedPrice.toFixed(4)}`
+        this._lastSignal = `🧪 Batch ${batchSize}sinais $${batchAmountUSD} ${p.toToken} @ $${simulatedPrice.toFixed(4)}`
         return
       }
       const result = await realSwap.executeSwap(
         p.fromToken as any,
         p.toToken as any,
-        CONFIG.tradeAmountUSD,
+        batchAmountUSD,
       )
       if (result.success && result.toAmount > 0) {
         const entryPrice = result.fromAmount / result.toAmount
         const wethBought = result.toAmount
-        const targetPrice = (CONFIG.tradeAmountUSD + CONFIG.targetUSD) / wethBought
-        const stopPrice = (CONFIG.tradeAmountUSD + CONFIG.stopUSD) / wethBought
+        const targetPrice = (batchAmountUSD + CONFIG.targetUSD) / wethBought
+        const stopPrice = (batchAmountUSD + CONFIG.stopUSD) / wethBought
 
         this._openPositions.push({
           id: `grão-${Date.now()}`,
@@ -278,11 +282,13 @@ class ModoGrao {
           status: 'open',
         })
         this._totalTrades++
-        this._lastSignal = `Compra $${CONFIG.tradeAmountUSD} ${p.toToken} @ entry $${entryPrice.toFixed(2)}`
+        this._lastSignal = `Batch ${batchSize}sinais $${batchAmountUSD} ${p.toToken} @ entry $${entryPrice.toFixed(2)}`
       } else {
-        this._lastError = `Falha compra: ${result.message}`
+        this._pendingSignals.push(...signals) // devolve sinais se falhou
+        this._lastError = `Falha batch: ${result.message}`
       }
     } catch (err: any) {
+      this._pendingSignals.push(...signals)
       this._lastError = err.message?.slice(0, 200)
     } finally {
       this._executando = false
