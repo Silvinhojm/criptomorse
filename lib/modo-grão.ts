@@ -3,14 +3,22 @@
 // Robô Ajustador: recalcula thresholds a cada ciclo (gas, vol, saldo)
 // Target: cobre gas round-trip + margem dinâmica
 
-import { realSwap, isArcStressMode, NETWORKS } from './real-swap-executor'
+import { realSwap, isArcStressMode, NETWORKS, type NetworkKey } from './real-swap-executor'
 import { volatilityTracker } from './volatility-tracker'
 import { gasPriceOracle } from './gas-price-oracle'
 
-function getNetworkPair() {
+function getNetworkPair(): { fromToken: string; toToken: string; isStable: boolean } {
   const net = realSwap.getNetworkKey() as string
-  if (net === 'arc' || net === 'sepolia') return { fromToken: 'USDC', toToken: 'EURC' }
-  return { fromToken: 'USDC', toToken: 'WETH' }
+  if (net === 'arc' || net === 'sepolia') return { fromToken: 'USDC', toToken: 'EURC', isStable: true }
+  // Se WETH vol abaixo do break-even, migra pra EURC (stablecoin arbitrage)
+  const volWeth = volatilityTracker.getVolatility('WETH' as any).vol24h
+  const gasEstimate = CONFIG._gasRoundTrip || 0.03
+  const spreadDex = 0.003
+  const M_break_weth = ((gasEstimate / 20 + 1 + spreadDex) / (1 - spreadDex)) - 1
+  if (volWeth < M_break_weth) {
+    return { fromToken: 'USDC', toToken: 'EURC', isStable: true }
+  }
+  return { fromToken: 'USDC', toToken: 'WETH', isStable: false }
 }
 
 interface PendingSignal {
@@ -161,13 +169,15 @@ class ModoGrao {
     }
   }
 
-  // ─── Robô Ajustador: recalibra thresholds dinamicamente ───
+  // ─── Robô Ajustador: matemática exata de break-even ───
+  // Fórmula: V × [(1+M)×(1−S) − (1+S)] − G = 0
+  //   M_break = ((G/V + 1 + S) / (1 − S)) − 1
+  //   V_min   = G / ((1−S)×(1+vol) − (1+S))
   private async ajustarAoMercado() {
-    const netKey = realSwap.getNetworkKey()
+    const netKey = realSwap.getNetworkKey() as NetworkKey
     const net = NETWORKS[netKey]
     const agora = Date.now()
 
-    // Só reajusta a cada 5 ciclos (~2.5min) ou se for testnet
     if (!net?.isTestnet && agora - CONFIG._ajustadoEm < 120_000) return
 
     try {
@@ -180,31 +190,54 @@ class ModoGrao {
 
       const usdcBal = realSwap.getBalance("USDC") || 10
 
-      CONFIG.baseTradeUSD = Math.max(3, Math.min(10, Math.round(CONFIG._gasRoundTrip * 80)))
-      if (usdcBal < CONFIG.baseTradeUSD * 2) {
-        CONFIG.baseTradeUSD = Math.max(1, Math.floor(usdcBal * 0.4))
+      // ── Spread estimado: DEX=0.3% (se disponível) ou LI.FI=0.5% ──
+      const isStablePair = p.toToken === 'EURC' || p.toToken === 'USDC'
+      const spreadEstimate = isStablePair ? 0.0005             // EURC: spread ~0.05%
+        : net && !net.isTestnet ? 0.003                         // DEX (Uniswap V2): 0.3%
+        : 0.005                                                 // LI.FI: 0.5%
+
+      // ── Batch mínimo viável: V_min que faz vol ≥ break-even ──
+      // Rearranjo: V_min = G / ((1−S)² * (1+vol) − (1+S)*(1−S))
+      // Simplificado: V_min ≈ G / ((1+vol)(1−2S) − 1)
+      const denom = (1 + CONFIG._vol24h) * (1 - 2 * spreadEstimate) - 1
+      const V_min = denom > 0 ? Math.ceil(CONFIG._gasRoundTrip / denom) : 99999
+
+      if (V_min < 3) {
+        CONFIG.baseTradeUSD = 3
+        CONFIG.batchThreshold = 2
+      } else if (V_min <= 10) {
+        CONFIG.baseTradeUSD = Math.max(3, Math.ceil(V_min / 2))
+        CONFIG.batchThreshold = 2
+      } else if (V_min <= 25) {
+        CONFIG.baseTradeUSD = Math.min(Math.ceil(V_min / 4), 8)
+        CONFIG.batchThreshold = 4
+      } else {
+        CONFIG.baseTradeUSD = Math.min(Math.ceil(V_min / 6), 10)
+        CONFIG.batchThreshold = 5
       }
 
-      if (CONFIG._vol24h > 0.02)        CONFIG.batchThreshold = 2
-      else if (CONFIG._vol24h > 0.008)  CONFIG.batchThreshold = 3
-      else                               CONFIG.batchThreshold = 4
+      // ── targetUSD: gas + V × spread × 2 (entrada+saída) + margem ──
+      const spreadCost = CONFIG.baseTradeUSD * CONFIG.batchThreshold * spreadEstimate * 2
+      CONFIG.targetUSD = Math.max(0.03, Math.ceil((CONFIG._gasRoundTrip + spreadCost + 0.01) * 100) / 100)
 
-      CONFIG.targetUSD = Math.max(0.03, Math.round(CONFIG._gasRoundTrip * 2 * 100) / 100)
+      // ── minConfidence: vol alta → exige mais ──
+      CONFIG.minConfidence = CONFIG._vol24h > 0.02 ? 40 : CONFIG._vol24h > 0.008 ? 30 : isStablePair ? 15 : 20
 
-      if (CONFIG._vol24h > 0.02)        CONFIG.minConfidence = 40
-      else if (CONFIG._vol24h > 0.008)  CONFIG.minConfidence = 30
-      else                               CONFIG.minConfidence = 20
+      // ── minVolatility2h: gas/valor — só entra se mercado paga ──
+      CONFIG.minVolatility2h = Math.max(0.0003, CONFIG._gasRoundTrip / (CONFIG.baseTradeUSD * CONFIG.batchThreshold))
 
-      CONFIG.minVolatility2h = Math.max(0.0005, CONFIG._gasRoundTrip * 0.03)
+      // ── minAmplitude: stablecoin precisa de muito menos movimento ──
+      CONFIG.minAmplitude = isStablePair ? 0.0001 : Math.max(0.001, CONFIG._gasRoundTrip * 0.1)
 
-      if (CONFIG._vol24h > 0.02)        CONFIG.maxBatchAgeMs = 45_000
-      else if (CONFIG._vol24h > 0.008)  CONFIG.maxBatchAgeMs = 90_000
-      else                               CONFIG.maxBatchAgeMs = 150_000
+      // ── maxBatchAgeMs: mais rápido se viável ──
+      CONFIG.maxBatchAgeMs = V_min < 15 ? 45_000 : V_min < 30 ? 90_000 : 150_000
 
       CONFIG._ajustadoEm = agora
-      console.log(`[Grão⚙️] gas=$${gasCost.toFixed(4)} vol=${(CONFIG._vol24h*100).toFixed(2)}% ` +
-        `base=$${CONFIG.baseTradeUSD} thresh=${CONFIG.batchThreshold} target=$${CONFIG.targetUSD.toFixed(2)} ` +
-        `conf=${CONFIG.minConfidence} minVol=${(CONFIG.minVolatility2h*100).toFixed(2)}%`)
+      const viavel = CONFIG._vol24h >= CONFIG.minVolatility2h
+      console.log(`[Grão⚙️] ${viavel ? '✓' : '✗'} ${p.toToken} gas=$${gasCost.toFixed(4)} vol=${(CONFIG._vol24h*100).toFixed(2)}% ` +
+        `spread=${(spreadEstimate*100).toFixed(2)}% Vmin=$${V_min} ` +
+        `batch=${CONFIG.batchThreshold}×$${CONFIG.baseTradeUSD}=$${CONFIG.baseTradeUSD*CONFIG.batchThreshold} ` +
+        `target=$${CONFIG.targetUSD.toFixed(2)} minVol=${(CONFIG.minVolatility2h*100).toFixed(2)}%`)
     } catch {
     }
   }
