@@ -613,8 +613,8 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     const allowed = getPregãoAllowedBalance();
     const saldoEfetivo = allowed === Infinity ? maiorStable : Math.min(maiorStable, allowed);
     const posAbertas = positionManager.getOpenPositions().length;
-    // Usa o maior minTradeSize entre as redes alvo (garante que cabe em todas)
-    const minTradeSize = Math.max(...networksToScan.map(n => getMinTradeSize(n)))
+    // Usa o minTradeSize da rede atual (não o máximo entre todas — Ethereum não define mínimo das outras)
+    const minTradeSize = getMinTradeSize(redeAtual)
     const gasRoundTrip = (GAS_COST_ESTIMATE[redeAtual] ?? 0.01) * 2
     const marginPerPosition = Math.max(minTradeSize, gasRoundTrip * 20)
     maxPositions = Math.max(1, Math.floor((saldoEfetivo * 0.9) / marginPerPosition))
