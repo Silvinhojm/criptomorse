@@ -228,10 +228,13 @@ MAX_LOSS_PERCENT = -15
 dropSteps = 2
 // Quantos degraus abaixo do pico antes de fechar
 
-MIN_LUCRO_LIQUIDO_USD = 0.02
-// Valor fixo para todas as redes (substituiu getMinProfitUsd dinâmico)
-// Só fecha posição se lucro líquido (descontado gas + spread) >= $0.02
-// ETH mainnet: mesma regra (antes era $0.05)
+// MIN_LUCRO_LIQUIDO dinâmico por rede (getMinProfitUsd):
+MIN_LUCRO_LIQUIDO: Record<string, number> = {
+  polygon: 0.02, base: 0.03, arbitrum: 0.05,
+  ethereum: 0.50, arc: 0.001, sepolia: 0.02,
+}
+// Só fecha posição se lucro líquido (descontado gas + spread) >= getMinProfitUsd(rede)
+// Ethereum exige $0.50 líquido (cobre $1.50 gas), Polygon fecha com $0.02
 ```
 
 ### 4.2 VolatilityTracker (volatility-tracker.ts)
@@ -368,7 +371,7 @@ ORDEM_TIMEOUT_MS = 120000  // 2min — ordem "preparando"/"pronto"/"executando" 
 //   Só executa se valorFinal >= tradeMinimo (garante $0.05 de lucro real)
 //   Stable-stable: bloqueado se retornoUsd < gasCost × 1.5 (retorno não cobre gas)
 MIN_PROFIT_REAL = 0.05  // Lucro mínimo real desejado por trade (USD)
-MIN_TRADE_SIZE = 20     // $ mínimo por trade em mainnet (Polygon/Base/Arb); $50 em ETH; $2 em testnet
+MIN_TRADE_SIZE = getMinTradeSize(rede)  // Dinâmico: escala com GAS_COST_ESTIMATE (ver 32.5)
 TRADE_SPREAD_PCT = 0.005  // 0.5% base, dinâmico: max(0.001, 0.005 - vol24h × 0.04)
 
 // Interface OkSignal agora tem campos opcionais:
@@ -396,9 +399,12 @@ TRADE_SPREAD_PCT = 0.005  // 0.5% base, dinâmico: max(0.001, 0.005 - vol24h × 
 
 ```typescript
 // Score composto por agente:
-// score = winRate * 0.6 + min(avgProfit, 1) * 30 + max(0, streak) * 1
-// streak * 5 → max(0, streak) * 1 (streak negativa não domina)
-// min(avgProfit, 1) * 30 (capped em $1 pra não distorcer)
+// profitBonus = min(max(0, totalProfit), 5) * 4  // cap $5 → max 20pts
+// score = winRate * 0.5 + min(avgProfit, 1) * 20 + profitBonus + max(0, streak) * 0.5
+// winRate * 0.5: max 50 pontos (reduzido de 0.6)
+// avgProfit * 20: max 20 pontos (reduzido de 30, capped em $1)
+// profitBonus: max 20 pontos — recompensa lucro total gerado
+// streak * 0.5: peso leve no momentum (reduzido de 1.0)
 // Mínimo 3 trades para entrar no ranking
 
 // Sistema competitivo de 500 pontos (zero-sum):
@@ -506,6 +512,8 @@ Agentes consultam `parametrosRobos.get(nome)` para thresholds dinâmicos:
 2. **Pontos competitivos**: `confidence *= 0.8 + (points/500) * 0.4`
 3. **Streak learning**: `confidence *= streakMult` (negativo reduz, positivo aumenta)
    - Streak ≤ -5: mínimo 15% (nunca zero)
+4. **Groupthink detection**: se 8+ agentes votam no mesmo par → confiança de todos reduz 30%
+   - Previne manada onde agentes copiam votos alheios
 
 ### 🏆 Top 3 agents decidem:
 - Ranking do accountant define os 3 melhores agentes
@@ -1221,31 +1229,39 @@ com lucro líquido real a partir de $0.002, priorizando **quantidade de trades l
 em vez de esperar grandes ganhos por posição.
 
 ```
-ETH mainnet ($1.50 gas) → estratégia conservadora (MIN_PROFIT_REAL=$0.05, MIN_TRADE_SIZE=$5)
-Polygon ($0.005-0.08 gas) → micro-trades (MIN_PROFIT_REAL=$0.005, MIN_TRADE_SIZE=$2)
-Base ($0.05-0.08 gas) → micro-trades (MIN_PROFIT_REAL=$0.005, MIN_TRADE_SIZE=$2)
-Arbitrum ($0.03 gas) → micro-trades (MIN_PROFIT_REAL=$0.005, MIN_TRADE_SIZE=$2)
+Ethereum ($1.50 gas) → estratégia conservadora (MIN_PROFIT_REAL=$0.05, MIN_TRADE_SIZE=$50)
+Polygon ($0.005 gas) → micro-trades (MIN_PROFIT_REAL=$0.002, MIN_TRADE_SIZE=$2)
+Base ($0.03 gas) → micro-trades (MIN_PROFIT_REAL=$0.002, MIN_TRADE_SIZE=$2)
+Arbitrum ($0.03 gas) → micro-trades (MIN_PROFIT_REAL=$0.002, MIN_TRADE_SIZE=$2)
 Arc testnet ($0.006 gas) → micro-trades (MIN_PROFIT_REAL=$0.002, MIN_TRADE_SIZE=$1)
 ```
 
 ### 27.2 Parâmetros Dinâmicos por Rede
 
 ```typescript
-// agentes-do-pregão.ts:
+// agentes-do-pregão.ts — trade mínimo escala com custo de gas:
 function getMinTradeSize(network: NetworkKey): number {
-  if (network === "ethereum") return 5  // $5 mínimo na ETH mainnet
-  return 2  // $2 mínimo nas demais redes
+  const net = NETWORKS[network]
+  if (!net || net.isTestnet) return 2
+  const gasCost = GAS_COST_ESTIMATE[network] ?? 0.02
+  if (network === "ethereum") return Math.max(50, gasCost * 33)  // gas=$1.50 → min $50
+  if (network === "polygon") return Math.max(2, gasCost * 100)   // gas=$0.005 → min $2
+  if (network === "base" || network === "arbitrum") return Math.max(2, gasCost * 50)
+  return Math.max(2, gasCost * 40)
 }
 
 function getMinProfitReal(network: NetworkKey): number {
-  if (network === "ethereum") return 0.05  // $0.05 lucro mínimo na ETH
-  return 0.005  // $0.005 lucro mínimo nas demais (micro-trades)
+  if (network === "ethereum") return 0.05
+  return 0.002  // $0.002 já cobre gas + spread em micro-trades
 }
 
-// position-manager.ts:
-function getMinProfitUsd(networkKey: NetworkKey): number {
-  if (networkKey === "ethereum") return 0.05
-  return 0.002  // $0.002 — fecha assim que qualquer lucro líquido surgir
+// position-manager.ts — lucro líquido mínimo por rede:
+const MIN_LUCRO_LIQUIDO: Record<string, number> = {
+  polygon: 0.02, base: 0.03, arbitrum: 0.05,
+  ethereum: 0.50, arc: 0.001, sepolia: 0.02,
+}
+function getMinProfitUsd(networkKey: string): number {
+  return MIN_LUCRO_LIQUIDO[networkKey] ?? 0.01
 }
 
 // real-swap-executor.ts:
