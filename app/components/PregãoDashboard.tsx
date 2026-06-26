@@ -1,6 +1,8 @@
 "use client"
 
 import { useState, useEffect, useRef, useCallback } from "react"
+import { applyCircleProxyFix } from "@/lib/circle-proxy-fix"
+applyCircleProxyFix()
 import { pregão, type OrdemExecucao, type CashBoxState } from "@/lib/pregão"
 import { escriturário } from "@/lib/escriturario"
 import { corretor } from "@/lib/corretor"
@@ -105,6 +107,31 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       logRef.current.scrollTop = logRef.current.scrollHeight
     }
   }, [logs])
+
+  useEffect(() => {
+    const AUTO_CYCLE_KEY = "arcflow_auto_ciclo"
+    const disabled = localStorage.getItem(AUTO_CYCLE_KEY) === "false"
+    if (disabled) return
+
+    const addr = realSwap.getAddress()
+    if (!addr) return
+
+    const net = NETWORKS[rede as NetworkKey]
+    const isArc = net?.name?.includes("Arc") && net?.isTestnet
+
+    if (isArc) {
+      setCicloIntervalo(3)
+      addLog(`🧪 Arc Lab Mode: ciclo ultra-rápido a cada 3s, parâmetros agressivos ativos`)
+    }
+
+    const t = setTimeout(() => {
+      if (!cicloRef.current && !cicloAtivo) {
+        alternarCiclo()
+      }
+    }, isArc ? 1000 : 3000)
+
+    return () => clearTimeout(t)
+  }, [])
 
   useEffect(() => {
     const unsubLog1 = pregão.onLog(addLog)

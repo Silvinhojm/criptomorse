@@ -1310,7 +1310,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     const agreeingAgents = cp.agents
     const uniqueAgents = new Set(agreeingAgents.map(v => v.agentName))
     const agentesStr = [...uniqueAgents].join(", ")
-    const isGroupthink = uniqueAgents.size >= 8
+    const isGroupthink = !isArcStressMode() && uniqueAgents.size >= 6
     if (isGroupthink) {
       for (const v of agreeingAgents) {
         v.confidence = Math.round(v.confidence * 0.7)
