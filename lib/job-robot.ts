@@ -2,6 +2,8 @@
 // Robô autônomo de swaps na Arc testnet via Circle App Kit
 // Segue o exemplo: conectar + executar + log + retry com backoff
 
+import { applyCircleProxyFix } from './circle-proxy-fix'
+applyCircleProxyFix()
 import { ethers } from 'ethers'
 import { AppKit, SwapChain } from '@circle-fin/app-kit'
 import { createViemAdapterFromPrivateKey } from '@circle-fin/adapter-viem-v2'
@@ -21,10 +23,14 @@ const ARC_CHAIN = defineChain({
 const SWAP_PAIRS: Array<{ tokenIn: string; tokenOut: string; label: string }> = [
   { tokenIn: 'USDC', tokenOut: 'EURC', label: 'USDC→EURC' },
   { tokenIn: 'EURC', tokenOut: 'USDC', label: 'EURC→USDC' },
+  { tokenIn: 'USDC', tokenOut: 'cirBTC', label: 'USDC→cirBTC' },
+  { tokenIn: 'cirBTC', tokenOut: 'USDC', label: 'cirBTC→USDC' },
+  { tokenIn: 'EURC', tokenOut: 'cirBTC', label: 'EURC→cirBTC' },
+  { tokenIn: 'cirBTC', tokenOut: 'EURC', label: 'cirBTC→EURC' },
 ]
 
-const MAX_RETRIES = 2          // Tenta 3x (0, 1, 2) antes de fallback
-const RETRY_DELAY_MS = 10000   // backoff de 10s
+const MAX_RETRIES = 0          // Stress: tenta 1x, se falhar já faz deploy
+const RETRY_DELAY_MS = 10000
 const SWAP_TIMEOUT_MS = 30000  // timeout de 30s por tentativa
 
 export interface SwapResult {
@@ -161,33 +167,24 @@ class JobRobot {
     }
   }
 
-  /** Executa um swap com retry. Se falhar, faz deploy de JobProof como fallback. */
+  /** Executa um swap com retry rápido. Se falhar, faz deploy de JobProof como stress tx. */
   async executeSwap(amountUsd = '0.50', robotName = 'unknown'): Promise<SwapResult> {
     if (!this.kit || !this.adapter) {
       return { success: false, stage: 'init', error: 'AppKit não inicializado', retryCount: 0 }
     }
 
     const pair = SWAP_PAIRS[this.cycleCount % SWAP_PAIRS.length]
-    let lastError = ''
 
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      if (attempt > 0) {
-        await new Promise(r => setTimeout(r, RETRY_DELAY_MS))
-      }
-
-      const bal = await this.checkBalance()
-      if (bal < parseFloat(amountUsd)) {
-        return { success: false, stage: 'balance', error: `Saldo insuficiente: $${bal.toFixed(2)} USDC`, retryCount: attempt }
-      }
-
+    // Uma tentativa rápida de swap
+    const bal = await this.checkBalance()
+    if (bal >= parseFloat(amountUsd)) {
       const result = await this._swapWithTimeout(pair, amountUsd)
       if (result.success) {
         return result
       }
-      lastError = result.error ?? 'Erro desconhecido'
     }
 
-    // Fallback: deploy JobProof contract como prova on-chain
+    // Fallback: deploy do JobProof como transação de stress na rede
     this.consecutiveFails++
     const deployResult = await this.deployJobProof(robotName, this.cycleCount)
     if (deployResult.success) {
@@ -195,9 +192,9 @@ class JobRobot {
     }
     return {
       success: false,
-      stage: `failed-after-${MAX_RETRIES}-retries`,
-      error: lastError.slice(0, 300),
-      retryCount: MAX_RETRIES,
+      stage: 'stress-failed',
+      error: `Swap+deploy falharam: ${deployResult.error ?? 'erro desconhecido'}`,
+      retryCount: 0,
     }
   }
 }
