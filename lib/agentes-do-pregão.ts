@@ -522,7 +522,9 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
           }
         }
       }
-      if (isArc) return  // testnet: aprendizado apenas, não executa
+      if (isArc) {
+        pregão.adicionarLog(`[APRENDIZADO] ${nomeRobo} → ${signal.par} — executando na testnet (lab mode)`)
+      }
     }
     originalReceberOK(signal)  // mainnet: registra aprendizado + encaminha ao pregão
   }
