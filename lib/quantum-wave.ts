@@ -1,4 +1,4 @@
-import { TRADING_PAIRS, NetworkKey, TokenSymbol, isStable, isArcStressMode } from './real-swap-executor';
+import { TRADING_PAIRS, NetworkKey, TokenSymbol, isStable, isArcStressMode, realSwap } from './real-swap-executor';
 import { pairPriceFeed } from './pair-price-feed';
 
 export interface QuantumPair {
@@ -38,8 +38,10 @@ class QuantumWaveTrader {
         allPairs.push({ net: "arc" as NetworkKey, pair });
       }
     } else {
+      const redeAtiva = realSwap.getNetworkKey()
       for (const [networkKey, pairsList] of Object.entries(TRADING_PAIRS)) {
         const net = networkKey as NetworkKey;
+        if (net !== redeAtiva) continue
         for (const pair of pairsList) {
           allPairs.push({ net, pair });
         }

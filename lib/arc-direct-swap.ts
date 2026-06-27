@@ -91,7 +91,12 @@ export async function executeDirectSwap(
       txHash = receipt?.hash || transferTx.hash;
       log(`✅ Transferência confirmada: ${txHash}`);
     } catch (contractErr: any) {
-      // 2. Fallback: native transfer via value
+      // 2. Fallback: native transfer via value — SÓ se for token nativo
+      const NATIVE = '0x0000000000000000000000000000000000000000';
+      if (fromToken !== NATIVE && toToken !== NATIVE) {
+        log(`⛔ Value transfer bloqueado: ${fromToken.slice(0, 10)} não é token nativo`);
+        throw new Error('Nenhuma rota disponível para este par na testnet');
+      }
       log(`⚠️ ERC20 não disponível — enviando value transfer`);
       const address = await signer.getAddress();
       const nonce = await NonceManager.getInstance().getNonce(signer.provider!, chainId, address).catch(() => undefined);

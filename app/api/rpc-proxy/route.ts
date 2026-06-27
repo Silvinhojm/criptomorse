@@ -11,10 +11,16 @@ export async function POST(req: NextRequest) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(25000),
     })
 
-    const data = await res.json()
+    const text = await res.text()
+    let data: any
+    try {
+      data = JSON.parse(text)
+    } catch {
+      return NextResponse.json({ error: 'RPC returned non-JSON', raw: text.slice(0, 200) }, { status: 502 })
+    }
     return NextResponse.json(data)
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 502 })

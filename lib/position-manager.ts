@@ -4,7 +4,7 @@
 // ETH: $0.05 | Demais redes: $0.002 (micro-trades)
 // Nunca fecha no prejuízo — segura até ter lucro mínimo ou stop loss
 
-import { realSwap, isStable, type NetworkKey, type TokenSymbol } from "./real-swap-executor";
+import { NETWORKS, realSwap, isStable, PRICE_DIVIDERS, type NetworkKey, type TokenSymbol } from "./real-swap-executor";
 import { pregão } from "./pregão";
 import { gasPriceOracle } from "./gas-price-oracle";
 import { COIN_IDS } from "./coin-ids";
@@ -93,7 +93,12 @@ class PositionManager {
     amountBought: number,
     amountPaid: number,
     entryPrice: number
-  ): OpenPosition {
+  ): OpenPosition | null {
+    // Só abrir posição na rede ativa — evitar posições fantasmas em redes inativas
+    const redeAtiva = realSwap.getNetworkKey()
+    if (networkKey !== redeAtiva) {
+      return null
+    }
     const id = `pos_${networkKey}_${boughtToken}_${Date.now()}`;
     const pos: OpenPosition = {
       id,
@@ -148,6 +153,16 @@ class PositionManager {
     const profitPercent = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
     pos.currentProfitPercent = profitPercent;
 
+    const currentProfitUsd = (currentPrice - pos.entryPrice) * pos.amountBought;
+
+    // Stale force close: 5min sem lucro → fecha incondicionalmente
+    // Pula em testnet — objetivo na testnet é gerar transações, não lucrar
+    const net = NETWORKS[pos.networkKey as NetworkKey]
+    if (!net?.isTestnet && age > getStaleForceClose() && pos.peakProfitPercent <= 0) {
+      pregão.adicionarLog(`⏰ ${pos.boughtToken}: ${(age / 60000).toFixed(0)}min sem lucro — forçando fechamento`);
+      return "close";
+    }
+
     // Preço irreal (unknown token na testnet, fallback=1.0) — não fecha via staircase
     const priceUnreliable = currentPrice <= 0 || (profitPercent < -99 && pos.entryPrice > 0.01)
     if (priceUnreliable) return "hold";
@@ -157,17 +172,9 @@ class PositionManager {
       pos.peakProfitPercent = profitPercent;
     }
 
-    const currentProfitUsd = (currentPrice - pos.entryPrice) * pos.amountBought;
-
     // Stop loss: se perda > MAX_LOSS_PERCENT, fecha imediatamente
     if (profitPercent < MAX_LOSS_PERCENT) {
       pregão.adicionarLog(`🛑 Stop loss: ${pos.boughtToken} perdeu ${profitPercent.toFixed(2)}% (limite ${MAX_LOSS_PERCENT}%) — fechando`);
-      return "close";
-    }
-
-    // Stale force close: 5min sem lucro → fecha incondicionalmente
-    if (age > getStaleForceClose() && pos.peakProfitPercent <= 0) {
-      pregão.adicionarLog(`⏰ ${pos.boughtToken}: ${(age / 60000).toFixed(0)}min sem lucro — forçando fechamento`);
       return "close";
     }
 
@@ -236,10 +243,12 @@ class PositionManager {
       const body = await res.json();
       const prices = body?.prices;
       const price = (prices && prices[coinId]) ?? 1.0;
-      if (price > 0) {
-        this.priceCache.set(token, { price, timestamp: Date.now() });
+      const divider = PRICE_DIVIDERS[token] ?? 1;
+      const adjustedPrice = price > 0 ? price / divider : 0;
+      if (adjustedPrice > 0) {
+        this.priceCache.set(token, { price: adjustedPrice, timestamp: Date.now() });
       }
-      return price;
+      return adjustedPrice;
     } catch {
       return this.priceCache.get(token)?.price ?? 1.0;
     }

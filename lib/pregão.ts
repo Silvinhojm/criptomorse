@@ -2,7 +2,7 @@ import { accountant } from "./accountant"
 import { escolaRobos } from "./escola-robos"
 import { isStable } from "./real-swap-executor"
 import { setorPacotes, type TradeIntent } from "./setor-pacotes"
-import { batchApprove, executeBatch } from "./ultraflash"
+import { batchApprove, executeBatch, type UltraFlashSwap } from "./ultraflash"
 import { realSwap, NETWORKS, type NetworkKey, type TokenSymbol, TOKEN_DECIMALS, isArcStressMode } from "./real-swap-executor"
 import { hasDirectDex, getDirectDexQuote, calculateAmountOutMin } from "./direct-dex"
 import { getQuote } from "./lifi-executor"
@@ -89,6 +89,37 @@ class Pregão {
   private static STATS_KEY = "arcflow_session_stats"
   private static PACOTES_KEY = "arcflow_pacotes_results"
   private packageResults: PackageResult[] = []
+  private _redeAtiva: string = ""
+
+  setRedeAtiva(rede: string) {
+    if (rede !== this._redeAtiva) {
+      const anterior = this._redeAtiva
+      this._redeAtiva = rede
+      this.log(`🔀 Rede ativa alterada: ${anterior || '(nenhuma)'} → ${rede}`)
+      // Remove todos os OKs de redes diferentes
+      for (const [chave] of this.oks) {
+        const [redeNaChave] = chave.split(":")
+        if (redeNaChave !== this._redeAtiva) {
+          this.oks.delete(chave)
+        }
+      }
+      // Remove ordens pendentes de redes diferentes
+      let removidas = 0
+      for (const o of this.ordens) {
+        if (o.rede !== this._redeAtiva && o.status === "preparando") {
+          o.status = "falhou"
+          o.errorMsg = `Rede diferente da ativa (${o.rede} ≠ ${this._redeAtiva})`
+          removidas++
+        }
+      }
+      if (removidas > 0) {
+        this._saveOrdens()
+        this.log(`🧹 ${removidas} ordens de redes diferentes canceladas`)
+      }
+    }
+  }
+
+  getRedeAtiva(): string { return this._redeAtiva }
 
   constructor() {
     this._loadOrdens()
@@ -193,6 +224,16 @@ class Pregão {
   }
 
   receberOK(signal: OkSignal) {
+    // Sanitizar confianca antes de processar
+    signal.confianca = Math.min(100, Math.max(0, signal.confianca ?? 0))
+    if (isNaN(signal.confianca)) signal.confianca = 0
+
+    // Ignorar sinais de redes diferentes da ativa (exceto se nenhuma rede ativa foi definida)
+    if (this._redeAtiva && signal.rede !== this._redeAtiva) {
+      this.log(`🚫 Sinal ignorado: ${signal.pregueiro} → ${signal.par} na ${signal.rede} (rede ativa: ${this._redeAtiva})`)
+      return
+    }
+
     const chave = `${signal.rede}:${signal.par}`
     if (!this.oks.has(chave)) {
       this.oks.set(chave, new Map())
@@ -300,9 +341,16 @@ class Pregão {
       agentPoder.set(p.nome, winRate)
     }
     const pesoTotal = participantes.reduce((s, p) => s + (agentPoder.get(p.nome) ?? 0.5), 0)
-    const confiancaMedia = Math.round(
-      participantes.reduce((s, p) => s + p.sinal.confianca * (agentPoder.get(p.nome) ?? 0.5), 0) / pesoTotal
-    )
+    let confiancaMedia = 0
+    if (pesoTotal > 0) {
+      confiancaMedia = Math.round(
+        participantes.reduce((s, p) => s + p.sinal.confianca * (agentPoder.get(p.nome) ?? 0.5), 0) / pesoTotal
+      )
+    }
+    if (isNaN(confiancaMedia) || !isFinite(confiancaMedia) || confiancaMedia < 30) {
+      this.log(`⛔ Confiança inválida (${confiancaMedia}%) — ordem descartada`)
+      return
+    }
 
     // Grid orders bypass confidence minimum
     const MAINNETS = new Set(["polygon", "base", "ethereum", "arbitrum"])
@@ -314,6 +362,18 @@ class Pregão {
     // Limite de ordens ativas (máximo 10 — mais micro-trades simultâneos)
     if (this.getOrdensAtivas().length >= 10) {
       this.log(`⏳ ${this.getOrdensAtivas().length} ordens ativas — aguardando`)
+      return
+    }
+
+    // Previne ordem duplicada do mesmo par+direção+rede
+    const ordemFrom = participantes[0].sinal.fromToken
+    const ordemTo = participantes[0].sinal.toToken
+    const existeAtiva = this.ordens.some(o =>
+      (o.status === "preparando" || o.status === "pronto" || o.status === "executando") &&
+      o.fromToken === ordemFrom && o.toToken === ordemTo && o.rede === rede
+    )
+    if (existeAtiva) {
+      this.log(`⛔ Já existe ordem ativa para ${ordemFrom}→${ordemTo}@${rede} — descartando duplicata`)
       return
     }
 
@@ -489,6 +549,7 @@ class Pregão {
             5000, `DEX ${trade.fromToken}→${trade.toToken}`
           )
         : Promise.resolve(null),
+      // LI.FI é fallback — timeout maior pois passa pelo proxy
       this._quoteWithTimeout(
         getQuote({
           fromChain: net.chainId, toChain: net.chainId,
@@ -497,7 +558,7 @@ class Pregão {
           fromAddress: realSwap.getAddress(),
           toAddress: realSwap.getAddress(), slippage: 0.005,
         }),
-        5000, `LI.FI ${trade.fromToken}→${trade.toToken}`
+        10000, `LI.FI ${trade.fromToken}→${trade.toToken}`
       ),
     ])
 
@@ -553,7 +614,7 @@ class Pregão {
 
     // ─── 1. Threshold adaptativo por rede ──
     const gasCost = await gasPriceOracle.getGasCost(pacote.rede).catch(() => 0.02)
-    const basePct = pacote.rede === "ethereum" ? 0.005 : pacote.rede === "base" || pacote.rede === "arbitrum" ? 0.003 : 0.002
+    const basePct = pacote.rede === "ethereum" ? 0.005 : pacote.rede === "base" || pacote.rede === "arbitrum" ? 0.003 : 0.001
     const pctThreshold = isUltimaTentativa ? basePct * 0.3 : Math.max(basePct - (pacote.attempts - 1) * (basePct * 0.35), basePct * 0.2)
     const thresholdPorTrade = pacote.trades.map(t => Math.max(t.amount * pctThreshold, 0.005))
     const lucroMinimoTotal = thresholdPorTrade.reduce((s, v) => s + v, 0)
@@ -591,7 +652,17 @@ class Pregão {
     }
 
     // ─── 3. Gas-aware threshold (relaxa na última tentativa) ──
-    const lucroRealEsperado = swaps.reduce((s, sw) => s + sw.expectedToAmount, 0) - swaps.reduce((s, sw) => s + sw.amountUsd, 0)
+    const swapsToUSD = async (swaps: UltraFlashSwap[]): Promise<number> => {
+      let total = 0
+      for (const sw of swaps) {
+        const isStableTo = ["USDC", "USDT", "DAI", "EURC"].includes(sw.toToken)
+        const price = isStableTo ? 1 : await realSwap.fetchTokenPrice(sw.toToken as TokenSymbol).catch(() => 1)
+        total += sw.expectedToAmount * price
+      }
+      return total
+    }
+    const expectedReturnUSD = await swapsToUSD(swaps)
+    const lucroRealEsperado = expectedReturnUSD - swaps.reduce((s, sw) => s + sw.amountUsd, 0)
     const estimatedGasTotal = gasCost * (1 + swaps.length * 0.3)
     const gasMultiplier = isUltimaTentativa ? 1.0 : 2.0
 
@@ -625,13 +696,16 @@ class Pregão {
     const isPaper = typeof window !== "undefined" && localStorage.getItem("arcflow_paper_mode") === "true"
     if (isPaper) {
       this.log(`[PREGÃO] 📝 Modo Papel: simulando ${swaps.length} trades em ${pacote.rede}`)
-      let totalReturned = 0
+      let totalReturnedUSD = 0
       let tradesOk = 0
       for (let i = 0; i < swaps.length; i++) {
         const sw = swaps[i]
         const trade = pacote.trades[i]
         if (!trade) continue
-        totalReturned += sw.expectedToAmount
+        const isStableTo = ["USDC", "USDT", "DAI", "EURC"].includes(trade.toToken)
+        const toPrice = isStableTo ? 1 : await realSwap.fetchTokenPrice(trade.toToken as TokenSymbol).catch(() => 1)
+        const toAmountUSD = sw.expectedToAmount * toPrice
+        totalReturnedUSD += toAmountUSD
         tradesOk++
         if (trade.ordemId) {
           this.atualizarOrdem(trade.ordemId, {
@@ -640,12 +714,11 @@ class Pregão {
               txHash: "paper_" + Date.now(),
               explorerUrl: "",
               fromAmount: trade.amount,
-              toAmount: sw.expectedToAmount,
-              profit: sw.expectedToAmount - trade.amount,
+              toAmount: toAmountUSD,
+              profit: toAmountUSD - trade.amount,
             },
           })
         }
-        const isStableTo = ["USDC", "USDT", "DAI", "EURC"].includes(trade.toToken)
         const isStableFrom = ["USDC", "USDT", "DAI", "EURC"].includes(trade.fromToken)
         if (!isStableTo && isStableFrom) {
           positionManager.openPosition(
@@ -658,11 +731,11 @@ class Pregão {
             .find(p => p.boughtToken === trade.fromToken && p.networkKey === pacote.rede && p.status === "open")
           if (pos) positionManager.closePosition(pos.id, sw.expectedToAmount / trade.amount)
         }
-        this.log(`[PREGÃO] 📝 ${trade.fromToken}→${trade.toToken}: $${trade.amount} → $${sw.expectedToAmount.toFixed(4)} (simulado)`)
+        this.log(`[PREGÃO] 📝 ${trade.fromToken}→${trade.toToken}: $${trade.amount} → $${toAmountUSD.toFixed(4)} (simulado)`)
       }
-      const profitReal = totalReturned - pkgResult.totalInvested
+      const profitReal = totalReturnedUSD - pkgResult.totalInvested
       pkgResult.tradesSucesso = tradesOk
-      pkgResult.totalReturned = totalReturned
+      pkgResult.totalReturned = totalReturnedUSD
       pkgResult.profit = profitReal
       pkgResult.status = 'concluido'
       this._savePackageResults()
@@ -684,7 +757,7 @@ class Pregão {
         return
       }
 
-      let totalReturned = 0
+      let totalReturnedUSD = 0
       let tradesOk = 0
 
       for (let i = 0; i < batchResult.results.length; i++) {
@@ -698,7 +771,11 @@ class Pregão {
           continue
         }
 
-        totalReturned += r.swap.expectedToAmount
+        // Fix 0: expectedToAmount é em unidades de token, não USD
+        const isStableTo = ["USDC", "USDT", "DAI", "EURC"].includes(trade.toToken)
+        const toPrice = isStableTo ? 1 : await realSwap.fetchTokenPrice(trade.toToken as TokenSymbol).catch(() => 1)
+        const toAmountUSD = r.swap.expectedToAmount * toPrice
+        totalReturnedUSD += toAmountUSD
         tradesOk++
 
         if (trade.ordemId) {
@@ -708,15 +785,14 @@ class Pregão {
               txHash: batchResult.txHash ?? "",
               explorerUrl: `${(net as any).explorerUrl || (net as any).explorer || ""}/tx/${batchResult.txHash}`,
               fromAmount: trade.amount,
-              toAmount: r.swap.expectedToAmount,
-              profit: r.swap.expectedToAmount - trade.amount,
+              toAmount: toAmountUSD,
+              profit: toAmountUSD - trade.amount,
             },
           })
         }
 
         // Se comprou volátil → abre posição
         // Se vendeu volátil → fecha posição correspondente (delta neutro)
-        const isStableTo = ["USDC", "USDT", "DAI", "EURC"].includes(trade.toToken)
         const isStableFrom = ["USDC", "USDT", "DAI", "EURC"].includes(trade.fromToken)
         if (!isStableTo && isStableFrom) {
           positionManager.openPosition(
@@ -736,18 +812,19 @@ class Pregão {
           }
         }
 
-        this.log(`[PREGÃO] ✅ ${trade.fromToken}→${trade.toToken} via ${r.swap.network}: $${trade.amount} → $${r.swap.expectedToAmount.toFixed(4)} (${(r.swap.expectedToAmount > trade.amount ? '+' : '')}${((r.swap.expectedToAmount / trade.amount - 1) * 100).toFixed(2)}%)`)
+        const pctChange = ((toAmountUSD / trade.amount - 1) * 100)
+        this.log(`[PREGÃO] ✅ ${trade.fromToken}→${trade.toToken} via ${r.swap.network}: $${trade.amount} → $${toAmountUSD.toFixed(4)} (${pctChange >= 0 ? '+' : ''}${pctChange.toFixed(2)}%)`)
       }
 
-      const profitReal = totalReturned - pkgResult.totalInvested
+      const profitReal = totalReturnedUSD - pkgResult.totalInvested
       pkgResult.tradesSucesso = tradesOk
-      pkgResult.totalReturned = totalReturned
+      pkgResult.totalReturned = totalReturnedUSD
       pkgResult.profit = profitReal - (batchResult.totalGasUsed ? estimatedGasTotal : 0)
       pkgResult.txHash = batchResult.txHash
       pkgResult.status = tradesOk === pkgResult.totalTrades ? 'concluido' : 'parcial'
       this._savePackageResults()
 
-      this.log(`[PREGÃO] ✅ Pacote ${pacote.id}: ${tradesOk}/${batchResult.results.length} sucesso | investido: $${pkgResult.totalInvested.toFixed(2)} | retorno: $${totalReturned.toFixed(4)} | lucro: $${profitReal.toFixed(4)} | TX: ${batchResult.txHash?.slice(0, 10)}...`)
+      this.log(`[PREGÃO] ✅ Pacote ${pacote.id}: ${tradesOk}/${batchResult.results.length} sucesso | investido: $${pkgResult.totalInvested.toFixed(2)} | retorno: $${totalReturnedUSD.toFixed(4)} | lucro: $${profitReal.toFixed(4)} | TX: ${batchResult.txHash?.slice(0, 10)}...`)
     } catch (err: any) {
       this.log(`[PREGÃO] ❌ Erro executando pacote ${pacote.id}: ${err.message.slice(0, 150)}`)
       pkgResult.status = 'falhou'

@@ -14,12 +14,13 @@
 //   Win rate esperado: 65% (mean reversion em stables é confiável)
 //   Lucro diário estimado: $0.50-1.50 com $20 capital
 
-import { realSwap, NETWORKS, type NetworkKey, type TokenSymbol } from './real-swap-executor'
+import { realSwap, type NetworkKey, type TokenSymbol } from './real-swap-executor'
 import { gasPriceOracle } from './gas-price-oracle'
 import { capitalController } from './capital-controller'
+import { getTopPools, type PoolInfo } from './pool-finder'
 
 // ─── Configuração das Pools Alvo ───
-interface TargetPool {
+export interface TargetPool {
   network: NetworkKey
   fromToken: string
   toToken: string
@@ -29,30 +30,18 @@ interface TargetPool {
   minDeviation: number      // desvio mínimo pra entrar (%)
   targetProfit: number      // take-profit (%)
   stopLoss: number          // stop-loss (%)
+  dex?: string              // nome do DEX
 }
 
-const TARGET_POOLS: TargetPool[] = [
-  {
-    network: 'polygon', fromToken: 'USDC', toToken: 'USDT',
-    poolAddress: '0x...UniswapV3...', feeTier: 0.0001, tvlEstimate: 2000000,
-    minDeviation: 0.0020, targetProfit: 0.0015, stopLoss: -0.0010,
-  },
-  {
-    network: 'polygon', fromToken: 'USDC', toToken: 'DAI',
-    poolAddress: '0x...UniswapV3...', feeTier: 0.0005, tvlEstimate: 1500000,
-    minDeviation: 0.0025, targetProfit: 0.0020, stopLoss: -0.0015,
-  },
-  {
-    network: 'base', fromToken: 'USDC', toToken: 'DAI',
-    poolAddress: '0x...UniswapV3...', feeTier: 0.0005, tvlEstimate: 800000,
-    minDeviation: 0.0020, targetProfit: 0.0015, stopLoss: -0.0010,
-  },
-  {
-    network: 'polygon', fromToken: 'USDC', toToken: 'EURC',
-    poolAddress: '0x...UniswapV3...', feeTier: 0.003, tvlEstimate: 500000,
-    minDeviation: 0.0080, targetProfit: 0.0060, stopLoss: -0.0040,
-  },
+// Fallback: pools hardcoded caso API falhe
+const FALLBACK_POOLS: TargetPool[] = [
+  { network: 'polygon', fromToken: 'USDC', toToken: 'USDT', poolAddress: '', feeTier: 0.0001, tvlEstimate: 2000000, minDeviation: 0.0020, targetProfit: 0.0015, stopLoss: -0.0010, dex: 'fallback' },
+  { network: 'polygon', fromToken: 'USDC', toToken: 'DAI', poolAddress: '', feeTier: 0.0005, tvlEstimate: 1500000, minDeviation: 0.0025, targetProfit: 0.0020, stopLoss: -0.0015, dex: 'fallback' },
+  { network: 'base', fromToken: 'USDC', toToken: 'DAI', poolAddress: '', feeTier: 0.0005, tvlEstimate: 800000, minDeviation: 0.0020, targetProfit: 0.0015, stopLoss: -0.0010, dex: 'fallback' },
+  { network: 'polygon', fromToken: 'USDC', toToken: 'EURC', poolAddress: '', feeTier: 0.003, tvlEstimate: 500000, minDeviation: 0.0080, targetProfit: 0.0060, stopLoss: -0.0040, dex: 'fallback' },
 ]
+
+let TARGET_POOLS: TargetPool[] = [...FALLBACK_POOLS]
 
 interface HuntPosition {
   pool: TargetPool
@@ -124,8 +113,47 @@ class OscillationHunter {
   onChange(cb: () => void) { this.listeners.push(cb); return () => { this.listeners = this.listeners.filter(c => c !== cb) } }
   private notify() { for (const cb of this.listeners) cb() }
 
-  start() { this._ativo = true; this._lastError = null; this.loop(); this.notify() }
-  stop() { this._ativo = false; this.notify() }
+  start() {
+    this._ativo = true
+    this._lastError = null
+    this._initializePools() // carrega pools reais na primeira execução
+    this.loop()
+    this.notify()
+  }
+
+  stop() {
+    this._ativo = false
+    this.notify()
+  }
+
+  /** Carrega pools do DexScreener via Pool Finder, com fallback */
+  private async _initializePools() {
+    try {
+      const pools = await getTopPools('polygon')
+      if (pools.length > 0) {
+        const converted: TargetPool[] = pools
+          .filter((p: PoolInfo) => p.score >= 30)
+          .map((p: PoolInfo) => ({
+            network: 'polygon' as NetworkKey,
+            fromToken: p.token0,
+            toToken: p.token1,
+            poolAddress: p.address,
+            feeTier: p.fee || 0.003,
+            tvlEstimate: p.tvlUSD,
+            minDeviation: 0.002,
+            targetProfit: 0.0015,
+            stopLoss: -0.0010,
+            dex: p.dex,
+          }))
+        TARGET_POOLS = converted.slice(0, 10)
+        console.log(`[OscillationHunter] ${TARGET_POOLS.length} pools reais carregadas:`,
+          TARGET_POOLS.map(p => `${p.fromToken}/${p.toToken} (${p.dex})`).join(', '))
+      }
+    } catch (e) {
+      console.warn(`[OscillationHunter] Pool Finder falhou, usando fallback (${FALLBACK_POOLS.length} pools)`)
+      TARGET_POOLS = [...FALLBACK_POOLS]
+    }
+  }
 
   private async loop() {
     while (this._ativo) {

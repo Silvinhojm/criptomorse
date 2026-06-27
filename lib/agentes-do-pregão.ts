@@ -904,10 +904,11 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         if (!agentAssigned("ArbitrageHunter", pairLabel) || !isStableStable) return []
         const pAH = parametrosRobos.get("ArbitrageHunter")
         if (spreadPct > pAH.thresholdSpread) {
+          const c = Math.min(75, Math.round(30 + spreadPct * 10))
           return [{
             agentName: "ArbitrageHunter", pair: pairLabel, fromToken: pair.from,
             toToken: pair.to, network: pairNet,
-            confidence: Math.min(75, Math.round(30 + spreadPct * 10)),
+            confidence: Math.min(100, Math.max(0, c)),
             action: pairToPrice > pairFromPrice ? "sell" : "buy",
             reason: `Arbitragem ${pairLabel} (spread ${spreadPct.toFixed(3)}%)`,
           }]
@@ -920,10 +921,11 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         if (!agentAssigned("MarketMaker", pairLabel)) return []
         const pMM = parametrosRobos.get("MarketMaker")
         if (spreadPct > pMM.thresholdSpread) {
+          const c = Math.min(70, Math.round(40 + spreadPct * 20))
           return [{
             agentName: "MarketMaker", pair: pairLabel, fromToken: pair.from,
             toToken: pair.to, network: pairNet,
-            confidence: Math.min(70, Math.round(40 + spreadPct * 20)),
+            confidence: Math.min(100, Math.max(0, c)),
             action: pairToPrice > pairFromPrice ? "sell" : "buy",
             reason: `Market ${pairLabel} ${pairToPrice > pairFromPrice ? "🠕" : "🠗"} (${spreadPct.toFixed(3)}%)`,
           }]
@@ -1478,26 +1480,38 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
           const label = profitPercent < 0 ? `no prejuízo (${profitPercent.toFixed(1)}%)` : `break-even (0.0%)`
           pregão.adicionarLog(`⏳ ${agreedPair.pair}: posição ${agreedPair.fromToken} ${label} — só Staircase pode fechar`)
         } else {
-          pregão.adicionarLog(`💰 Venda lucrativa: ${agreedPair.pair} (${profitPercent.toFixed(1)}%)`)
+          const jaVendendo = pregão.getOrdensAtivas()
+            .some(o => o.fromToken === agreedPair.fromToken && o.toToken === agreedPair.toToken && o.rede === pairNet && o.status !== "concluido" && o.status !== "falhou")
+          if (jaVendendo) {
+            pregão.adicionarLog(`⏳ ${agreedPair.pair}: já há ordem de venda ativa para ${agreedPair.fromToken} — descartando`)
+          } else {
+            pregão.adicionarLog(`💰 Venda lucrativa: ${agreedPair.pair} (${profitPercent.toFixed(1)}%)`)
+            for (const v of agreeingAgents) {
+              pregão.receberOK({
+                pregueiro: `Agente:${v.agentName}`,
+                rede: v.network, par: v.pair, confianca: v.confidence, timestamp: Date.now(),
+                fromToken: v.fromToken, toToken: v.toToken,
+                direcao: v.action, precoNoPalpite: currentPrice,
+              })
+            }
+          }
+        }
+      } else {
+        const jaVendendo = pregão.getOrdensAtivas()
+          .some(o => o.fromToken === agreedPair.fromToken && o.toToken === agreedPair.toToken && o.rede === pairNet && o.status !== "concluido" && o.status !== "falhou")
+        if (jaVendendo) {
+          pregão.adicionarLog(`⏳ ${agreedPair.pair}: já há ordem de venda ativa — descartando duplicata`)
+        } else {
+          pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair}`)
+          const precoSell = await positionManager.fetchTokenPrice(agreedPair.fromToken as TokenSymbol).catch(() => 0)
           for (const v of agreeingAgents) {
             pregão.receberOK({
               pregueiro: `Agente:${v.agentName}`,
               rede: v.network, par: v.pair, confianca: v.confidence, timestamp: Date.now(),
               fromToken: v.fromToken, toToken: v.toToken,
-              direcao: v.action, precoNoPalpite: currentPrice,
+              direcao: v.action, precoNoPalpite: precoSell || undefined,
             })
           }
-        }
-      } else {
-        pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair}`)
-        const precoSell = await positionManager.fetchTokenPrice(agreedPair.fromToken as TokenSymbol).catch(() => 0)
-        for (const v of agreeingAgents) {
-          pregão.receberOK({
-            pregueiro: `Agente:${v.agentName}`,
-            rede: v.network, par: v.pair, confianca: v.confidence, timestamp: Date.now(),
-            fromToken: v.fromToken, toToken: v.toToken,
-            direcao: v.action, precoNoPalpite: precoSell || undefined,
-          })
         }
       }
     } else {

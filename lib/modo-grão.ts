@@ -140,10 +140,18 @@ class ModoGrao {
     if (this._ativo) return
     this._ativo = true
     this._lastError = null
-    this._lastSignal = this._testMode ? '🧪 Modo teste (Sepolia) — volatilidade mock 0.5%' : ''
     const p = this.getPair()
-    const netLabel = realSwap.getNetworkKey()
-    console.log(`[ModoGrão] ▶ ${this._testMode ? '🧪 MODO TESTE' : 'Mainnet'} — ${p.toToken}/${p.fromToken} (${netLabel})`)
+    const netKey = realSwap.getNetworkKey()
+    const net = NETWORKS[netKey as NetworkKey]
+    const isTestnet = net?.isTestnet ?? false
+    // Mainnet: sempre desliga test mode (execução real)
+    if (!isTestnet && this._testMode) {
+      this._testMode = false
+      if (typeof window !== 'undefined') localStorage.setItem('arcflow_modograo_testmode', '0')
+    }
+    const ambiente = isTestnet ? '🧪 Testnet' : '🌐 Mainnet'
+    this._lastSignal = this._testMode ? `🧪 Modo teste (${netKey}) — volatilidade mock 0.5%` : `${ambiente} — ${p.toToken}/${p.fromToken}`
+    console.log(`[ModoGrão] ▶ ${ambiente} — ${p.toToken}/${p.fromToken} (${netKey})`)
     this.notify()
     this.loop()
   }
@@ -186,8 +194,13 @@ class ModoGrao {
       CONFIG._gasRoundTrip = gasCost * 2
 
       const p = this.getPair()
+      const stablePair = p.toToken === 'EURC' || p.toToken === 'USDC'
       const vol = volatilityTracker.getVolatility(p.toToken as any)
       CONFIG._vol24h = vol.vol24h
+      // Stable pairs têm volatilidade natural ~0%; usar floor para viabilizar micro-trades
+      if (stablePair && CONFIG._vol24h < 0.0005) {
+        CONFIG._vol24h = 0.0005
+      }
 
       const usdcBal = realSwap.getBalance("USDC") || 10
 
@@ -198,10 +211,15 @@ class ModoGrao {
         : 0.005                                                 // LI.FI: 0.5%
 
       // ── Batch mínimo viável: V_min que faz vol ≥ break-even ──
-      // Rearranjo: V_min = G / ((1−S)² * (1+vol) − (1+S)*(1−S))
-      // Simplificado: V_min ≈ G / ((1+vol)(1−2S) − 1)
-      const denom = (1 + CONFIG._vol24h) * (1 - 2 * spreadEstimate) - 1
-      const V_min = denom > 0 ? Math.ceil(CONFIG._gasRoundTrip / denom) : 99999
+      const margemLiquida = CONFIG._vol24h - spreadEstimate
+      const margemMinima = Math.max(margemLiquida, 0.001)
+      const VminCalculado = Math.ceil(CONFIG._gasRoundTrip / margemMinima)
+      const V_min = Math.min(VminCalculado, usdcBal * 0.5)
+
+      if (VminCalculado > usdcBal) {
+        console.log(`[Grão⚙️] ⚠️ Par inviável: Vmin=$${VminCalculado} > saldo=$${usdcBal.toFixed(0)} — pulando`)
+        return
+      }
 
       if (V_min < 3) {
         CONFIG.baseTradeUSD = 3

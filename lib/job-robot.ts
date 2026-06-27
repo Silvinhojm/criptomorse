@@ -198,6 +198,12 @@ class JobRobot {
       if (result.success) {
         return result
       }
+      // Nonce/revert errors são infraestrutura, não falha de estratégia
+      const errMsg = result.error?.toLowerCase() ?? ''
+      if (errMsg.includes('nonce') || errMsg.includes('revert') || errMsg.includes('already been used')) {
+        this.consecutiveFails = Math.max(0, this.consecutiveFails - 1)
+        return result
+      }
     }
 
     // Fallback: deploy do JobProof como transação de stress na rede

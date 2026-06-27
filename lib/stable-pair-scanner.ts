@@ -79,8 +79,8 @@ class StablePairScanner {
         // Rearranjando: V_min = G / ((1+vol_min)(1-2S) - 1)
         const volMin = 0.0005 // assume movimento mínimo de 0.05% para stables
         const denom = (1 + volMin) * (1 - 2 * spreadEstimate) - 1
-        const batchMinimo = denom > 0 ? Math.ceil(gasCost * 2 / denom) : 999
-        const batchSugerido = Math.max(batchMinimo, 5)
+        const batchMinimo = denom > 0 ? Math.ceil(gasCost * 2 / denom) : 0
+        const batchSugerido = batchMinimo > 0 ? Math.max(batchMinimo, 5) : 0
 
         // ── Lucro estimado ──
         const amplitude = trend?.amplitude ? trend.amplitude / 100 : 0.0008 // usa amplitude real ou 0.08%
@@ -195,7 +195,7 @@ class StablePairScanner {
       totalPairs: this.cache.length,
       oportunidades: this.cache.filter(p => p.recomendacao === 'AGORA').length,
       monitorar: this.cache.filter(p => p.recomendacao === 'MONITORAR').length,
-      top3: this.cache.slice(0, 3).map(p => ({
+      top3: this.cache.filter(p => p.batchMinimo > 0).slice(0, 3).map(p => ({
         pair: `${p.network}:${p.pair}`,
         score: p.score,
         batch: p.batchMinimo,

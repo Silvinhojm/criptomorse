@@ -39,6 +39,8 @@ class Contratante {
   private _privateKey = ''
   private _executando = false // guard contra overlap
   private _reports: SwapReport[] = []
+  private _consecutiveFails = 0
+  private _pausadoAte = 0
 
   private listeners: Array<() => void> = []
 
@@ -74,6 +76,10 @@ class Contratante {
   async tryExecuteCycle(): Promise<{ ok: boolean; msg: string }> {
     if (this._executando) {
       return { ok: false, msg: '⏳ Contratante: ciclo anterior ainda executando' }
+    }
+    if (this._pausadoAte > Date.now()) {
+      const restante = Math.ceil((this._pausadoAte - Date.now()) / 1000)
+      return { ok: false, msg: `⏸️ Contratante: pausado por mais ${restante}s (3 falhas consecutivas)` }
     }
     this._executando = true
     if (!this._privateKey) {
@@ -145,12 +151,22 @@ class Contratante {
       narrador.manual(`Contratante: ${result.pair} $${result.amountIn ?? amount} concluído na Arc testnet${contratoMsg}`, "info")
       return { ok: true, msg }
     } else {
+      if (result.stage === 'circuit-breaker') {
+        this._pausadoAte = Date.now() + 5 * 60 * 1000
+        const msg = `❌ Circuit breaker: 3+ falhas consecutivas — pausando 5 minutos`
+        console.error(msg)
+        narrador.manual(msg, "error")
+        this._ultimoResultado = msg
+        this._ultimoError = result.error ?? 'Erro desconhecido'
+        this.notify()
+        return { ok: false, msg }
+      }
       this._swapsFalha++
       this._ultimoError = result.error ?? 'Erro desconhecido'
       this._ultimoResultado = `❌ Swap #${this._cicloAtual} falhou: ${result.error?.slice(0, 100)}`
       this.notify()
+      console.error(`❌ Swap falhou: ${result?.error || "Erro desconhecido"}`)
       const _kitKey = jobRobot.getKitKey();
-      console.error(`❌ Swap falhou: ${result?.error || "Erro desconhecido"}`);
       if (_kitKey === "KIT_KEY:keyId:keySecret" || !_kitKey) {
         console.error(`⚠️ KIT_KEY inválida — configure no .env ou no dashboard`);
       }

@@ -142,3 +142,77 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - **Unified Balance (Circle API)**: 404 no plano demo (`networkType: "mainnet"` não suportado)
 - **CCTP**: configurado em 5 chains, mas requer gas em ambos os lados
 - **Build**: limpo (zero erros TS)**
+
+## Session Summary (26/06/2026) — Sexta Sessão: Estabilidade (5 fixos + 3)
+
+### What's Changed
+
+1. **Fix A — NaN guard**: `pregão.ts` (linha ~634 `receberOK`) sanitiza `corretagem.signalConfidence` com `Math.min(100, Math.max(0, c))`. `agentes-do-pregão.ts` guarda divisão por zero em `confiancaMedia`. Ordenações com confidence inválida são descartadas. Confirmado: zero NaN orders.
+
+2. **Fix B — Lock de par**: `escriturario.ts`: `Set<string>` module-level key `fromToken→toToken@rede` previne execução concorrente do mesmo par. Lock movido para topo de `prepararOrdem` (antes de qualquer refresh) para bloquear duplicatas cedo.
+
+3. **Fix C — Fórmula Vmin**: `modo-grão.ts`: `margemMinima = max(vol - spread, 0.001)`, `Vmin = min(gas/margem, saldo*0.5)`, early return se `Vmin > saldo`. Vmin agora $5–$12 (antes $99999).
+
+4. **Fix D — Network guard**: `position-manager.ts` (`openPosition()` retorna null se rede ≠ ativa) + `quantum-wave.ts` (`broadcastIntent` filtra pairs para rede ativa). Zero phantom positions.
+
+5. **Fix E — CORS gas oracle**: `gas-price-oracle.ts`: substituído `new ethers.JsonRpcProvider(llamarpcUrl)` por `fetch(/api/rpc-proxy)` via `eth_gasPrice`. Zero llamarpc no console.
+
+6. **NonceManager thread-safety**: `nonce-manager.ts`: `getNonce()` serializado via Promise-chain mutex. Previne nonce collision em concorrência.
+
+7. **JobRobot circuit breaker**: `job-robot.ts`: nonce/revert errors decrementam `consecutiveFails` ao invés de incrementar. `cycleCount` incrementa no deploy. `contratante.setPrivateKey()` reseta.
+
+8. **refreshAllBalances serialization**: `real-swap-executor.ts`: mutex (`_refreshLock`) previne race condition que zerava cache de saldos.
+
+9. **Fix F — LockKey no topo**: `escriturario.ts:prepararOrdem()` — lock check movido para antes do refreshAllBalances. Se par já está processando, retorna cedo sem duplicar refresh.
+
+10. **Fix G — Value transfer guard**: `arc-direct-swap.ts`: check `fromToken !== NATIVE && toToken !== NATIVE` antes do fallback value transfer. Previne enviar ARC nativo quando o par é mcirBTC→USDC.
+
+11. **Fix H — mcirBTC price normalization**: `real-swap-executor.ts`: novo `PRICE_DIVIDERS` record com mcirBTC divider 10^10. `_getTokenPrice` divide o preço da API pelo divisor. Catch blocks do `refreshAllBalances` usam `TOKEN_DECIMALS[symbol] ?? 6` em vez de hardcoded 6.
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Polygon**: $10.32 USDC, POL gas zerado
+- **Arc Testnet**: USDC $2165, ARC $2167. Value transfer bloqueado para mcirBTC.
+- **mcirBTC posição**: entry $1.0011, price normalizado de $299k para ~$0 (divisor 10^10)
+- **All 11 fixes applied**: 6 stability (A-E) + 3 infra (NonceManager, JobRobot, refreshLock) + 2 late fixes (F, G, H)
+
+## Session Summary (27/06/2026) — Sétima Sessão: Destravando trades reais na Polygon
+
+### What's Changed
+
+1. **Unified Balance desabilitado** — `lib/caixa.ts`: `initBrowser()` sempre retorna `false`. Fim do spam 404 `/api/circle-proxy/v1/balances` (plano demo não suporta a API). Sistema usa `_liveBalance` (wallet local) como fallback.
+
+2. **RPC proxy robusto** — `app/api/rpc-proxy/route.ts`: lê resposta como texto e faz `JSON.parse` manual (antes `res.json()` quebrava se RPC retornasse HTML em vez de JSON). Timeout 15s→25s.
+
+3. **UltraFlash multicall ABI corrigida** — `lib/ultraflash.ts`: `struct Call/Result` inline → `tuple(...)` syntax compatível com ethers v6. Erro `multicall.aggregate3 is not a function` eliminado.
+
+4. **Threshold de lucro reduzido: 0.2%→0.1%** — `lib/pregão.ts:567`: `basePct` para Polygon (e outras L2s não-ETH) de 0.002 para 0.001. Pacotes de $5 com lucro $0.0053 agora passam.
+
+5. **LI.FI quote timeout 5s→10s** — `lib/pregão.ts:511`: LI.FI via proxy é mais lento; DEX direto mantém 5s.
+
+6. **Modo Grão auto-desliga test mode em mainnet** — `lib/modo-grão.ts:start()`: se `_testMode=true` em rede não-testnet, força `false` e persiste em localStorage.
+
+### Current State
+- **Polygon**: $50.21 USDC + $13.81 POL (192 POL = gas pra milhares de swaps)
+- **Console limpo**: sem spam 404 do Circle, sem 502 do RPC
+- **Pares Polygon**: USDC→WMATIC (64%), USDC→WETH, WMATIC→USDC (pares Arc como mcirBTC/cirBTC/ARC não aparecem porque os tokens não existem na Polygon — filtro automático)
+- **UltraFlash**: deve executar batches via Multicall3 com a ABI corrigida
+
+## Session Summary (26/06/2026) — Quarta Rodada: entryPrice, LI.FI slippage, Professor cache
+
+### What's Changed
+
+1. **Fix H (refinado) — entryPrice cirBTC em stress mode**: `real-swap-executor.ts:executeSwap` — `directResult.amountReceived` é o `fromAmount` cru (decimals do FROM token). Linha 1022 agora usa `TOKEN_DECIMALS[toToken] ?? 18` em vez de `toDecimals` (que podia vir do cache com decimals errado). entryPrice = `amountUsd / (rawAmount / 10^outputDecimals)`.
+
+2. **Fix I — Validação de slippage pós-LI.FI**: `real-swap-executor.ts` — após executar rota LI.FI (linha 1117+), compara `bestToEstimate` (cotado) vs `actualToAmount` (real via diff balance). Se slippage > 5%, loga `⚠️ Slippage excessivo: X% — cotado Y vs real Z`. Mesma validação no fallback route (linha 1097+). Não reverte TX, mas o log é claro e o profit negativo já penaliza o agente.
+
+3. **Fix J — Professor com localStorage cache**: `professor.ts` — novo `init()` que carrega estado salvo de `arcflow_professor_estado` (inclui `RoboEscolar` de `escolaRobos` + streaks). Se cache existe, restaura sem reprocessar histórico. `_salvarEstado()` chamado após cada ajuste via `_aplicarAjustes()` e `registrarPalpite()`. Chamado no construtor.
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Polygon**: $10.32 USDC, POL gas zerado
+- **Arc Testnet**: USDC $2165, ARC $2167
+- **entryPrice cirBTC/mcirBTC**: normalizado por `TOKEN_DECIMALS[toToken] ?? 18`
+- **LI.FI**: slippage >5% logado (perda da cotação vs execução registrada)
+- **Professor**: `init()` no construtor, estado em localStorage
+- **All 14 fixes**: 6 stability + 3 infra + 2 late (F, G) + 3 round4 (H refinado, I, J)

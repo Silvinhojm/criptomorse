@@ -6,11 +6,14 @@
 
 import { useState, useEffect } from "react"
 import { stablePairScanner, type StablePairInfo } from "@/lib/stable-pair-scanner"
+import type { PoolInfo } from "@/lib/pool-finder"
 
 export function StableOpportunities() {
   const [pairs, setPairs] = useState<StablePairInfo[]>([])
   const [scanTime, setScanTime] = useState(0)
   const [loading, setLoading] = useState(false)
+  const [realPools, setRealPools] = useState<PoolInfo[]>([])
+  const [poolLoading, setPoolLoading] = useState(false)
 
   const refresh = async () => {
     setLoading(true)
@@ -22,14 +25,27 @@ export function StableOpportunities() {
     setLoading(false)
   }
 
+  const refreshPools = async () => {
+    setPoolLoading(true)
+    try {
+      const res = await fetch('/api/pool-finder?rede=polygon')
+      const data = await res.json()
+      if (Array.isArray(data)) setRealPools(data.slice(0, 5))
+    } catch { /* offline */ }
+    setPoolLoading(false)
+  }
+
   useEffect(() => {
     refresh()
+    refreshPools()
     const t = setInterval(refresh, 45_000)
-    return () => clearInterval(t)
+    const tp = setInterval(refreshPools, 5 * 60 * 1000)
+    return () => { clearInterval(t); clearInterval(tp) }
   }, [])
 
-  const top = pairs.filter(p => p.recomendacao === 'AGORA').slice(0, 3)
-  const monitor = pairs.filter(p => p.recomendacao === 'MONITORAR').slice(0, 2)
+  const viavel = (p: StablePairInfo) => p.batchMinimo > 0
+  const top = pairs.filter(p => p.recomendacao === 'AGORA' && viavel(p)).slice(0, 3)
+  const monitor = pairs.filter(p => p.recomendacao === 'MONITORAR' && viavel(p)).slice(0, 2)
 
   if (pairs.length === 0) return null
 
@@ -102,6 +118,35 @@ export function StableOpportunities() {
         <div style={{ color: "#6b7280", fontSize: 10, textAlign: "center", padding: "8px 0" }}>
           Nenhum par stablecoin viável agora — mercado flat
         </div>
+      )}
+
+      {/* Pools Reais (DexScreener) */}
+      {realPools.length > 0 && (
+        <>
+          <div style={{
+            marginTop: 8, marginBottom: 4, fontSize: 10, color: "#818cf8", fontWeight: "bold",
+            borderTop: "1px solid rgba(129,140,248,0.15)", paddingTop: 6,
+          }}>
+            🔍 Pools Reais · {poolLoading ? '⏳' : `${realPools.length} ativas`}
+          </div>
+          {realPools.map((p, i) => (
+            <div key={`pool${i}`} style={{
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+              padding: "2px 0", fontSize: 10,
+              borderBottom: i < realPools.length - 1 ? "1px solid rgba(255,255,255,0.03)" : "none",
+            }}>
+              <span style={{ color: "#c7d2fe", flex: 1 }}>
+                {p.dex?.slice(0, 6)}: {p.label}
+              </span>
+              <span style={{ color: "#a5b4fc", minWidth: 50, textAlign: "right" }}>
+                ${(p.tvlUSD / 1e6).toFixed(1)}M
+              </span>
+              <span style={{ color: p.score >= 60 ? "#4ade80" : "#fbbf24", minWidth: 30, textAlign: "right", fontWeight: "bold" }}>
+                {p.score}
+              </span>
+            </div>
+          ))}
+        </>
       )}
 
       {/* Métricas */}

@@ -6,6 +6,7 @@ import { PregãoDashboard } from "./components/PregãoDashboard";
 import { SalaDeAula } from "./components/SalaDeAula";
 import { NETWORKS } from "@/lib/real-swap-executor";
 
+import { realSwap, type NetworkKey } from "@/lib/real-swap-executor";
 import { useState, useCallback, useEffect } from "react";
 import { ethers } from "ethers";
 import { Toaster, toast } from "react-hot-toast";
@@ -710,6 +711,10 @@ export default function Home() {
       setAccount(accounts[0]);
       toast.success(`Conectado à ${currentNetwork.name}!`);
       await loadAllBalances(accounts[0]);
+      const netKey = (CHAIN_TO_KEY[currentNetwork.chainId] ?? "polygon") as NetworkKey;
+      await realSwap.initialize(accounts[0], netKey, true).catch(e =>
+        console.error("❌ realSwap.initialize:", e?.message ?? e)
+      );
       
       const scores = [quantumAgent.getScore(), technicalAgent.getScore(), newsAgent.getScore(), marketAgent.getScore(), volumeAgent.getScore(), synthesisAgent.getScore()];
       setAgentScores(scores);

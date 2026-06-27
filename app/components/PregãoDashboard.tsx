@@ -22,6 +22,7 @@ import { positionManager } from "@/lib/position-manager"
 import { narrador } from "@/lib/narrator"
 import { contratante } from "@/lib/contratante"
 import { modoGrao } from "@/lib/modo-grão"
+import { poolScannerExecutor } from "@/lib/pool-scanner-executor"
 import { escolaRobos, MIN_JOBS_PROVA, type RoboEscolar } from "@/lib/escola-robos"
 import { professor } from "@/lib/professor"
 import { pairSector } from "@/lib/pair-sector"
@@ -115,7 +116,9 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     if (disabled) return
 
     const addr = realSwap.getAddress()
-    if (!addr) return
+    const pk = typeof window !== "undefined" ? localStorage.getItem("arcflow_private_key") : null
+    const hasPrivateKey = !!pk && pk.length >= 64
+    if (!addr && !hasPrivateKey) return
 
     const net = NETWORKS[rede as NetworkKey]
     const isArc = net?.name?.includes("Arc") && net?.isTestnet
@@ -205,6 +208,8 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     realSwap.switchNetwork(rede as NetworkKey).then(async () => {
       const walletUsdc = realSwap.getBalance("USDC")
       const eurcBal = realSwap.getBalance("EURC")
+      const walletUsdt = realSwap.getBalance("USDT")
+      const walletDai  = realSwap.getBalance("DAI")
       setWalletBalance(walletUsdc)
       setNativeSymbol(netConf.nativeSymbol)
       const nativeUsd = await realSwap.refreshNativeBalance()
@@ -213,16 +218,11 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         setDepositAmount(Math.floor(walletUsdc).toString())
       }
       addLog(`👛 Saldo na wallet: $${walletUsdc.toFixed(2)} USDC | €${eurcBal.toFixed(2)} EURC | ⛽ $${nativeUsd.toFixed(3)} ${netConf.nativeSymbol}`)
+      const saldosReais: Record<string, number> = { USDC: walletUsdc, EURC: eurcBal, USDT: walletUsdt, DAI: walletDai }
+      pregão.registrarCashBox(walletUsdc, { [rede]: saldosReais })
+      setCashBox(pregão.getCashBox())
+      addLog(`💼 Saldos registrados: $${walletUsdc.toFixed(2)} USDC, €${eurcBal.toFixed(2)} EURC`)
     })
-
-    const walletUsdc_ = realSwap.getBalance("USDC")
-    const walletEurc = realSwap.getBalance("EURC")
-    const walletUsdt = realSwap.getBalance("USDT")
-    const walletDai  = realSwap.getBalance("DAI")
-    const saldosReais: Record<string, number> = { USDC: walletUsdc_, EURC: walletEurc, USDT: walletUsdt, DAI: walletDai }
-    pregão.registrarCashBox(walletUsdc_, { [rede]: saldosReais })
-    setCashBox(pregão.getCashBox())
-    addLog(`💼 Saldos registrados: $${walletUsdc_.toFixed(2)} USDC, €${walletEurc.toFixed(2)} EURC`)
 
     const startBalanceTimer = () => {
       if (balanceTimerRef.current) clearInterval(balanceTimerRef.current)
@@ -231,9 +231,10 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         const usdc = realSwap.getBalance("USDC")
         setWalletBalance(usdc)
         if (usdc > 0) setDepositAmount(Math.floor(usdc).toString())
-        setOpenPositions(positionManager.getOpenPositions().length)
-        setOpenPositionsData(positionManager.getOpenPositions())
-        setRecentTrades(positionManager.getRecentTrades(5))
+        const redeAtiva = redeRef.current
+        setOpenPositions(positionManager.getOpenPositions().filter(p => p.networkKey === redeAtiva).length)
+        setOpenPositionsData(positionManager.getOpenPositions().filter(p => p.networkKey === redeAtiva))
+        setRecentTrades(positionManager.getRecentTrades(10).filter(t => t.networkKey === redeAtiva).slice(0, 5))
         const nativeUsd = await realSwap.refreshNativeBalance()
         setNativeBalance(nativeUsd)
         if (nativeUsd < 0.05 && nativeUsd > 0 && !netConf.isTestnet) {
@@ -316,6 +317,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         cicloVisRef.current = null
       }
       setCicloAtivo(false)
+      poolScannerExecutor.stop()
       if (NETWORKS[redeRef.current as NetworkKey]?.isTestnet) {
         import("@/lib/pregao-arc").then(m => m.parar())
       }
@@ -326,10 +328,13 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     setCicloAtivo(true)
     const net = NETWORKS[redeRef.current as NetworkKey]
     const isTestnet = net?.isTestnet ?? true
-    const agenteRede = isTestnet ? redeRef.current : "all"
+    const agenteRede = redeRef.current
+    pregão.setRedeAtiva(agenteRede)
     resumeFromPanic()
     setTestnetMode(isTestnet)
     pregão.limparOrdensTravadas()
+    poolScannerExecutor.connect(pregão)
+    poolScannerExecutor.start()
 
     if (isTestnet) {
       const { iniciar } = await import("@/lib/pregao-arc")
@@ -337,7 +342,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     }
     addLog(`🔁 Ciclo dos Pregueiros iniciado na rede ${redeRef.current} (a cada ${cicloIntervalo}s)`)
     addLog(`🔄 Circuit breaker resetado — modo ${isTestnet ? 'testnet' : 'mainnet'}`)
-    addLog(`🌐 Agentes: ${isTestnet ? `single-network (${redeRef.current})` : 'multi-chain (Base + Polygon + Arbitrum)'}`)
+    addLog(`🌐 Agentes: ${isTestnet ? 'single-network' : `single-network (${redeRef.current})`}`)
 
     try {
       const { executarCicloPregueiros } = await import("@/lib/pregueiro")
@@ -396,9 +401,10 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
   }
 
   const fecharPosicao = async () => {
-    const posicoes = positionManager.getOpenPositions()
+    const redeAtual = rede
+    const posicoes = positionManager.getOpenPositions().filter(p => p.networkKey === redeAtual)
     if (posicoes.length === 0) {
-      addLog("ℹ️ Nenhuma posição aberta para fechar")
+      addLog(`ℹ️ Nenhuma posição aberta em ${redeAtual} para fechar`)
       return
     }
     for (const pos of posicoes) {
@@ -426,8 +432,9 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     pregão.limparOrdensTravadas()
     const netRede = NETWORKS[redeRef.current as NetworkKey]
     const isTestRede = netRede?.isTestnet ?? true
-    const agenteRede = isTestRede ? redeRef.current : "all"
-    addLog(`▶️ Ciclo manual na rede ${redeRef.current} (agentes: ${isTestRede ? redeRef.current : 'multi-chain'})`)
+    const agenteRede = redeRef.current
+    pregão.setRedeAtiva(agenteRede)
+    addLog(`▶️ Ciclo manual na rede ${redeRef.current}`)
     try {
       const { executarCicloPregueiros } = await import("@/lib/pregueiro")
       const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")

@@ -1,4 +1,4 @@
-import { escolaRobos } from "./escola-robos"
+import { escolaRobos, type RoboEscolar } from "./escola-robos"
 import { positionManager } from "./position-manager"
 import { parametrosRobos } from "./parametros-robos"
 import { narrador } from "./narrator"
@@ -44,14 +44,71 @@ function gerarFeedbackAjuste(nome: string, motivo: string, params: { confiancaMi
   return `⚙️ Professor ajustou ${nome}: ${motivo} (conf.min=${params.confiancaMinima}%, entrada=${(params.thresholdEntrada*100).toFixed(2)}%)`
 }
 
+interface ProfessorState {
+  agentes: RoboEscolar[];
+  streaks: Record<string, { streakErro: number; streakAcerto: number }>;
+}
+
+const PROFESSOR_ESTADO_KEY = "arcflow_professor_estado";
+
 class Professor {
   private palpites: PalpitePendente[] = []
   private ultimaAvaliacao: number = 0
   private streakErro: Map<string, number> = new Map()
   private streakAcerto: Map<string, number> = new Map()
 
+  async init(): Promise<void> {
+    try {
+      const estadoSalvo = localStorage.getItem(PROFESSOR_ESTADO_KEY);
+      if (estadoSalvo) {
+        const parsed: ProfessorState = JSON.parse(estadoSalvo);
+        for (const agente of parsed.agentes) {
+          escolaRobos.getRobo(agente.nome);
+          const robo = escolaRobos.getRobo(agente.nome);
+          robo.pontos = agente.pontos;
+          robo.palpitesTotal = agente.palpitesTotal;
+          robo.acertos = agente.acertos;
+          robo.erros = agente.erros;
+          robo.taxaAcerto = agente.taxaAcerto;
+          robo.historicoFeedback = agente.historicoFeedback;
+          robo.status = agente.status;
+          robo.promovidoEm = agente.promovidoEm;
+          robo.rebaixadoEm = agente.rebaixadoEm;
+        }
+        Object.entries(parsed.streaks).forEach(([nome, s]) => {
+          this.streakErro.set(nome, s.streakErro);
+          this.streakAcerto.set(nome, s.streakAcerto);
+        });
+        console.log('[PROFESSOR] ✅ Estado restaurado do localStorage');
+        return;
+      }
+    } catch {
+      // silencioso
+    }
+    console.log('[PROFESSOR] ⏳ Nenhum estado salvo — processando histórico normalmente');
+  }
+
+  private _salvarEstado(): void {
+    try {
+      const agentes = escolaRobos.getAll();
+      const streaks: Record<string, { streakErro: number; streakAcerto: number }> = {};
+      this.streakErro.forEach((v, k) => {
+        if (!streaks[k]) streaks[k] = { streakErro: 0, streakAcerto: 0 };
+        streaks[k].streakErro = v;
+      });
+      this.streakAcerto.forEach((v, k) => {
+        if (!streaks[k]) streaks[k] = { streakErro: 0, streakAcerto: 0 };
+        streaks[k].streakAcerto = v;
+      });
+      localStorage.setItem(PROFESSOR_ESTADO_KEY, JSON.stringify({ agentes, streaks } as ProfessorState));
+    } catch {
+      // silencioso
+    }
+  }
+
   constructor() {
     this._carregar()
+    this.init().catch(() => {})
   }
 
   private _carregar() {
@@ -76,6 +133,7 @@ class Professor {
   registrarPalpite(palpite: PalpiteRobo) {
     this.palpites.push({ ...palpite, avaliado: false })
     this._salvar()
+    this._salvarEstado()
   }
 
   async avaliarPalpites(): Promise<void> {
@@ -166,6 +224,7 @@ class Professor {
     if (!acertou && !feedbackAjuste) {
       console.log(`📚 [PROFESSOR] ${palpite.roboNome} — sugestão: ${feedback}`)
     }
+    this._salvarEstado()
   }
 
   private _aplicarAjustes(palpite: PalpiteRobo, acertou: boolean): boolean {
@@ -252,9 +311,11 @@ class Professor {
         if (!porRede.has(rede)) porRede.set(rede, [])
         porRede.get(rede)!.push(ordem)
       }
+      const redeAtiva = realSwap.getNetworkKey()
       for (const [rede, ordens] of porRede) {
         const net = NETWORKS[rede as NetworkKey]
         if (!net || net.isTestnet) continue
+        if (rede !== redeAtiva) continue
 
         // ─── Agrupa ordens por par de tokens (batches atômicos) ───
         const porPar = new Map<string, typeof ordens>()
@@ -317,9 +378,10 @@ class Professor {
 
     if (topAgents.length === 0) return
 
+    const redeAtiva = realSwap.getNetworkKey()
     const networksToScan = Object.keys(TRADING_PAIRS).filter(k => {
       const net = NETWORKS[k as NetworkKey]
-      return net && !net.isTestnet
+      return net && !net.isTestnet && k === redeAtiva
     }) as NetworkKey[]
 
     if (networksToScan.length === 0) return

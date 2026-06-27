@@ -25,14 +25,22 @@ const COINGECKO_IDS: Record<string, string> = {
 
 class GasPriceOracle {
   private cache: Map<string, { gasCostUsd: number; timestamp: number }> = new Map();
-  private providers: Map<string, ethers.JsonRpcProvider> = new Map();
   private nativePriceCache: Map<string, { price: number; timestamp: number }> = new Map();
 
-  private _getProvider(rpcUrl: string): ethers.JsonRpcProvider {
-    if (!this.providers.has(rpcUrl)) {
-      this.providers.set(rpcUrl, new ethers.JsonRpcProvider(rpcUrl));
-    }
-    return this.providers.get(rpcUrl)!;
+  private async _fetchGasPrice(rpcUrl: string): Promise<bigint> {
+    const res = await fetch('/api/rpc-proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rpcUrl,
+        body: { jsonrpc: '2.0', id: 1, method: 'eth_gasPrice', params: [] },
+      }),
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!res.ok) throw new Error(`RPC proxy ${res.status}`)
+    const data = await res.json()
+    if (data.error) throw new Error(data.error.message)
+    return BigInt(data.result)
   }
 
   private async _fetchNativePrice(nativeSymbol: string): Promise<number> {
@@ -67,9 +75,7 @@ class GasPriceOracle {
     if (!net) return GAS_COST_ESTIMATE[networkKey] ?? 0.05;
 
     try {
-      const provider = this._getProvider(net.rpcUrl);
-      const feeData = await provider.getFeeData();
-      let gasPriceWei = feeData.gasPrice ?? feeData.maxFeePerGas ?? 0n;
+      let gasPriceWei = await this._fetchGasPrice(net.rpcUrl);
       if (gasPriceWei === 0n) throw new Error("Gas price is 0");
 
       // Arc min base fee is 20 Gwei

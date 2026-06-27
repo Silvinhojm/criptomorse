@@ -1,7 +1,8 @@
-import { applyCircleProxyFix } from './circle-proxy-fix'
-applyCircleProxyFix()
-import { UnifiedBalanceKit } from "@circle-fin/unified-balance-kit"
-import { createViemAdapterFromProvider } from "@circle-fin/adapter-viem-v2"
+// Unified Balance desabilitado — plano demo não suporta a API
+// import { applyCircleProxyFix } from './circle-proxy-fix'
+// applyCircleProxyFix()
+// import { UnifiedBalanceKit } from "@circle-fin/unified-balance-kit"
+// import { createViemAdapterFromProvider } from "@circle-fin/adapter-viem-v2"
 
 type UbChain = "Arc_Testnet" | "Base" | "Polygon" | "Ethereum" | "Arbitrum" | "Ethereum_Sepolia"
 type UbNetworkType = "mainnet" | "testnet"
@@ -82,7 +83,7 @@ function isKitError(err: any): boolean {
 }
 
 class Caixa {
-  private kit: UnifiedBalanceKit | null = null
+  // Unified Balance desabilitado — plano demo não suporta
   private initialized = false
   private onLogCallbacks: Array<(msg: string) => void> = []
   private onCashBoxUpdateCallbacks: Array<() => void> = []
@@ -107,23 +108,12 @@ class Caixa {
   }
 
   async initBrowser(): Promise<boolean> {
-    try {
-      if (typeof window === "undefined" || !window.ethereum) {
-        this.log("MetaMask não disponível — Caixa em modo offline")
-        return false
-      }
-      this.kit = new UnifiedBalanceKit()
-      this.initialized = true
-      this.log("Caixa Livre (Unified Balance) inicializada via navegador")
-      return true
-    } catch (err: any) {
-      this.log(`Erro ao inicializar Caixa: ${err.message}`)
-      return false
-    }
+    this.log("Unified Balance desabilitado (plano demo) — usando saldo local da wallet")
+    return false
   }
 
   isInitialized(): boolean {
-    return this.initialized && this.kit !== null
+    return false
   }
 
   async getSaldo(networkType?: UbNetworkType): Promise<SaldoCaixa> {

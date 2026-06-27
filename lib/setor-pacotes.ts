@@ -1,4 +1,5 @@
-﻿import type { TokenSymbol, NetworkKey } from "./real-swap-executor"
+﻿import { realSwap } from "./real-swap-executor"
+import type { TokenSymbol, NetworkKey } from "./real-swap-executor"
 
 export interface TradeIntent {
   fromToken: TokenSymbol
@@ -43,6 +44,11 @@ class SetorPacotes {
 
   registrarPacote(pacote: Pacote): void {
     const rede = pacote.rede
+    const redeAtiva = realSwap.getNetworkKey()
+    if (rede !== redeAtiva) {
+      console.log(`[SETOR] ⛔ Pacote ${pacote.id} para ${rede} descartado — rede ativa é ${redeAtiva}`)
+      return
+    }
     if (!this.pacotes.has(rede)) {
       this.pacotes.set(rede, [])
     }

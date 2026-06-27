@@ -17,11 +17,19 @@ import { unifiedBalance } from "./unified-balance";
 import { caixa } from "./caixa";
 import { hasDirectDex, getDirectDexQuote, executeDirectDexSwap, calculateAmountOutMin } from "./direct-dex";
 
+const BALANCE_STORAGE_KEY_PREFIX = "arcflow_token_balances_"
+
 // Decimais conhecidos por token (fallback quando tokenBalances não carregou)
 export const TOKEN_DECIMALS: Record<string, number> = {
   USDC: 6, EURC: 6, DAI: 18,
   WETH: 18, WMATIC: 18, WBTC: 8, ARB: 18,
   cirBTC: 8, mcirBTC: 8, SOL: 9,
+}
+
+// Divisores de preço para tokens que compartilham COIN_IDS de outro ativo
+// Ex: mcirBTC usa currency_id do BTC mas tem onboard 18 decimals → divide por 10^10
+export const PRICE_DIVIDERS: Record<string, number> = {
+  mcirBTC: 10_000_000_000, // 10^10 = 2^10 decimais de diferença
 }
 
 // ─── Redes suportadas ────────────────────────────────────────────────────────
@@ -289,6 +297,7 @@ class RealSwapExecutor {
   private provider: ethers.JsonRpcProvider | null = null;
   private signer: ethers.Signer | null = null;
   private networkKey: NetworkKey = "arc";
+  private _lastNetworkRefresh: NetworkKey = "";
   private BACKUP_RPCS: Record<string, string[]> = {
     polygon: [
       "https://polygon.llamarpc.com",
@@ -296,6 +305,8 @@ class RealSwapExecutor {
       "https://rpc-mainnet.maticvigil.com",
       "https://polygon-mainnet.g.alchemy.com/v2/demo",
       "https://rpc.ankr.com/polygon",
+      "https://polygon.blockpi.network/v1/rpc/public",
+      "https://1rpc.io/matic",
     ],
     base: [],
     ethereum: [
@@ -343,9 +354,11 @@ class RealSwapExecutor {
       const body = await res.json();
       const prices = body?.prices;
       const price = (prices && prices[coinId]) ?? 0;
-      if (price > 0) {
-        this.priceCache.set(token, { price, timestamp: Date.now() });
-        return price;
+      const divider = PRICE_DIVIDERS[token] ?? 1;
+      const adjustedPrice = price > 0 ? price / divider : 0;
+      if (adjustedPrice > 0) {
+        this.priceCache.set(token, { price: adjustedPrice, timestamp: Date.now() });
+        return adjustedPrice;
       }
       return cached?.price ?? 0;
     } catch {
@@ -446,10 +459,29 @@ class RealSwapExecutor {
     return provider;
   }
 
+  private _refreshLock: Promise<void> | null = null;
+
   // Atualizar todos os saldos de tokens da rede atual
   async refreshAllBalances(): Promise<Map<TokenSymbol, TokenBalance>> {
     if (!this.userAddress) return this.tokenBalances;
 
+    // Serializar chamadas concorrentes: se já está rodando, aguarda e retorna o resultado
+    if (this._refreshLock) {
+      await this._refreshLock;
+      return this.tokenBalances;
+    }
+    let resolveLock: () => void = () => {};
+    this._refreshLock = new Promise<void>(resolve => { resolveLock = resolve; });
+
+    try {
+      return await this._refreshAllBalancesImpl();
+    } finally {
+      this._refreshLock = null;
+      resolveLock();
+    }
+  }
+
+  private async _refreshAllBalancesImpl(): Promise<Map<TokenSymbol, TokenBalance>> {
     const net = NETWORKS[this.networkKey];
     const previousBalances = new Map(this.tokenBalances)
     this.tokenBalances.clear()
@@ -495,7 +527,7 @@ class RealSwapExecutor {
             tokenCount++
           } catch (e) {
             if (!this.tokenBalances.has(symbol)) {
-              this.tokenBalances.set(symbol, { symbol, balance: 0, address, decimals: 6 });
+              this.tokenBalances.set(symbol, { symbol, balance: 0, address, decimals: TOKEN_DECIMALS[symbol] ?? 6 });
             }
           }
         })
@@ -517,7 +549,7 @@ class RealSwapExecutor {
             if (balance > 0.0001) ok++
           } catch {
             if (!this.tokenBalances.has(symbol)) {
-              this.tokenBalances.set(symbol, { symbol, balance: 0, address, decimals: 6 })
+              this.tokenBalances.set(symbol, { symbol, balance: 0, address, decimals: TOKEN_DECIMALS[symbol] ?? 6 })
             }
           }
         })
@@ -549,16 +581,29 @@ class RealSwapExecutor {
       }
     }
 
-    if (!anyProviderSucceeded && previousBalances.size > 0) {
-      console.log('↩️ All RPCs failed, restoring previous balances')
-      this.tokenBalances.clear()
-      previousBalances.forEach((v, k) => this.tokenBalances.set(k, v))
+    if (!anyProviderSucceeded) {
+      // All RPCs failed: try localStorage per-network
+      // Only restore previousBalances if we're still on the same network (avoids leaking Arc USDC into Polygon)
+      const mesmaRede = this._lastNetworkRefresh === this.networkKey
+      console.log(`↩️ All RPCs failed${mesmaRede ? ', trying previous balances' : ''} — loading localStorage`)
+      this._loadBalancesFromStorage()
+      if (this.tokenBalances.size === 0 && previousBalances.size > 0 && mesmaRede) {
+        const currentTokenKeys = new Set(Object.keys(net.tokens))
+        for (const [symbol, tb] of previousBalances) {
+          if (currentTokenKeys.has(symbol)) {
+            this.tokenBalances.set(symbol, tb)
+          }
+        }
+        if (this.tokenBalances.size > 0) {
+          console.log(`↩️ Restored ${this.tokenBalances.size} token(s) from previous balances`)
+        }
+      }
     } else {
-      // Restore previous non-zero balance for any token that failed (was zeroed)
-      // This handles partial failures where some tokens are precompiles (e.g. USDC on Arc)
+      // Partial success: restore individual tokens that failed (only if they exist in current network)
       let restored = 0
+      const currentTokenKeys = new Set(Object.keys(net.tokens))
       for (const [symbol, prev] of previousBalances) {
-        if (prev.balance > 0) {
+        if (prev.balance > 0 && currentTokenKeys.has(symbol)) {
           const current = this.tokenBalances.get(symbol)
           if (!current || current.balance === 0) {
             this.tokenBalances.set(symbol, prev)
@@ -569,9 +614,47 @@ class RealSwapExecutor {
       if (restored > 0) {
         console.debug(`↩️ Restored ${restored} token(s) from previous balances (partial failure)`)
       }
+      // Save to localStorage for next crash recovery
+      this._saveBalancesToStorage()
     }
 
+    this._lastNetworkRefresh = this.networkKey
     return this.tokenBalances;
+  }
+
+  private _saveBalancesToStorage(): void {
+    if (typeof window === 'undefined') return
+    try {
+      const data: Record<string, { balance: number; address: string; decimals: number }> = {}
+      for (const [symbol, tb] of this.tokenBalances) {
+        if (tb.balance > 0) {
+          data[symbol] = { balance: tb.balance, address: tb.address, decimals: tb.decimals }
+        }
+      }
+      if (Object.keys(data).length > 0) {
+        localStorage.setItem(`${BALANCE_STORAGE_KEY_PREFIX}${this.networkKey}`, JSON.stringify(data))
+      }
+    } catch { /* localStorage may fail in privacy mode */ }
+  }
+
+  private _loadBalancesFromStorage(): void {
+    if (typeof window === 'undefined') return
+    try {
+      const raw = localStorage.getItem(`${BALANCE_STORAGE_KEY_PREFIX}${this.networkKey}`)
+      if (!raw) return
+      const data = JSON.parse(raw) as Record<string, { balance: number; address: string; decimals: number }>
+      const net = NETWORKS[this.networkKey]
+      const tokens = net?.tokens as Record<string, string> | undefined
+      let loaded = 0
+      for (const [symbol, saved] of Object.entries(data)) {
+        const address = tokens?.[symbol]
+        if (address && saved.balance > 0) {
+          this.tokenBalances.set(symbol, { symbol, balance: saved.balance, address, decimals: saved.decimals })
+          loaded++
+        }
+      }
+      if (loaded > 0) console.log(`↩️ Loaded ${loaded} token(s) from localStorage`)
+    } catch { /* ignore parse errors */ }
   }
 
   getBalance(token: TokenSymbol): number {
@@ -992,7 +1075,9 @@ class RealSwapExecutor {
           log(`🧪 Nenhuma rota LI.FI/DEX — executando transação direta na testnet (stress)`);
           const directResult = await executeDirectSwap(this.signer, fromTokenAddr, toTokenAddr, fromAmountRaw, this.userAddress, net.chainId, (m) => log(m));
           if (directResult.success) {
-            const amountReceived = parseFloat(directResult.amountReceived ?? "0") / Math.pow(10, toDecimals);
+            const outputAmountRaw = parseFloat(directResult.amountReceived ?? "0");
+            const outputDecimals = TOKEN_DECIMALS[toToken] ?? 18;
+            const amountReceived = outputAmountRaw / Math.pow(10, outputDecimals);
             const toAmountUsd = amountReceived * toPrice;
             const preSwapBalance = this.getBalance(toToken);
             const action: "BUY" | "SELL" | "HOLD" = !isStable(toToken) && isStable(fromToken) ? "BUY" : "SELL";
@@ -1065,6 +1150,13 @@ class RealSwapExecutor {
           const profit = isStable(toToken) ? toAmountUsd - amountUsd : 0;
           const explorerUrl = `${net.explorer}/tx/${fallbackResult.txHash}`;
 
+          // Fix I — Validar slippage no fallback
+          const fallbackQuoted = bestToEstimate;
+          const fallbackSlippage = fallbackQuoted > 0 ? (fallbackQuoted - actualToAmount) / fallbackQuoted : 0;
+          if (fallbackSlippage > 0.05) {
+            log(`⚠️ Slippage excessivo no fallback: ${(fallbackSlippage*100).toFixed(1)}% — cotado ${fallbackQuoted.toFixed(4)} vs real ${actualToAmount.toFixed(4)} ${toToken}`);
+          }
+
           log(`✅ ${fallbackRoute.label} concluído: ${actualToAmount.toFixed(6)} ${toToken} ($${toAmountUsd.toFixed(4)})`);
           return {
             success: true, txHash: fallbackResult.txHash || '', explorerUrl,
@@ -1085,6 +1177,13 @@ class RealSwapExecutor {
       const profit = isStable(toToken) ? toAmountUsd - amountUsd : 0;
       const explorerUrl = `${net.explorer}/tx/${result.txHash}`;
 
+      // Fix I — Validar slippage real vs cotação
+      const quotedToAmount = bestToEstimate;
+      const slippageReal = quotedToAmount > 0 ? (quotedToAmount - actualToAmount) / quotedToAmount : 0;
+      if (slippageReal > 0.05) {
+        log(`⚠️ Slippage excessivo na melhor rota: ${(slippageReal*100).toFixed(1)}% — cotado ${quotedToAmount.toFixed(4)} vs real ${actualToAmount.toFixed(4)} ${toToken}`);
+      }
+
       log(`✅ ${bestRoute.label} concluído: ${actualToAmount.toFixed(6)} ${toToken} ($${toAmountUsd.toFixed(4)})`);
       log(`💵 Lucro líquido real: $${profit.toFixed(4)}`);
 
@@ -1096,7 +1195,7 @@ class RealSwapExecutor {
       };
     } catch (err: any) {
       const msg =
-        err?.code === "ACTION_REJECTED" ? "Rejeitado pelo usuário"
+        err?.code === "ACTION_REJECTED" ? "Rejeitado pelo usuário — assine a transação no MetaMask para continuar"
         : err?.message?.includes("insufficient") ? "Saldo insuficiente para gas"
         : err?.message?.slice(0, 200) || "Erro desconhecido";
       log(`❌ ${msg}`);
