@@ -6,6 +6,7 @@
 import { realSwap, isArcStressMode, NETWORKS, type NetworkKey } from './real-swap-executor'
 import { volatilityTracker } from './volatility-tracker'
 import { gasPriceOracle } from './gas-price-oracle'
+import { capitalController } from './capital-controller'
 
 function getNetworkPair(): { fromToken: string; toToken: string; isStable: boolean } {
   const net = realSwap.getNetworkKey() as string
@@ -345,6 +346,11 @@ class ModoGrao {
         this._totalTrades++
         this._lastError = ''
         this._lastSignal = `🧪 Batch ${batchSize}sinais $${batchAmountUSD} ${p.toToken} @ $${simulatedPrice.toFixed(4)}`
+        return
+      }
+      if (!capitalController.canExecute('grao', batchAmountUSD, `${p.fromToken}→${p.toToken}`)) {
+        this._pendingSignals.push(...signals) // devolve sinais
+        this._lastSignal = '⏳ Capital ocupado por outro método — aguardando'
         return
       }
       const result = await realSwap.executeSwap(

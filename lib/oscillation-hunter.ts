@@ -16,6 +16,7 @@
 
 import { realSwap, NETWORKS, type NetworkKey, type TokenSymbol } from './real-swap-executor'
 import { gasPriceOracle } from './gas-price-oracle'
+import { capitalController } from './capital-controller'
 
 // ─── Configuração das Pools Alvo ───
 interface TargetPool {
@@ -222,6 +223,18 @@ class OscillationHunter {
 
   /** Executa entrada no pool */
   private async executeEntry(signal: OscillationSignal) {
+    const requestId = `osc:${signal.pool.toToken}:${signal.deviation.toFixed(4)}`
+    const approval = capitalController.request({
+      id: requestId, strategy: 'oscillation',
+      pair: `${signal.pool.fromToken}→${signal.pool.toToken}`,
+      network: signal.pool.network,
+      amountUSD: signal.batchSize, score: signal.confidence,
+      estimatedProfit: signal.estimatedProfit, requestedAt: Date.now(),
+    })
+    if (!approval.authorized) {
+      console.log(`[Oscar] ⏳ Aguardando: ${approval.reason}`)
+      return
+    }
     const log = (msg: string) => console.log(`[Oscar] ${msg}`)
     log(`Entrando: ${signal.direction} ${signal.pool.toToken} $${signal.batchSize} desvio ${(signal.deviation*100).toFixed(2)}%`)
 
@@ -302,6 +315,7 @@ class OscillationHunter {
     if (profit > 0) this._wins++
     else this._losses++
 
+    capitalController.unlock()
     this._lastSignal = `${isWin ? '🎯' : '🛑'} ${pos.pool.toToken}: $${profit.toFixed(3)} (${this._wins}W/${this._losses}L)`
   }
 
