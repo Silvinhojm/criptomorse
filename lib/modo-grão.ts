@@ -375,6 +375,8 @@ class ModoGrao {
         p.fromToken as any,
         p.toToken as any,
         batchAmountUSD,
+        undefined,
+        `grao_${Date.now()}_${p.fromToken}→${p.toToken}`,
       )
       if (result.success && result.toAmount > 0) {
         const entryPrice = result.fromAmount / result.toAmount
@@ -426,6 +428,8 @@ class ModoGrao {
       pos.boughtToken as any,
       pos.paidToken as any,
       Math.round(currentValue * 100) / 100,
+      undefined,
+      `grao_close_${pos.boughtToken}→${pos.paidToken}_${Date.now()}`,
     )
 
     pos.status = reason === 'target' ? 'closed' : 'stopped'

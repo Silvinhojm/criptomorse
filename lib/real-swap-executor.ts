@@ -331,6 +331,7 @@ class RealSwapExecutor {
   private priceCache: Map<TokenSymbol, { price: number; timestamp: number }> = new Map();
   private quoteCache: Map<string, { quote: QuoteResult | null; timestamp: number }> = new Map();
   private _refuelingGas = false;
+  private _memoContext: { ref: string; extra: Record<string, string> } | null = null;
 
   private _getCachedQuote(key: string): QuoteResult | null | undefined {
     const cached = this.quoteCache.get(key);
@@ -897,6 +898,34 @@ class RealSwapExecutor {
     }
   }
 
+  private _isArc(): boolean {
+    return NETWORKS[this.networkKey]?.chainId === 5042002
+  }
+
+  private _buildMemoTx(
+    to: string,
+    data: string,
+    value: bigint,
+    memoRef: string,
+    extraMeta: Record<string, string>
+  ): { to: string; data: string; value: bigint } | null {
+    if (!this._isArc() || value !== 0n) return null
+    try {
+      const encodedMemo = transactionMemos.createTradeMemo(memoRef, extraMeta.agentId || "system", extraMeta)
+      const memoId = transactionMemos.generateMemoId(memoRef)
+      const memoData = transactionMemos.encodeMemoData(extraMeta)
+      const iface = new ethers.Interface([
+        "function memo(address target, bytes calldata data, bytes32 memoId, bytes calldata memoData) external",
+      ])
+      const memoCalldata = iface.encodeFunctionData("memo", [to, data, memoId, memoData])
+      console.log(`[MEMO] ${memoRef} → memoId=${memoId.slice(0, 10)} memoData=${JSON.stringify(extraMeta)}`)
+      return { to: arcMemo.getMemoAddress(), data: memoCalldata, value: 0n }
+    } catch (e) {
+      console.warn(`[MEMO] Falha ao construir memo: ${e}`)
+      return null
+    }
+  }
+
   // Executar swap no melhor par disponível
   async executeSwap(
     fromToken: TokenSymbol,
@@ -908,6 +937,11 @@ class RealSwapExecutor {
     const net = NETWORKS[this.networkKey];
     const timestamp = Date.now();
     const log = (msg: string) => { console.log(msg); onUpdate?.(msg); };
+
+    this._memoContext = memoRef ? {
+      ref: memoRef,
+      extra: { agentId: "system", fromToken, toToken, amount: amountUsd.toFixed(2) },
+    } : null;
 
     if (!this.signer || !this.provider) {
       return this._fail(fromToken, toToken, amountUsd, "Signer não inicializado (necessário private key)", timestamp);
@@ -1048,16 +1082,22 @@ class RealSwapExecutor {
                 }
               }
               const nonce = await NonceManager.getInstance().getNonce(this.signer!.provider!, net.chainId, this.userAddress).catch(() => undefined);
+              const lifiTo = lifiQuote.transactionRequest!.to
+              const lifiData = lifiQuote.transactionRequest!.data
+              const lifiValue = BigInt(lifiQuote.transactionRequest!.value ?? "0")
+              const memoRef = this._memoContext?.ref
+              const memoExtra = this._memoContext?.extra ?? {}
+              const memoWrapped = memoRef ? this._buildMemoTx(lifiTo, lifiData, lifiValue, memoRef, memoExtra) : null
               try {
                 const txResp = await this.signer!.sendTransaction({
-                  to: lifiQuote.transactionRequest!.to,
-                  data: lifiQuote.transactionRequest!.data,
-                  value: BigInt(lifiQuote.transactionRequest!.value ?? "0"),
-                  gasLimit: arcGasLimit,
+                  to: memoWrapped ? memoWrapped.to : lifiTo,
+                  data: memoWrapped ? memoWrapped.data : lifiData,
+                  value: memoWrapped ? memoWrapped.value : lifiValue,
+                  gasLimit: memoWrapped ? arcGasLimit ? arcGasLimit + 50000n : 550000n : arcGasLimit,
                   nonce,
                   ...arcFeeParams,
                 });
-                log(`🔗 LI.FI TX: ${txResp.hash}`);
+                log(`${memoWrapped ? '📝 MEMO' : '🔗'} LI.FI TX: ${txResp.hash}`);
                 const receipt = await txResp.wait(1);
                 if (!receipt || receipt.status === 0) return { success: false, error: "LI.FI TX falhou" };
                 return { success: true, txHash: txResp.hash };
