@@ -616,7 +616,8 @@ class Pregão {
     const gasCost = await gasPriceOracle.getGasCost(pacote.rede).catch(() => 0.02)
     const basePct = pacote.rede === "ethereum" ? 0.005 : pacote.rede === "base" || pacote.rede === "arbitrum" ? 0.003 : 0.001
     const pctThreshold = isUltimaTentativa ? basePct * 0.3 : Math.max(basePct - (pacote.attempts - 1) * (basePct * 0.35), basePct * 0.2)
-    const thresholdPorTrade = pacote.trades.map(t => Math.max(t.amount * pctThreshold, 0.005))
+    const thresholdFloor = isUltimaTentativa ? 0.002 : Math.max(0.005 - (pacote.attempts - 1) * 0.0015, 0.002)
+    const thresholdPorTrade = pacote.trades.map(t => Math.max(t.amount * pctThreshold, thresholdFloor))
     const lucroMinimoTotal = thresholdPorTrade.reduce((s, v) => s + v, 0)
 
     if (pacote.expectedProfitTotal < lucroMinimoTotal && !isUltimaTentativa) {

@@ -352,7 +352,7 @@ class Professor {
             expectedProfitTotal: profitTotal,
             confiancaMedia: confMedia,
             timestamp: Date.now(),
-            expiraEm: Date.now() + 30_000,
+            expiraEm: Date.now() + 120_000,
           })
           // Marca ordens como executando para não serem re-processadas
           for (const o of ordensPar) {
@@ -457,7 +457,7 @@ class Professor {
         expectedProfitTotal: profitTotal,
         confiancaMedia: confMedia,
         timestamp: Date.now(),
-        expiraEm: Date.now() + 30_000,
+        expiraEm: Date.now() + 120_000,
       })
 
       console.log(`[PROFESSOR] 📦 Pacote via ranking: ${trades.length} trades em ${rede} | total: $${totalAmount.toFixed(2)} | lucro esp.: $${profitTotal.toFixed(4)} | conf: ${confMedia}%`)
