@@ -216,3 +216,21 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - **LI.FI**: slippage >5% logado (perda da cotação vs execução registrada)
 - **Professor**: `init()` no construtor, estado em localStorage
 - **All 14 fixes**: 6 stability + 3 infra + 2 late (F, G) + 3 round4 (H refinado, I, J)
+
+## Session Summary (27/06/2026) — Oitava Sessão: Concorrência de vendas eliminada
+
+### What's Changed
+
+1. **Fix 1 — TOCTOU fechado**: `lib/escriturario.ts`: `emExecucao.add(lockKey)` movido para ANTES do primeiro `await` (linha 44). Antes o lock era adquirido 90 linhas depois de checado, com múltiplos `await`s no meio — duas ordens do mesmo par passavam pelo check simultaneamente. Agora tudo fica dentro de `try/finally`.
+
+2. **Fix 2 — Agentes checam ordens ativas**: `lib/agentes-do-pregão.ts`: ambos os caminhos de venda (posição aberta e posição fechada) agora chamam `pregão.getOrdensAtivas()` antes de injetar OKs. Se já existe ordem pendente para `fromToken→toToken@rede`, descarta a duplicata — mesma proteção que o Grid já tinha.
+
+3. **Fix 3 — Defense-in-depth**: `lib/pregão.ts:verificarOrdem()`: antes de criar uma nova ordem, verifica se já existe ordem ativa (`preparando`/`pronto`/`executando`) para o mesmo par+direção+rede. Captura qualquer duplicata que passe pelos guards anteriores.
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Polygon**: $48.22 USDC, $15.55 POL. Sistema operando — 6 trades on-chain, 100% win rate, $18.77 lucro.
+- **Concorrência**: logs mostram `⛔ Já existe ordem ativa para WETH→USDC@polygon — descartando duplicata` bloqueando todas as tentativas extras do Staircase
+- **Modo Grão**: ativo mas sem oportunidades (EURC vol 0.05% < mínimo 0.10%)
+- **Professor**: pacotes com lucro $0.0140, threshold $0.0150 — aguardando 2ª tentativa
+- **Vercel/GitHub**: commit `608e341` enviado para `origin/versao-polygon`

@@ -2489,3 +2489,70 @@ Onde: G = gas round-trip, V = valor batch, S = spread
 8. **Oscar Hunter** — micro-scalping em pools profundas (SMA mean-reversion, 0.01% fee pools)
 9. **Capital Controller** — gate central: um trade por vez, sempre o melhor score
 10. **MicroPool AMM** — contrato Uniswap V2 minimalista + script de deploy Arc
+
+## 40. CHANGELOG — 26/06/2026 (Sexta Sessão: Estabilidade)
+
+### What's Changed
+
+1. **Fix A — NaN guard**: `pregão.ts` sanitiza `signalConfidence` com `Math.min(100, Math.max(0, c))`. Divisão por zero em `confiancaMedia` guardada. Zero NaN orders.
+
+2. **Fix B — Lock de par**: `escriturario.ts`: `Set<string>` module-level key `fromToken→toToken@rede` previne execução concorrente.
+
+3. **Fix C — Fórmula Vmin**: `modo-grão.ts`: `margemMinima = max(vol - spread, 0.001)`, `Vmin = min(gas/margem, saldo*0.5)`. Vmin $5–$12.
+
+4. **Fix D — Network guard**: `position-manager.ts` (`openPosition()` retorna null se rede ≠ ativa).
+
+5. **Fix E — CORS gas oracle**: `gas-price-oracle.ts`: substituído `ethers.JsonRpcProvider` por `fetch(/api/rpc-proxy)`.
+
+6. **NonceManager thread-safety**: `nonce-manager.ts`: Promise-chain mutex previne nonce collision.
+
+7. **JobRobot circuit breaker**: `job-robot.ts`: nonce/revert errors decrementam `consecutiveFails`. `cycleCount` incrementa no deploy.
+
+8. **refreshAllBalances serialization**: `real-swap-executor.ts`: mutex (`_refreshLock`) previne race que zerava cache.
+
+9. **Fix F — LockKey no topo**: `escriturario.ts:prepararOrdem()` — lock check antes do refreshAllBalances.
+
+10. **Fix G — Value transfer guard**: `arc-direct-swap.ts`: check `fromToken !== NATIVE && toToken !== NATIVE` antes de value transfer.
+
+11. **Fix H — mcirBTC price normalization**: `real-swap-executor.ts`: `PRICE_DIVIDERS` com mcirBTC divider 10^10.
+
+## 41. CHANGELOG — 27/06/2026 (Sétima Sessão: Destravando trades Polygon)
+
+### What's Changed
+
+1. **Unified Balance desabilitado** — `lib/caixa.ts`: `initBrowser()` sempre retorna `false`. Fim do spam 404 do Circle.
+
+2. **RPC proxy robusto** — `app/api/rpc-proxy/route.ts`: lê resposta como texto + JSON.parse manual. Timeout 15s→25s.
+
+3. **UltraFlash multicall ABI corrigida** — `lib/ultraflash.ts`: `struct Call/Result` → `tuple(...)` compatível ethers v6.
+
+4. **Threshold de lucro reduzido: 0.2%→0.1%** — `lib/pregão.ts:567`: `basePct` para Polygon/L2s de 0.002 para 0.001.
+
+5. **LI.FI quote timeout 5s→10s** — `lib/pregão.ts:511`.
+
+6. **Modo Grão auto-desliga test mode em mainnet** — `lib/modo-grão.ts:start()`.
+
+## 42. CHANGELOG — 26/06/2026 (Quarta Rodada: entryPrice, LI.FI, Professor)
+
+### What's Changed
+
+1. **entryPrice cirBTC refinado** — `real-swap-executor.ts:executeSwap`: usa `TOKEN_DECIMALS[toToken] ?? 18`.
+
+2. **LI.FI slippage validation** — `real-swap-executor.ts`: slippage >5% logado (cotação vs real).
+
+3. **Professor localStorage cache** — `professor.ts`: `init()` restaura estado de `arcflow_professor_estado`.
+
+## 43. CHANGELOG — 27/06/2026 (Oitava Sessão: Concorrência de vendas)
+
+### What's Changed
+
+1. **Fix 1 — TOCTOU fechado**: `lib/escriturario.ts`: `emExecucao.add(lockKey)` movido para ANTES do primeiro `await`. Lock adquirido antes de qualquer operação async, fechando a race condition entre check e aquisição.
+
+2. **Fix 2 — Agentes checam ordens ativas**: `lib/agentes-do-pregão.ts`: ambos os caminhos de venda chamam `pregão.getOrdensAtivas()` antes de injetar OKs. Bloqueia duplicatas que o Grid já prevenia mas os agentes não.
+
+3. **Fix 3 — Defense-in-depth**: `lib/pregão.ts:verificarOrdem()`: verifica se já existe ordem ativa para o mesmo par+direção+rede antes de criar nova ordem. Captura qualquer duplicata remanescente.
+
+### Current State
+- **Polygon**: $48.22 USDC, $15.55 POL. 6 trades on-chain, 100% win rate, $18.77 lucro.
+- **Concorrência**: `⛔ Já existe ordem ativa para WETH→USDC@polygon — descartando duplicata` bloqueando tentativas extras
+- **Commit**: `608e341` em `origin/versao-polygon`
