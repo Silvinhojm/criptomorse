@@ -2326,3 +2326,166 @@ Carteira (0x77f5C3...)
 NEXT_PUBLIC_AGENT_IDENTITY_ADDRESS=0xd2a801e60a0ab36da3fb17d4a7654b494ba8326b
 NEXT_PUBLIC_ERC8183_ADDRESS=0x319227cf1de5c61d11313af8226a8f5309fa70d9
 ```
+
+---
+
+## 37. ESTRATÉGIAS DE MICRO-TRADING — Banco CriptoMorse
+
+O Banco CriptoMorse opera como um **multi-strategy micro hedge fund autônomo**, com 4 mesas de trading independentes gerenciadas por um controlador central de capital.
+
+### 37.1 Capital Controller (`lib/capital-controller.ts`)
+
+**Gate central** — garante que apenas UM trade use o capital por vez.
+
+```
+Regra: "um trade de cada vez, sempre o melhor"
+- Cada método registra oportunidade com score (0-100)
+- Controller autoriza a de maior score
+- Capital fica bloqueado até posição fechar
+- unlock() → próximo na fila
+```
+
+| Método | Descrição |
+|--------|-----------|
+| `request(op)` | Registra oportunidade, retorna `{authorized, reason}` |
+| `unlock()` | Libera capital após fechamento |
+| `canExecute(strategy, amount)` | Verificação rápida antes do swap |
+| `forceUnlock()` | Liberação de emergência |
+
+### 37.2 Mesa de Voláteis — Modo Grão (`lib/modo-grão.ts`)
+
+**Batching de sinais MeanReversion + MarketMaker em swap único.**
+
+| Parâmetro | Valor dinâmico |
+|-----------|---------------|
+| `baseTradeUSD` | $3–10 (calculado por gas) |
+| `batchThreshold` | 2–5 (vol alta → menos sinais) |
+| `targetUSD` | gas × 2 + spread (mín $0.03) |
+| `minVolatility2h` | break-even point (bloqueia trades impossíveis) |
+
+**Robô Ajustador** (`ajustarAoMercado()`): recalibra thresholds a cada 2min baseado em gas, volatilidade e spread.
+
+**Auto-stablecoin:** detecta quando WETH está inviável e migra para EURC automaticamente.
+
+### 37.3 Mesa de Stables — Scanner (`lib/stable-pair-scanner.ts` + `lib/stable-stability.ts`)
+
+**Micro-movimentos em pares stablecoin (0.05%–0.15%).**
+
+| Arquivo | Função |
+|---------|--------|
+| `stable-stability.ts` | Coleta preços a cada 30s, detecta micro-trends em 5min |
+| `stable-pair-scanner.ts` | Relatório JSON com score 0-100, batch mínimo, lucro estimado |
+
+**Pares monitorados:**
+- Polygon: USDC→USDT, USDC→DAI, USDC→EURC
+- Base: USDC→EURC, DAI→USDC
+- Arc: USDC→EURC
+
+**Integração:** pares com score ≥30 são injetados no topo da fila do Pregão (`agentes-do-pregão.ts:745`).
+
+### 37.4 Mesa Internacional (`lib/stablecoins-internacionais.ts`)
+
+**Stablecoins de outros países com gate de liquidez.**
+
+| Moeda | Status | Pool |
+|-------|--------|------|
+| EURC | ✓ Ativo | €50M+ TVL |
+| JPYC | ✓ Ativo | QuickSwap Polygon ~$120K |
+| QCAD | ⚠ Monitor | Uniswap ETH ~$15K |
+| BRLA | ✗ Pendente | Sem pool validada |
+| cCHF | ✗ Pendente | Celo não integrado |
+
+**Forex rates estáticos** (atualizar periodicamente): JPY, BRL, AUD, CAD, MXN, ZAR, PHP, CHF, CNH.
+
+**Gate de liquidez:** spread estimado pela TVL do pool — se >1%, descarta.
+
+**Risco regulatório:** blacklist (`AxCNH`), score de risco por moeda.
+
+### 37.5 Mesa de Scalping — Oscar Hunter (`lib/oscillation-hunter.ts`)
+
+**Mean-reversion em pools profundas de terceiros.**
+
+Estratégia: detecta desvios de preço >0.2% da SMA (média móvel curta) em pools Uniswap V3 com fee ultra-baixo.
+
+| Pool alvo | Fee | TVL | Batch | Custo RT | Oscilação necessária |
+|-----------|-----|-----|-------|----------|---------------------|
+| USDC/USDT Polygon | 0.01% | $2M | $20 | $0.032 | 0.16% |
+| USDC/DAI Polygon | 0.05% | $1.5M | $20 | $0.048 | 0.24% |
+| USDC/EURC Polygon | 0.3% | $500K | $20 | $0.148 | 0.74% |
+
+**Detecção:** SMA de 12 pontos (~2.5min) via SoSoValue. Só entra com confirmação de reversão.
+
+**Take-profit:** 0.15% | **Stop-loss:** -0.1% | **Timeout:** 5 min
+
+### 37.6 Fluxo Completo do Banco
+
+```
+🏦 BANCO CRIPTOMORSE — $30 capital
+│
+├─ 🌾 Grão (voláteis)    → batch $12-15, target lucro
+├─ 💱 Scanner (stables)   → micro-movimentos 0.05-0.15%
+├─ 🌍 Internacional       → JPYC, cross-chain arb
+├─ ⚡ Oscar (scalping)    → desvios em pools $2M
+│
+└─ 💰 CapitalController   → aloca pro melhor, trava, realoca
+```
+
+**Ciclo de operação:**
+```
+Scan (10s) → 4 mesas analisam em paralelo
+  → Cada uma reporta score + valor
+  → Controller autoriza a MELHOR (maior score)
+  → Executa swap
+  → Capital travado até fechar
+  → unlock() → próximo na fila
+```
+
+### 37.7 Matemática de Break-Even por Estratégia
+
+```
+Fórmula: M_break = ((G/V + 1 + S) / (1 − S)) − 1
+
+Onde: G = gas round-trip, V = valor batch, S = spread
+```
+
+| Estratégia | Batch típico | Custo RT | M_break | Vol necessária |
+|-----------|-------------|----------|---------|---------------|
+| Grão WETH | $15 | $0.18 | 1.19% | 0.5% ✗ |
+| Grão EURC | $9 | $0.04 | 0.47% | EUR/USD ✓ |
+| Oscar USDC/USDT | $20 | $0.03 | 0.16% | Eventos ✓ |
+| Scanner USDC/DAI | $15 | $0.05 | 0.38% | 0.1-0.5% ✓ |
+
+---
+
+## 38. MICROPOOL AMM (`contracts/MicroPool.sol`)
+
+**Contrato AMM minimalista (Uniswap V2) para pools de stablecoin com range tight.**
+
+| Função | Descrição |
+|--------|-----------|
+| `swap(amountIn, tokenIn, minOut, to)` | Swap constant product com 0.3% fee |
+| `addLiquidity(a0, a1, min0, min1, to)` | Depósito proporcional |
+| `removeLiquidity(liquidity, min0, min1, to)` | Retirada proporcional |
+| `getPrice(baseToken)` | Preço atual do pool |
+| `getPoolImbalance()` | % de desequilíbrio em bps |
+
+**Deploy:** `node scripts/deployMicroPoolArc.js` (requer PRIVATE_KEY + faucet USDC/EURC)
+
+**Limitação matemática:** com $100 TVL, trade de $1 causa ~4% slippage. Só viável com TVL >$1000 ou volume externo.
+
+---
+
+## 39. SESSION SUMMARY — Quinta Sessão (25/06/2026)
+
+### What's Changed
+
+1. **4 correções de bugs** — saldo USDC (restore balances parcial), contratante (circuit breaker + cycleCount), stress-test (body.privateKey), LI.FI testnet (skip profit check stable pairs)
+2. **Autogas em testnets** — removido guard `isTestnet return` do `ensureGasBalance()`, adicionado NATIVE token na Arc
+3. **Fix minTradeSize Polygon** — mudou de `Math.max(...todasRedes)` (puxava $50 do Ethereum) para `getMinTradeSize(redeAtual)` ($2 na Polygon)
+4. **Modo Grão Batching** — acumula 3-5 sinais antes de executar swap único maior ($9-15), profit check corrigido (targetUSD cobre gas+spread)
+5. **Robô Ajustador** (`ajustarAoMercado()`) — recalibra thresholds a cada 2min (gas, vol, saldo, spread)
+6. **Break-even matemático** — fórmula `M_break = ((G/V+1+S)/(1-S))-1`, cálculo de `V_min` (batch mínimo viável)
+7. **Stablecoins Internacionais** — JPYC (Polygon $120K TVL), QCAD (ETH $15K), forex rates, blacklist regulatória
+8. **Oscar Hunter** — micro-scalping em pools profundas (SMA mean-reversion, 0.01% fee pools)
+9. **Capital Controller** — gate central: um trade por vez, sempre o melhor score
+10. **MicroPool AMM** — contrato Uniswap V2 minimalista + script de deploy Arc

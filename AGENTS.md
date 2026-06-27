@@ -85,4 +85,60 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - **Arc Testnet**: rodando mas perdendo $0.015/trade em USDC→EURC (spread come lucro).
 - **CCTP Bridge**: ainda não testado com sucesso
 - **LI.FI**: `Failed to fetch` resolvido com proxy `/api/lifi/quote`
-- **Ver deploy automático no Vercel****
+- **Ver deploy automático no Vercel**
+
+## Session Summary (26/06/2026) — Quinta Sessão: Banco CriptoMorse (Multi-Strategy Micro-Trading)
+
+### What's Changed
+
+1. **4 correções de bugs**:
+   - `real-swap-executor.ts` — `refreshAllBalances()` restaura saldos parciais não-zero (USDC Arc ficava 0)
+   - `job-robot.ts` — circuit breaker (3 falhas → para), `cycleCount` incrementa no deploy, `contratante.setPrivateKey()` reseta
+   - `stress-test/route.ts` — aceita `body.privateKey` do front-end, não só `process.env`
+   - `real-swap-executor.ts:1030` — skip profit check stable→stable em testnet
+
+2. **Autogas ativado em testnets** — removido guard `isTestnet return`, adicionado NATIVE token (0x0000...) na Arc
+
+3. **Fix minTradeSize Polygon** — `agentes-do-pregão.ts:617`: `Math.max(...todas)` → `getMinTradeSize(redeAtual)`. Polygon era $50 (puxado ETH), agora $2.
+
+4. **Modo Grão Batching** (`lib/modo-grão.ts`):
+   - Acumula sinais MR+MM (não AND gate) → batch de 3-5 × $5 = $15
+   - `targetUSD` cobre gas+spread (não $0.02 fixo)
+   - Auto-stablecoin: detecta WETH inviável → migra pra EURC
+
+5. **Robô Ajustador** (`ajustarAoMercado()`): recalibra 7 parâmetros a cada 2min baseado em gas, vol, saldo, spread. Fórmula de break-even: `M_break = ((G/V+1+S)/(1-S))-1`
+
+6. **Stable Micro-Trades** (3 novos módulos):
+   - `lib/stable-stability.ts` — detector de micro-movimentos 0.05-0.15% em 5min
+   - `lib/stable-pair-scanner.ts` — relatório JSON score 0-100, batch mínimo, lucro estimado
+   - `app/components/StableOpportunities.tsx` — painel dashboard com top 3 pares ativos
+   - `agentes-do-pregão.ts:745` — pares stablecoin com score ≥30 injetados no topo
+
+7. **Stablecoins Internacionais** (`lib/stablecoins-internacionais.ts`):
+   - JPYC (Polygon ~$120K TVL), QCAD (ETH ~$15K)
+   - Forex rates: JPY, BRL, AUD, CAD, MXN, ZAR, PHP, CHF, CNH
+   - Gate de liquidez: spread estimado por TVL, blacklist regulatória (AxCNH)
+
+8. **Oscar Hunter** (`lib/oscillation-hunter.ts`):
+   - Micro-scalping em pools profundas de terceiros (Uniswap V3)
+   - SMA mean-reversion: detecta desvio >0.2%, confirma reversão, entra
+   - Take-profit 0.15%, stop-loss -0.1%, timeout 5min
+   - Pools alvo: USDC/USDT 0.01% ($2M TVL), USDC/DAI 0.05%, USDC/EURC 0.3%
+
+9. **Capital Controller** (`lib/capital-controller.ts`):
+   - Gate central: um trade por vez, sempre o melhor score
+   - Integrado em: `modo-grão.ts`, `oscillation-hunter.ts`
+   - `request()` → autoriza ou enfileira, `unlock()` → próximo na fila
+
+10. **MicroPool AMM** (`contracts/MicroPool.sol`):
+    - Uniswap V2 minimalista, 0.3% fee
+    - Script deploy: `scripts/deployMicroPoolArc.js`
+    - Limitação: $100 TVL → trade $1 = 4% slippage (só viável com TVL >$1000)
+
+### Current State
+- **Banco CriptoMorse**: 4 mesas de trading (Grão, Scanner, Internacional, Oscar) + CapitalController
+- **Polygon**: $10.32 USDC, POL gas zerado. Autogas corrigido (lê USDC direto RPC). Preço precisa subir 0.33% pra lucrar.
+- **Arc Testnet**: USDC $2165, ARC $2167. Autogas ativado, mas LI.FI não tem rota USDC→ARC nativa.
+- **Unified Balance (Circle API)**: 404 no plano demo (`networkType: "mainnet"` não suportado)
+- **CCTP**: configurado em 5 chains, mas requer gas em ambos os lados
+- **Build**: limpo (zero erros TS)**
