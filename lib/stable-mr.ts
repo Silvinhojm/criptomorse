@@ -46,6 +46,7 @@ export interface StableMRSnapshot {
   volatility: number
   signal: "buy" | "sell" | "none"
   suggestedAmount?: number
+  samples: number
 }
 
 function loadState(): State {
@@ -170,7 +171,7 @@ class StableMR {
   getSnapshot(): StableMRSnapshot[] {
     const result: StableMRSnapshot[] = []
     for (const [key, ps] of Object.entries(this.state)) {
-      if (ps.samples < 3) continue
+      if (ps.samples < 1) continue
       const [pair, network] = key.split("@")
       const sigma = ps.sigma ?? 0
       result.push({
@@ -182,6 +183,7 @@ class StableMR {
         alpha: ps.alpha,
         volatility: ps.volatility,
         signal: sigma <= PI_CONFIG.sigmaEntryBuy ? "buy" : sigma >= PI_CONFIG.sigmaEntrySell ? "sell" : "none",
+        samples: ps.samples,
       })
     }
     return result

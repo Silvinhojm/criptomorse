@@ -13,7 +13,7 @@
 //       e retorna nível de confiança + tamanho dinâmico de lote.
 
 const ONE_OVER_SQRT_2PI = 1 / Math.sqrt(2 * Math.PI) // ≈ 0.3989
-const WARMUP_SAMPLES = 18 // ticks mínimos antes de emitir sinais (EWMA estabiliza)
+export const WARMUP_SAMPLES = 18 // ticks mínimos antes de emitir sinais (EWMA estabiliza)
 
 export interface PiFilterState {
   ewma: number          // μ — média móvel exponencial
