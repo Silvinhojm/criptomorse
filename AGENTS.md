@@ -400,23 +400,27 @@ Overhead: 500-1500ms adicionais. Aceitável para trades de 30-120s.
 - **Professor**: pacotes com lucro $0.0140, threshold $0.0150 — aguardando 2ª tentativa
 - **Vercel/GitHub**: commit `608e341` enviado para `origin/versao-polygon`
 
-## Session Summary (27/06/2026) — Décima Primeira Sessão: Pula LI.FI em trades < $20
+## Session Summary (27/06/2026) — Décima Primeira Sessão: LI.FI skip + Grid $20 + profit check skip
 
 ### What's Changed
 
-1. **Pula LI.FI em trades pequenos**: `lib/pregão.ts:557` — `_quoteTrade()` agora só chama LI.FI quando `trade.amount >= 20`. Trades de $5 (Grid) e $12 (StableMR) usam só DEX direto no quoting, economizando 0.1% de fee do aggregator.
+1. **Pula LI.FI em trades pequenos**: `lib/pregão.ts:557` — `_quoteTrade()` só chama LI.FI quando `trade.amount >= 20`. Trades < $20 usam só DEX direto (SushiSwap), economizando 0.1% de fee do aggregator.
 
-2. **Mesmo guard no corretor.ts**: `lib/corretor.ts:309` — `getQuote()` agora condicionado a `valorTrade >= 20`.
+2. **Mesmo guard no corretor.ts**: `lib/corretor.ts:309` — `getQuote()` condicionado a `valorTrade >= 20`.
 
 3. **Mesmo guard no real-swap-executor.ts**: `lib/real-swap-executor.ts:1040` — LI.FI só consultado quando `amountUsd >= 20`.
 
+4. **Grid amount $5 → $20**: `lib/agentes-do-pregão.ts:1164` — `amountUsd: 5` → `amountUsd: 20`. Grid agora usa $20 por nível (antes $5).
+
+5. **Grid skipa profit check real**: `lib/pregão.ts:688` — Grid trades (detectados por `agentes.some(a => a.startsWith("Grid:"))`) pulam a checagem de lucro real, igual StableMR. Só abortam se perda > 0.5× gas. Motivo: Grid compra volátil com fee DEX 0.3%, lucro vem da reversão (venda), não da entrada.
+
 ### Impacto Esperado
-- Trades de $5 na Polygon: quoting via SushiSwap direto (sem LI.FI fee de 0.1%) → lucro deixa de ser -$0.02 e pode chegar perto do break-even ou positivo
-- Professor vê quotes melhores → aprova pacotes de $5 que antes rejeitava
-- Trades > $20 continuam usando LI.FI normalmente (fee de 0.1% é desprezível em amounts maiores)
+- LI.FI skipado para Grid ($20) e StableMR ($12): quoting direto SushiSwap, sem 0.1% extra
+- Grid $20 + profit check skip: passa pelo quoting sem rejeição por lucro negativo na compra
+- DEX fee 0.3% ($0.06) aceito como custo de entrada, grid espera movimento de preço pra lucrar na venda
 
 ### Current State
 - **Build**: limpo (zero erros TS)
-- **Polygon**: LI.FI skipado para Grid ($5) — quoting vai direto pro SushiSwap
-- **Professor**: quotes DEX direto têm ~0.3% fee (SushiSwap) em vez de ~0.4% (SushiSwap + LI.FI)
-- **Grid+StableMR**: quoting sem intermediário, latência reduzida
+- **Polygon**: Grid $20 via SushiSwap direto, profit check skipado
+- **StableMR**: $12 via SushiSwap, profit check skipado (inalterado)
+- **Professor**: quotes DEX direto têm 0.3% fee (SushiSwap) em vez de 0.4% (SushiSwap + LI.FI)

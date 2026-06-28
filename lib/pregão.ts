@@ -622,6 +622,9 @@ class Pregão {
     const temDesvioEstavel = pacote.trades.some(t =>
       stableSignals.some(s => s.pair === `${t.fromToken}→${t.toToken}` && s.signal !== "none")
     )
+    const temGridTrade = pacote.trades.some(t =>
+      t.agentes.some(a => a.startsWith("Grid:"))
+    )
 
     // ─── 1. Threshold adaptativo por rede ──
     const gasCost = await gasPriceOracle.getGasCost(pacote.rede).catch(() => 0.02)
@@ -680,15 +683,18 @@ class Pregão {
     const lucroRealEsperado = expectedReturnUSD - swaps.reduce((s, sw) => s + sw.amountUsd, 0)
     const estimatedGasTotal = gasCost * (1 + swaps.length * 0.3)
 
-    // StableMR: entrada sempre perde spread DEX (0.05-0.10%), lucro vem da reversão
+    // StableMR/Grid: entrada sempre perde spread DEX, lucro vem da reversão
     // Skipa checagem de lucro real, só protege contra perda > gas
-    if (temDesvioEstavel) {
+    if (temDesvioEstavel || temGridTrade) {
       const gasCheck = estimatedGasTotal * 0.5
       if (lucroRealEsperado < -gasCheck) {
-        this.log(`[PREGÃO] 🌾 StableMR entrada perde $${(-lucroRealEsperado).toFixed(4)} > gas $${gasCheck.toFixed(4)} — abortando`)
+        const prefixo = temGridTrade ? "📐 Grid" : "🌾 StableMR"
+        this.log(`[PREGÃO] ${prefixo} perde $${(-lucroRealEsperado).toFixed(4)} > gas $${gasCheck.toFixed(4)} — abortando`)
         return
       }
-      this.log(`[PREGÃO] 🌾 StableMR desvio ${((stableSignals.find(s => pacote.trades.some(t => `${t.fromToken}→${t.toToken}` === s.pair))?.deviation ?? 0) * 100).toFixed(3)}% — entrada aceita (lucro na reversão)`)
+      if (temDesvioEstavel) {
+        this.log(`[PREGÃO] 🌾 StableMR desvio ${((stableSignals.find(s => pacote.trades.some(t => `${t.fromToken}→${t.toToken}` === s.pair))?.deviation ?? 0) * 100).toFixed(3)}% — entrada aceita (lucro na reversão)`)
+      }
     } else {
       const gasMultiplier = isUltimaTentativa ? 0.5 : 1.0
       if (lucroRealEsperado < lucroMinimoTotal && !isUltimaTentativa) {

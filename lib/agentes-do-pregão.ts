@@ -1161,7 +1161,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         rede: redeAtual,
         par: gv.pairLabel,
         confianca: gridConfidence,
-        amountUsd: 5,
+        amountUsd: 20,
         timestamp: Date.now(),
         fromToken: gv.pairFrom,
         toToken: gv.pairTo,
