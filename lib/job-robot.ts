@@ -130,12 +130,23 @@ class JobRobot {
           stage: 'completed',
           retryCount: 0,
         } as SwapResult
-      }).catch(err => ({
-        success: false,
-        stage: 'swap-error',
-        error: err?.message?.slice(0, 200) ?? 'Erro desconhecido',
-        retryCount: 0,
-      } as SwapResult)),
+      }).catch(err => {
+        const detalhe = err?.message
+          ? err.message.slice(0, 200)
+          : err?.code
+          ? `code=${err.code}`
+          : err?.reason
+          ? `reason=${err.reason}`
+          : typeof err === 'string'
+          ? err.slice(0, 200)
+          : JSON.stringify(err).slice(0, 200) || 'Erro desconhecido (sem detalhes)'
+        return {
+          success: false,
+          stage: 'swap-error',
+          error: detalhe,
+          retryCount: 0,
+        } as SwapResult
+      }),
       new Promise<SwapResult>(resolve =>
         setTimeout(() => resolve({ success: false, stage: 'timeout', error: 'Swap timeout (30s)', retryCount: 0 }), SWAP_TIMEOUT_MS)
       ),
@@ -207,11 +218,12 @@ class JobRobot {
     }
 
     // Fallback: deploy do JobProof como transação de stress na rede
-    this.consecutiveFails++
     const deployResult = await this.deployJobProof(robotName, this.cycleCount)
     if (deployResult.success) {
+      // Deploy bem-sucedido conta como atividade útil na rede — não incrementa falhas
       return deployResult
     }
+    this.consecutiveFails++
     return {
       success: false,
       stage: 'stress-failed',
