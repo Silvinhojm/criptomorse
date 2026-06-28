@@ -1034,16 +1034,18 @@ class RealSwapExecutor {
         }
       }
 
-      // LI.FI
+      // LI.FI — pula em trades < $20 (fee do aggregator mata lucro)
       let lifiQuote: QuoteResult | null = null;
-      try {
-        lifiQuote = await getQuote({
-          fromChain: net.chainId, toChain: net.chainId,
-          fromToken: fromTokenAddr, toToken: toTokenAddr,
-          fromAmount: fromAmountRaw, fromAddress: this.userAddress,
-          toAddress: this.userAddress, slippage: getDynamicSlippage(toToken),
-        });
-      } catch { /* LI.FI falhou */ }
+      if (amountUsd >= 20) {
+        try {
+          lifiQuote = await getQuote({
+            fromChain: net.chainId, toChain: net.chainId,
+            fromToken: fromTokenAddr, toToken: toTokenAddr,
+            fromAmount: fromAmountRaw, fromAddress: this.userAddress,
+            toAddress: this.userAddress, slippage: getDynamicSlippage(toToken),
+          });
+        } catch { /* LI.FI falhou */ }
+      }
       if (lifiQuote && lifiQuote.transactionRequest?.data && lifiQuote.transactionRequest?.to) {
         const lifiToEstimate = parseFloat(lifiQuote.toAmount ?? "0") / Math.pow(10, toDecimals);
         if (lifiToEstimate > 0) {

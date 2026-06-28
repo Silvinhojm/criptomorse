@@ -306,13 +306,13 @@ class Corretor {
           !net.isTestnet && hasDirectDex(redeKey)
             ? getDirectDexQuote(redeKey, realSwap.getProvider()!, fromTokenAddr, toTokenAddr, fromAmountRaw).catch(() => null)
             : Promise.resolve(null),
-          getQuote({
+          valorTrade >= 20 ? getQuote({
             fromChain: net.chainId, toChain: net.chainId,
             fromToken: fromTokenAddr, toToken: toTokenAddr,
             fromAmount: fromAmountRaw.toString(),
             fromAddress: realSwap.getAddress(),
             toAddress: realSwap.getAddress(), slippage: 0.005,
-          }).catch(() => null),
+          }).catch(() => null) : Promise.resolve(null),
         ])
 
         let target: string

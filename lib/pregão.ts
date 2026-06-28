@@ -554,8 +554,8 @@ class Pregão {
             10000, `DEX ${trade.fromToken}→${trade.toToken}`
           )
         : Promise.resolve(null),
-      // LI.FI é fallback — timeout maior pois passa pelo proxy
-      this._quoteWithTimeout(
+      // Pula LI.FI em trades < $20 — fee 0.1% do aggregator mata lucro
+      trade.amount >= 20 ? this._quoteWithTimeout(
         getQuote({
           fromChain: net.chainId, toChain: net.chainId,
           fromToken: fromTokenAddr, toToken: toTokenAddr,
@@ -564,7 +564,7 @@ class Pregão {
           toAddress: realSwap.getAddress(), slippage: 0.005,
         }),
         10000, `LI.FI ${trade.fromToken}→${trade.toToken}`
-      ),
+      ) : Promise.resolve(null),
     ])
 
     const dexOut = dexQuote && dexQuote.amountOut > 0n
