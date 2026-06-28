@@ -683,18 +683,18 @@ class Pregão {
     const lucroRealEsperado = expectedReturnUSD - swaps.reduce((s, sw) => s + sw.amountUsd, 0)
     const estimatedGasTotal = gasCost * (1 + swaps.length * 0.3)
 
-    // StableMR/Grid: entrada sempre perde spread DEX, lucro vem da reversão
-    // Skipa checagem de lucro real, só protege contra perda > gas
-    if (temDesvioEstavel || temGridTrade) {
+    // Grid: compra volátil com fee DEX 0.3% ($0.06 em $20), lucro esperado da reversão
+    // Skipa todas as checagens — só executa
+    if (temGridTrade) {
+      this.log(`[PREGÃO] 📐 Grid entrada aceita — DEX fee $${(-lucroRealEsperado).toFixed(4)} é custo de entrada, lucro na reversão`)
+    } else if (temDesvioEstavel) {
+      // StableMR: entrada sempre perde spread DEX (~0.06%), protege contra perda anormal > gas
       const gasCheck = estimatedGasTotal * 0.5
       if (lucroRealEsperado < -gasCheck) {
-        const prefixo = temGridTrade ? "📐 Grid" : "🌾 StableMR"
-        this.log(`[PREGÃO] ${prefixo} perde $${(-lucroRealEsperado).toFixed(4)} > gas $${gasCheck.toFixed(4)} — abortando`)
+        this.log(`[PREGÃO] 🌾 StableMR perde $${(-lucroRealEsperado).toFixed(4)} > gas $${gasCheck.toFixed(4)} — abortando`)
         return
       }
-      if (temDesvioEstavel) {
-        this.log(`[PREGÃO] 🌾 StableMR desvio ${((stableSignals.find(s => pacote.trades.some(t => `${t.fromToken}→${t.toToken}` === s.pair))?.deviation ?? 0) * 100).toFixed(3)}% — entrada aceita (lucro na reversão)`)
-      }
+      this.log(`[PREGÃO] 🌾 StableMR desvio ${((stableSignals.find(s => pacote.trades.some(t => `${t.fromToken}→${t.toToken}` === s.pair))?.deviation ?? 0) * 100).toFixed(3)}% — entrada aceita (lucro na reversão)`)
     } else {
       const gasMultiplier = isUltimaTentativa ? 0.5 : 1.0
       if (lucroRealEsperado < lucroMinimoTotal && !isUltimaTentativa) {
