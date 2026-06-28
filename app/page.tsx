@@ -7,7 +7,7 @@ import { SalaDeAula } from "./components/SalaDeAula";
 import { NETWORKS } from "@/lib/real-swap-executor";
 
 import { realSwap, type NetworkKey } from "@/lib/real-swap-executor";
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { ethers } from "ethers";
 import { Toaster, toast } from "react-hot-toast";
 
@@ -26,10 +26,6 @@ import newsAgent from "../lib/news-agent";
 
 
 import { jobMarketplace, type JobData } from "../lib/job-marketplace";
-
-// Module-level refs for window.ethereum listener cleanup (prevents leak across re-connects)
-let _accountsChangedListener: ((accts: string[]) => void) | null = null
-let _chainChangedListener: (() => void) | null = null
 
 declare global {
   interface Window { ethereum?: any; }
@@ -602,6 +598,8 @@ export default function Home() {
   const [amount, setAmount] = useState("");
   const [sending, setSending] = useState(false);
   const [agentScores, setAgentScores] = useState<any[]>([]);
+  const accountsChangedRef = useRef<((accts: string[]) => void) | null>(null)
+  const chainChangedRef = useRef<(() => void) | null>(null)
   
   const [currentNetwork, setCurrentNetwork] = useState<Network>(() => {
     const defaultNet = process.env.NEXT_PUBLIC_DEFAULT_NETWORK || "arc";
@@ -720,20 +718,20 @@ export default function Home() {
       setAgentScores(scores);
 
       // Auto-refresh on account/chain change — limpa listeners antigos primeiro
-      if (_accountsChangedListener) window.ethereum.removeListener("accountsChanged", _accountsChangedListener)
-      if (_chainChangedListener) window.ethereum.removeListener("chainChanged", _chainChangedListener)
+      if (accountsChangedRef.current) window.ethereum.removeListener("accountsChanged", accountsChangedRef.current)
+      if (chainChangedRef.current) window.ethereum.removeListener("chainChanged", chainChangedRef.current)
 
-      _accountsChangedListener = (accts: string[]) => {
+      accountsChangedRef.current = (accts: string[]) => {
         if (accts.length === 0) { setAccount(""); setPortfolios([]); return; }
         setAccount(accts[0]);
         loadAllBalances(accts[0]);
       }
-      _chainChangedListener = async () => {
+      chainChangedRef.current = async () => {
         const accts: string[] = await window.ethereum.request({ method: "eth_accounts" });
         if (accts.length > 0) loadAllBalances(accts[0]);
       }
-      window.ethereum.on("accountsChanged", _accountsChangedListener)
-      window.ethereum.on("chainChanged", _chainChangedListener)
+      window.ethereum.on("accountsChanged", accountsChangedRef.current)
+      window.ethereum.on("chainChanged", chainChangedRef.current)
     } catch (error: any) {
       console.error("Erro ao conectar:", error);
       toast.error(error?.message?.slice(0, 80) || "Erro ao conectar");
