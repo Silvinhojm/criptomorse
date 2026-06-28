@@ -97,7 +97,7 @@ export const NETWORKS = {
   ethereum: {
     chainId: 1,
     name: "Ethereum Mainnet",
-    rpcUrl: "https://eth.llamarpc.com",
+    rpcUrl: "https://ethereum-rpc.publicnode.com",
     explorer: "https://etherscan.io",
     isTestnet: false,
     nativeSymbol: "ETH",
@@ -297,7 +297,13 @@ class RealSwapExecutor {
   private provider: ethers.JsonRpcProvider | null = null;
   private signer: ethers.Signer | null = null;
   private networkKey: NetworkKey = "arc";
-  private _lastNetworkRefresh: NetworkKey = "";
+  private _lastNetworkRefresh: NetworkKey | "" = "";
+  private userAddress: string = "";
+  private privateKey: string = "";
+  private tokenBalances: Map<TokenSymbol, TokenBalance> = new Map();
+  private nativeBalanceWei: bigint = 0n;
+  private nativeBalanceUSD: number = 0;
+  private nativeBalanceLastUpdated: number = 0;
   private BACKUP_RPCS: Record<string, string[]> = {
     polygon: [
       "https://polygon.llamarpc.com",
@@ -322,12 +328,6 @@ class RealSwapExecutor {
       "https://ethereum-sepolia.publicnode.com",
     ],
   }
-  private userAddress: string = "";
-  private privateKey: string = "";
-  private tokenBalances: Map<TokenSymbol, TokenBalance> = new Map();
-  private nativeBalanceWei: bigint = 0n;
-  private nativeBalanceUSD: number = 0;
-  private nativeBalanceLastUpdated: number = 0;
   private priceCache: Map<TokenSymbol, { price: number; timestamp: number }> = new Map();
   private quoteCache: Map<string, { quote: QuoteResult | null; timestamp: number }> = new Map();
   private _refuelingGas = false;
@@ -376,7 +376,7 @@ class RealSwapExecutor {
     try {
       this.networkKey = networkKey;
       const net = NETWORKS[networkKey];
-      this.provider = this._createProxyProvider(net.rpcUrl);
+      this.provider = this._createProxyProvider(net.rpcUrl, networkKey);
 
       if (readOnly) {
         this.userAddress = privateKeyOrAddress;
@@ -414,7 +414,7 @@ class RealSwapExecutor {
     try {
       this.networkKey = networkKey;
       const net = NETWORKS[networkKey];
-      this.provider = this._createProxyProvider(net.rpcUrl);
+      this.provider = this._createProxyProvider(net.rpcUrl, networkKey);
       this.signer = externalSigner;
       this.userAddress = userAddress;
       console.log(`✅ RealSwapExecutor (external signer): ${net.name} | ${this.userAddress}`);
@@ -431,7 +431,7 @@ class RealSwapExecutor {
   async switchNetwork(networkKey: NetworkKey): Promise<void> {
     this.networkKey = networkKey;
     const net = NETWORKS[networkKey];
-    this.provider = this._createProxyProvider(net.rpcUrl);
+    this.provider = this._createProxyProvider(net.rpcUrl, networkKey);
     if (this.signer && typeof (this.signer as any).connect === "function") {
       this.signer = (this.signer as ethers.Wallet).connect(this.provider);
     }
@@ -441,14 +441,14 @@ class RealSwapExecutor {
     console.log(`🔀 RealSwapExecutor switch: ${net.name}`);
   }
 
-  private _createProxyProvider(targetRpcUrl: string): ethers.JsonRpcProvider {
+  private _createProxyProvider(targetRpcUrl: string, networkKey?: NetworkKey): ethers.JsonRpcProvider {
     const provider = new ethers.JsonRpcProvider();
-    // Redireciona todas as chamadas RPC pelo backend para evitar CORS
+    const fallbacks = networkKey ? (this.BACKUP_RPCS[networkKey] ?? []) : [];
     (provider as any)._send = async function(payload: any) {
       const res = await fetch('/api/rpc-proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rpcUrl: targetRpcUrl, body: payload }),
+        body: JSON.stringify({ rpcUrl: targetRpcUrl, body: payload, fallbacks }),
       });
       if (!res.ok) {
         throw new Error(`RPC proxy HTTP ${res.status}: ${res.statusText}`);

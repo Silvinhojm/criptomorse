@@ -15,6 +15,7 @@ import { parametrosRobos } from "./parametros-robos"
 import { pairSector } from "./pair-sector"
 import { COIN_IDS, TOKENS_WITH_FEED } from "./coin-ids"
 import { stablePairScanner } from "./stable-pair-scanner"
+import { stableMR } from "./stable-mr"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 
@@ -25,7 +26,7 @@ let _capitalAggregated = false
 // Em tendência forte (>2% no período), pausa o lado perdedor do delta neutro
 const PRICE_HISTORY: Map<string, { price: number; timestamp: number }[]> = new Map()
 const TREND_PERIOD_MS = 10 * 60 * 1000 // 10 minutos
-const TREND_THRESHOLD = 0.02 // 2%
+const TREND_THRESHOLD = 0.03 // 3% (relaxado de 2% para não travar metade dos trades)
 const TREND_CHECK_INTERVAL_MS = 60_000 // verifica a cada 1 min
 
 let ultimaVerificacaoTendencia = 0
@@ -758,6 +759,8 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         }
       }
     } catch {}
+
+    await stableMR.check(redeAtual).catch(() => {})
   }
 
   const antesFiltro = pairsToAnalyze.length
@@ -1158,6 +1161,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         rede: redeAtual,
         par: gv.pairLabel,
         confianca: gridConfidence,
+        amountUsd: 5,
         timestamp: Date.now(),
         fromToken: gv.pairFrom,
         toToken: gv.pairTo,

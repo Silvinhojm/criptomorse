@@ -63,7 +63,7 @@ async function getTokenPrice(token: TokenSymbol): Promise<number> {
     const res = await fetch(`/api/price?ids=${coinId}`);
     if (!res.ok) return priceCache.find(p => p.token === token)?.price ?? 1.0;
     const data = await res.json();
-    const price = data[coinId] ?? 1.0;
+    const price = (data.prices ?? data)[coinId] ?? 1.0;
     if (price > 0) {
       priceCache.push({ price, timestamp: Date.now(), token });
     }

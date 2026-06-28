@@ -29,8 +29,8 @@ export interface MicroTrend {
 interface PricePoint { price: number; timestamp: number }
 
 const HISTORY_MS = 300_000 // 5 minutos
-const SAMPLE_MS  = 30_000  // 1 amostra a cada 30s
-const MAX_SAMPLES = HISTORY_MS / SAMPLE_MS // 10 amostras
+const SAMPLE_MS  = 10_000  // 1 amostra a cada 10s (micro-movimentos duram 10-15s)
+const MAX_SAMPLES = HISTORY_MS / SAMPLE_MS // 30 amostras
 
 class StableStability {
   private prices: Map<string, PricePoint[]> = new Map() // key: "network:fromToken→toToken"
@@ -145,7 +145,7 @@ class StableStability {
   /** Varredura completa — gera relatório para TODOS os pares stable→stable */
   async scanAll(): Promise<MicroTrend[]> {
     const now = Date.now()
-    if (now - this.lastReportTime < 30_000) return this.lastReport
+    if (now - this.lastReportTime < 10_000) return this.lastReport
 
     const trends: MicroTrend[] = []
 

@@ -11,12 +11,14 @@ import { capitalController } from './capital-controller'
 function getNetworkPair(): { fromToken: string; toToken: string; isStable: boolean } {
   const net = realSwap.getNetworkKey() as string
   if (net === 'arc' || net === 'sepolia') return { fromToken: 'USDC', toToken: 'EURC', isStable: true }
-  // Se WETH vol abaixo do break-even, migra pra EURC (stablecoin arbitrage)
+  // Se WETH vol abaixo do break-even, tenta EURC (mas com fee real 0.3%, provavelmente inviável)
   const volWeth = volatilityTracker.getVolatility('WETH' as any).vol24h
   const gasEstimate = CONFIG._gasRoundTrip || 0.03
   const spreadDex = 0.003
-  const M_break_weth = ((gasEstimate / 20 + 1 + spreadDex) / (1 - spreadDex)) - 1
+  const effectiveBatch = Math.max(15, CONFIG.baseTradeUSD * CONFIG.batchThreshold)
+  const M_break_weth = ((gasEstimate / effectiveBatch + 1 + spreadDex) / (1 - spreadDex)) - 1
   if (volWeth < M_break_weth) {
+    // EURC com fee 0.3% raramente é viável, mas verificamos no ajustarAoMercado()
     return { fromToken: 'USDC', toToken: 'EURC', isStable: true }
   }
   return { fromToken: 'USDC', toToken: 'WETH', isStable: false }
@@ -187,7 +189,7 @@ class ModoGrao {
     const net = NETWORKS[netKey]
     const agora = Date.now()
 
-    if (!net?.isTestnet && agora - CONFIG._ajustadoEm < 120_000) return
+    if (!net?.isTestnet && agora - CONFIG._ajustadoEm < 30_000) return
 
     try {
       const gasCost = await gasPriceOracle.getGasCost(netKey).catch(() => 0.005)
@@ -206,7 +208,7 @@ class ModoGrao {
 
       // ── Spread estimado: DEX=0.3% (se disponível) ou LI.FI=0.5% ──
       const isStablePair = p.toToken === 'EURC' || p.toToken === 'USDC'
-      const spreadEstimate = isStablePair ? 0.0005             // EURC: spread ~0.05%
+      const spreadEstimate = isStablePair ? 0.003              // EURC: fee DEX real 0.3% (era 0.05% — bug que escondia custo real)
         : net && !net.isTestnet ? 0.003                         // DEX (Uniswap V2): 0.3%
         : 0.005                                                 // LI.FI: 0.5%
 
@@ -221,17 +223,18 @@ class ModoGrao {
         return
       }
 
-      if (V_min < 3) {
-        CONFIG.baseTradeUSD = 3
-        CONFIG.batchThreshold = 2
+      // Batch mínimo: $15 (3 sinais × $5) para diluir custo fixo do gas
+      if (V_min < 5) {
+        CONFIG.baseTradeUSD = 5
+        CONFIG.batchThreshold = 3
       } else if (V_min <= 10) {
-        CONFIG.baseTradeUSD = Math.max(3, Math.ceil(V_min / 2))
-        CONFIG.batchThreshold = 2
+        CONFIG.baseTradeUSD = Math.max(5, Math.ceil(V_min / 2))
+        CONFIG.batchThreshold = 3
       } else if (V_min <= 25) {
-        CONFIG.baseTradeUSD = Math.min(Math.ceil(V_min / 4), 8)
+        CONFIG.baseTradeUSD = Math.max(5, Math.ceil(V_min / 3))
         CONFIG.batchThreshold = 4
       } else {
-        CONFIG.baseTradeUSD = Math.min(Math.ceil(V_min / 6), 10)
+        CONFIG.baseTradeUSD = Math.min(Math.ceil(V_min / 4), 10)
         CONFIG.batchThreshold = 5
       }
 
@@ -257,7 +260,8 @@ class ModoGrao {
         `spread=${(spreadEstimate*100).toFixed(2)}% Vmin=$${V_min} ` +
         `batch=${CONFIG.batchThreshold}×$${CONFIG.baseTradeUSD}=$${CONFIG.baseTradeUSD*CONFIG.batchThreshold} ` +
         `target=$${CONFIG.targetUSD.toFixed(2)} minVol=${(CONFIG.minVolatility2h*100).toFixed(2)}%`)
-    } catch {
+    } catch (err: any) {
+      console.error(`[Grão⚙️] ❌ ajustarAoMercado falhou: ${err.message ?? err}`)
     }
   }
 
@@ -344,6 +348,9 @@ class ModoGrao {
     const signals = [...this._pendingSignals]
     this._pendingSignals = []
 
+    // stopUSD dinâmico: proporcional ao tamanho do batch (0.5% ou min $0.03)
+    const dynamicStopUSD = -Math.max(0.03, batchAmountUSD * 0.005)
+
     try {
       const p = this.getPair()
       if (this._testMode) {
@@ -358,7 +365,7 @@ class ModoGrao {
           entryPrice: simulatedPrice,
           entryTimestamp: Date.now(),
           targetPrice: simulatedPrice + (CONFIG.targetUSD / simulatedAmount),
-          stopPrice: simulatedPrice - (CONFIG.stopUSD / simulatedAmount),
+          stopPrice: simulatedPrice + (dynamicStopUSD / simulatedAmount),
           status: 'open',
         })
         this._totalTrades++
@@ -366,9 +373,17 @@ class ModoGrao {
         this._lastSignal = `🧪 Batch ${batchSize}sinais $${batchAmountUSD} ${p.toToken} @ $${simulatedPrice.toFixed(4)}`
         return
       }
-      if (!capitalController.canExecute('grao', batchAmountUSD, `${p.fromToken}→${p.toToken}`)) {
+      const requestId = `grao:${p.fromToken}→${p.toToken}:${Date.now()}`
+      const approval = capitalController.request({
+        id: requestId, strategy: 'grao',
+        pair: `${p.fromToken}→${p.toToken}`,
+        network: realSwap.getNetworkKey() as string,
+        amountUSD: batchAmountUSD, score: 50,
+        estimatedProfit: CONFIG.targetUSD, requestedAt: Date.now(),
+      })
+      if (!approval.authorized) {
         this._pendingSignals.push(...signals) // devolve sinais
-        this._lastSignal = '⏳ Capital ocupado por outro método — aguardando'
+        this._lastSignal = `⏳ Capital ocupado: ${approval.reason}`
         return
       }
       const result = await realSwap.executeSwap(
@@ -376,16 +391,16 @@ class ModoGrao {
         p.toToken as any,
         batchAmountUSD,
         undefined,
-        `grao_${Date.now()}_${p.fromToken}→${p.toToken}`,
+        requestId,
       )
       if (result.success && result.toAmount > 0) {
         const entryPrice = result.fromAmount / result.toAmount
         const wethBought = result.toAmount
         const targetPrice = (batchAmountUSD + CONFIG.targetUSD) / wethBought
-        const stopPrice = (batchAmountUSD + CONFIG.stopUSD) / wethBought
+        const stopPrice = (batchAmountUSD + dynamicStopUSD) / wethBought
 
         this._openPositions.push({
-          id: `grão-${Date.now()}`,
+          id: requestId,
           boughtToken: p.toToken,
           paidToken: p.fromToken,
           amountBought: wethBought,
@@ -399,6 +414,7 @@ class ModoGrao {
         this._totalTrades++
         this._lastSignal = `Batch ${batchSize}sinais $${batchAmountUSD} ${p.toToken} @ entry $${entryPrice.toFixed(2)}`
       } else {
+        capitalController.unlock()
         this._pendingSignals.push(...signals) // devolve sinais se falhou
         this._lastError = `Falha batch: ${result.message}`
       }
@@ -440,6 +456,7 @@ class ModoGrao {
     if (pos.profitUSD >= 0) this._wins++
     else this._losses++
     this._totalProfitUSD += pos.profitUSD
+    capitalController.unlock()
     this._lastSignal = `${reason === 'target' ? '🎯' : '🛑'} #${pos.id}: $${pos.profitUSD.toFixed(2)}`
   }
 }

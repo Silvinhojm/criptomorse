@@ -61,7 +61,7 @@ class TokenPriceFetcher {
       const res = await fetch(`/api/price?ids=${coinId}`, { signal: AbortSignal.timeout(5000) })
       if (!res.ok) return cached?.price ?? null
       const data = await res.json()
-      const price = data[coinId]
+      const price = (data.prices ?? data)[coinId]
       if (typeof price === "number" && price > 0) {
         this.cache.set(token, { price, timestamp: Date.now() })
         return price

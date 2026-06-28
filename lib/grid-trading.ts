@@ -311,82 +311,76 @@ class AdaptiveGridTrading {
         )
       }
 
-      // ── Checa níveis ──
+      // ── Checa níveis (apenas o mais próximo por direção por ciclo) ──
       const openPositions = positionManager
         .getOpenPositions()
         .filter(p => p.networkKey === network && p.status === "open")
 
-      for (const level of g.levels) {
-        if (level.status !== "pending") continue
+      const pendingBuys = g.levels.filter(l => l.status === "pending" && l.direction === "buy")
+      const pendingSells = g.levels.filter(l => l.status === "pending" && l.direction === "sell")
 
+      const tokenOpen = openPositions.filter(p => p.boughtToken === g.token).length
+
+      // Encontra o buy mais próximo (maior triggerPrice ainda abaixo de currentPrice)
+      const hitBuy = pendingBuys
+        .filter(l => currentPrice <= l.triggerPrice)
+        .sort((a, b) => b.triggerPrice - a.triggerPrice)[0]
+
+      // Encontra o sell mais próximo (menor triggerPrice ainda acima de currentPrice)
+      const hitSell = pendingSells
+        .filter(l => currentPrice >= l.triggerPrice)
+        .sort((a, b) => a.triggerPrice - b.triggerPrice)[0]
+
+      const hitLevels = [hitBuy, hitSell].filter(Boolean) as GridLevel[]
+      for (const level of hitLevels) {
         const isBuy = level.direction === "buy"
-        const tokenOpen = openPositions.filter(p => p.boughtToken === g.token).length
         if (isBuy && tokenOpen >= Math.floor(MAX_GRID_LEVELS / 2)) continue
 
-        const hit = isBuy
-          ? currentPrice <= level.triggerPrice
-          : currentPrice >= level.triggerPrice
+        level.status = "executed"
+        level.executedAt = Date.now()
+        triggered.push(level)
 
-        if (hit) {
-          level.status = "executed"
-          level.executedAt = Date.now()
-          triggered.push(level)
+        pregão.adicionarLog(
+          `📊 Grid ${isBuy ? "🟢 COMPRA" : "🔴 VENDA"} ${level.pairLabel} @ $${level.triggerPrice.toFixed(4)} (atual $${currentPrice.toFixed(4)})`
+        )
 
-          pregão.adicionarLog(
-            `📊 Grid ${isBuy ? "🟢 COMPRA" : "🔴 VENDA"} ${level.pairLabel} @ $${level.triggerPrice.toFixed(4)} (atual $${currentPrice.toFixed(4)})`
-          )
+        // OK será enviado pelo caller (executarCicloAgentes) com verificações de saldo
+        const gridConfidence = isBuy ? 80 : 85
 
-          // 🔥 ENVIA OK DIRETO AO PREGÃO (pula pipeline de agentes)
-          const gridConfidence = isBuy ? 80 : 85
-          const dirLabel = isBuy ? "Compra" : "Venda"
-          
-          pregão.receberOK({
-            pregueiro: `Grid:${dirLabel}`,
-            rede: network,
-            par: level.pairLabel,
-            confianca: gridConfidence,
-            timestamp: Date.now(),
-            fromToken: level.pairFrom,
-            toToken: level.pairTo,
-          })
-          
-          pregão.adicionarLog(`📐 Grid OK enviado: ${level.pairLabel} (${gridConfidence}%)`)
+        // Registra performance estimada (metade do round-trip por perna)
+        const grossEst = level.amount * g.spacing * 0.5
+        const gasEst = GAS_ESTIMATE_GRID[network] ?? 0.005
+        const spreadEst = level.amount * SPREAD_PCT
+        this.recordGridTrade({
+          token: g.token,
+          direction: isBuy ? "buy" : "sell",
+          amount: level.amount,
+          triggerPrice: level.triggerPrice,
+          exitPrice: currentPrice,
+          grossProfit: grossEst,
+          gasCost: gasEst + spreadEst,
+          netProfit: grossEst - gasEst - spreadEst,
+          timestamp: Date.now(),
+          network,
+        })
 
-          // Registra performance estimada (metade do round-trip por perna)
-          const grossEst = level.amount * g.spacing * 0.5
-          const gasEst = GAS_ESTIMATE_GRID[network] ?? 0.005
-          const spreadEst = level.amount * SPREAD_PCT
-          this.recordGridTrade({
-            token: g.token,
-            direction: isBuy ? "buy" : "sell",
-            amount: level.amount,
-            triggerPrice: level.triggerPrice,
-            exitPrice: currentPrice,
-            grossProfit: grossEst,
-            gasCost: gasEst + spreadEst,
-            netProfit: grossEst - gasEst - spreadEst,
-            timestamp: Date.now(),
-            network,
-          })
-
-          // Auto-rebalance: cria nível complementar
-          const complement: GridLevel = {
-            id: `${k}_${isBuy ? "sell" : "buy"}_re_${Date.now()}`,
-            token: g.token,
-            direction: isBuy ? "sell" : "buy",
-            triggerPrice: currentPrice * (1 + (isBuy ? 1 : -1) * g.spacing * 1.5),
-            amount: 5,
-            pairLabel: isBuy ? `${g.token}→USDC` : `USDC→${g.token}`,
-            pairFrom: isBuy ? g.token : "USDC" as TokenSymbol,
-            pairTo: isBuy ? "USDC" as TokenSymbol : g.token,
-            status: "pending",
-            createdAt: Date.now(),
-          }
-          g.levels.push(complement)
-          pregão.adicionarLog(
-            `🔄 Rebalance: novo nível ${isBuy ? "VENDA" : "COMPRA"} ${g.token} @ $${complement.triggerPrice.toFixed(4)}`
-          )
+        // Auto-rebalance: cria nível complementar
+        const complement: GridLevel = {
+          id: `${k}_${isBuy ? "sell" : "buy"}_re_${Date.now()}`,
+          token: g.token,
+          direction: isBuy ? "sell" : "buy",
+          triggerPrice: currentPrice * (1 + (isBuy ? 1 : -1) * g.spacing * 1.5),
+          amount: 5,
+          pairLabel: isBuy ? `${g.token}→USDC` : `USDC→${g.token}`,
+          pairFrom: isBuy ? g.token : "USDC" as TokenSymbol,
+          pairTo: isBuy ? "USDC" as TokenSymbol : g.token,
+          status: "pending",
+          createdAt: Date.now(),
         }
+        g.levels.push(complement)
+        pregão.adicionarLog(
+          `🔄 Rebalance: novo nível ${isBuy ? "VENDA" : "COMPRA"} ${g.token} @ $${complement.triggerPrice.toFixed(4)}`
+        )
       }
     }
 

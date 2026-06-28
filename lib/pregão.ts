@@ -8,6 +8,8 @@ import { hasDirectDex, getDirectDexQuote, calculateAmountOutMin } from "./direct
 import { getQuote } from "./lifi-executor"
 import { ethers } from "ethers"
 import { gasPriceOracle } from "./gas-price-oracle"
+import { stableMR } from "./stable-mr"
+import { capitalController } from "./capital-controller"
 import { positionManager } from "./position-manager"
 
 export interface PackageResult {
@@ -35,6 +37,8 @@ export interface OkSignal {
   amountUsd?: number
   direcao?: "buy" | "sell"
   precoNoPalpite?: number
+  poolAddress?: string
+  dex?: string
 }
 
 export interface OrdemExecucao {
@@ -48,6 +52,7 @@ export interface OrdemExecucao {
   timestamp: number
   status: "preparando" | "pronto" | "executando" | "concluido" | "falhou"
   amountUsd?: number
+  errorMsg?: string
   resultado?: {
     txHash: string
     explorerUrl: string
@@ -502,7 +507,7 @@ class Pregão {
     const agora = Date.now()
     let mudou = false
     for (const o of this.ordens) {
-      if ((o.status === "preparando" || o.status === "pronto") && agora - o.timestamp > 5000) {
+      if ((o.status === "preparando" || o.status === "pronto") && agora - o.timestamp > 120000) {
         o.status = "falhou"
         mudou = true
         this.log(`🧹 Ordem ${o.id} travada em "${o.status}" — marcada como falha`)
@@ -546,7 +551,7 @@ class Pregão {
       hasDirectDex(redeKey)
         ? this._quoteWithTimeout(
             getDirectDexQuote(redeKey, realSwap.getProvider()!, fromTokenAddr, toTokenAddr, fromAmountRaw),
-            5000, `DEX ${trade.fromToken}→${trade.toToken}`
+            10000, `DEX ${trade.fromToken}→${trade.toToken}`
           )
         : Promise.resolve(null),
       // LI.FI é fallback — timeout maior pois passa pelo proxy
@@ -612,11 +617,20 @@ class Pregão {
     pacote.attempts = (pacote.attempts || 0) + 1
     const isUltimaTentativa = pacote.attempts >= 3
 
+    // ─── 0. StableMR: se há desvio da média, abaixa o threshold ──
+    const stableSignals = stableMR.getSnapshot()
+    const temDesvioEstavel = pacote.trades.some(t =>
+      stableSignals.some(s => s.pair === `${t.fromToken}→${t.toToken}` && s.signal !== "none")
+    )
+
     // ─── 1. Threshold adaptativo por rede ──
     const gasCost = await gasPriceOracle.getGasCost(pacote.rede).catch(() => 0.02)
-    const basePct = pacote.rede === "ethereum" ? 0.005 : pacote.rede === "base" || pacote.rede === "arbitrum" ? 0.003 : 0.001
+    const basePct = temDesvioEstavel ? 0.0003
+      : pacote.rede === "ethereum" ? 0.005
+      : pacote.rede === "base" || pacote.rede === "arbitrum" ? 0.003
+      : 0.0005
     const pctThreshold = isUltimaTentativa ? basePct * 0.3 : Math.max(basePct - (pacote.attempts - 1) * (basePct * 0.35), basePct * 0.2)
-    const thresholdFloor = isUltimaTentativa ? 0.002 : Math.max(0.005 - (pacote.attempts - 1) * 0.0015, 0.002)
+    const thresholdFloor = isUltimaTentativa ? 0.002 : Math.max(0.003 - (pacote.attempts - 1) * 0.001, 0.002)
     const thresholdPorTrade = pacote.trades.map(t => Math.max(t.amount * pctThreshold, thresholdFloor))
     const lucroMinimoTotal = thresholdPorTrade.reduce((s, v) => s + v, 0)
 
@@ -665,16 +679,26 @@ class Pregão {
     const expectedReturnUSD = await swapsToUSD(swaps)
     const lucroRealEsperado = expectedReturnUSD - swaps.reduce((s, sw) => s + sw.amountUsd, 0)
     const estimatedGasTotal = gasCost * (1 + swaps.length * 0.3)
-    const gasMultiplier = isUltimaTentativa ? 1.0 : 2.0
 
-    if (lucroRealEsperado < lucroMinimoTotal && !isUltimaTentativa) {
-      this.log(`[PREGÃO] ⏳ Lucro real $${lucroRealEsperado.toFixed(4)} < mínimo $${lucroMinimoTotal.toFixed(4)} — requote rejeitado (attempt #${pacote.attempts})`)
-      return
-    }
-
-    if (lucroRealEsperado < estimatedGasTotal * gasMultiplier && !isUltimaTentativa) {
-      this.log(`[PREGÃO] ⏳ Lucro $${lucroRealEsperado.toFixed(4)} < ${gasMultiplier}x gas $${(estimatedGasTotal * gasMultiplier).toFixed(4)} — aguardando (attempt #${pacote.attempts})`)
-      return
+    // StableMR: entrada sempre perde spread DEX (0.05-0.10%), lucro vem da reversão
+    // Skipa checagem de lucro real, só protege contra perda > gas
+    if (temDesvioEstavel) {
+      const gasCheck = estimatedGasTotal * 0.5
+      if (lucroRealEsperado < -gasCheck) {
+        this.log(`[PREGÃO] 🌾 StableMR entrada perde $${(-lucroRealEsperado).toFixed(4)} > gas $${gasCheck.toFixed(4)} — abortando`)
+        return
+      }
+      this.log(`[PREGÃO] 🌾 StableMR desvio ${((stableSignals.find(s => pacote.trades.some(t => `${t.fromToken}→${t.toToken}` === s.pair))?.deviation ?? 0) * 100).toFixed(3)}% — entrada aceita (lucro na reversão)`)
+    } else {
+      const gasMultiplier = isUltimaTentativa ? 0.5 : 1.0
+      if (lucroRealEsperado < lucroMinimoTotal && !isUltimaTentativa) {
+        this.log(`[PREGÃO] ⏳ Lucro real $${lucroRealEsperado.toFixed(4)} < mínimo $${lucroMinimoTotal.toFixed(4)} — requote rejeitado (attempt #${pacote.attempts})`)
+        return
+      }
+      if (lucroRealEsperado < estimatedGasTotal * gasMultiplier && !isUltimaTentativa) {
+        this.log(`[PREGÃO] ⏳ Lucro $${lucroRealEsperado.toFixed(4)} < ${gasMultiplier}x gas $${(estimatedGasTotal * gasMultiplier).toFixed(4)} — aguardando (attempt #${pacote.attempts})`)
+        return
+      }
     }
 
     const pkgResult: PackageResult = {
@@ -741,6 +765,21 @@ class Pregão {
       pkgResult.status = 'concluido'
       this._savePackageResults()
       this.log(`[PREGÃO] 📝 Pacote ${pacote.id}: ${tradesOk}/${swaps.length} simulado | lucro: $${profitReal.toFixed(4)}`)
+      return
+    }
+
+    // 🔒 CapitalController: verifica capital para o batch
+    const ccId = `professor:batch:${pacote.rede}:${Date.now()}`
+    const pairs = pacote.trades.map(t => `${t.fromToken}→${t.toToken}`).join("+")
+    const approval = capitalController.request({
+      id: ccId, strategy: 'professor',
+      pair: pairs, network: pacote.rede,
+      amountUSD: pkgResult.totalInvested, score: Math.min(100, Math.round(pacote.expectedProfitTotal / Math.max(1, pkgResult.totalInvested) * 1000)),
+      estimatedProfit: pacote.expectedProfitTotal, requestedAt: Date.now(),
+    })
+    if (!approval.authorized) {
+      this.log(`[PREGÃO] ⏳ Capital ocupado — pacote ${pacote.id} adiado (${approval.reason})`)
+      setorPacotes.registrarPacote(pacote)
       return
     }
 
@@ -833,6 +872,8 @@ class Pregão {
       for (const trade of pacote.trades) {
         if (trade.ordemId) this.atualizarOrdem(trade.ordemId, { status: "falhou" })
       }
+    } finally {
+      capitalController.unlock()
     }
   }
 

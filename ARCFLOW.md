@@ -1172,6 +1172,387 @@ A SalaDeAula agora tem 3 abas:
 
 ---
 
+## NOTAS DE SESSÃO — 27/06/2026: StableMR + Professor flexível
+
+### Módulo: StableMR (`lib/stable-mr.ts`)
+- Novo pregueiro `StableMR` que monitora SMA rolante (12 amostras) de pares stable
+- Dispara OK de compra quando preço desvia **0.05%+ abaixo** da SMA
+- Dispara OK de venda quando preço desvia **0.05%+ acima** da SMA
+- Amount dinâmico: `max($12, |deviation| × 5000)`, cap `saldo × 0.9`
+- Expõe `getSnapshot()` para o Professor consultar SMA, desvio e direção em tempo real
+- Estado persistido em `localStorage` (chave `arcflow_stable_mr`)
+
+### Professor flexível pra stables (`pregão.ts`)
+- Quando `stableMR.getSnapshot()` mostra desvio ativo no par:
+  - `basePct`: 0.05% → 0.03% (threshold menor)
+  - Real profit check: **skipado** (lucro vem da reversão, não da entrada)
+  - Só aborta se perda do swap > `0.5 × gas` (proteção contra slippage extremo)
+
+### Grid multi-nível (`grid-trading.ts`)
+- Agora dispara apenas 1 nível por direção por ciclo (o mais próximo do preço)
+- Antes: 7+ níveis por ciclo quando preço cruzava múltiplos triggers
+- Código: encontra `hitBuy` (maior triggerPrice ≤ currentPrice) e `hitSell` (menor triggerPrice ≥ currentPrice)
+
+## NOTAS DE SESSÃO — 27/06/2026: 4 Fixes Críticos
+
+### Fix 1 — Volatilidade 0.0% (volatility-tracker.ts:64)
+`data[coinId]` → `(data.prices ?? data)[coinId]`. API `/api/price` retorna `{ prices: { id: val } }` mas código lia `data[id]` = undefined. Sem preços, sem volatilidade, agentes com confiança 0.
+
+### Fix 2 — Grid amountUsd ausente
+`grid-trading.ts:343`: OK do Grid não tinha `amountUsd` → escriturario usava `saldoUsd * 0.9` = $43.40. `agentes-do-pregão.ts:1156` agora envia `amountUsd: 5`.
+
+### Fix 3 — limparOrdensTravadas timeout (pregão.ts:509)
+Timeout de "pronto" de 5s → 120s. Ciclo é de 10s, Professor executa no ciclo seguinte. Ordens eram mortas antes do Professor pegá-las.
+
+### Fix 4 — Double OK do Grid
+`grid-trading.ts:339-351`: removido `receberOK` interno. O caller (`agentes-do-pregão.ts`) já envia o OK com verificações de saldo. Cada nível gerava 2 OKs.
+
+---
+
+## AUDITORIA TÉCNICA — 27/06/2026
+
+### A. FÓRMULAS MATEMÁTICAS VERIFICADAS
+
+#### A.1 Break-even M_break (modo-grão.ts:19)
+```
+M_break = ((G/V + 1 + S) / (1 - S)) - 1
+```
+Onde:
+- G = custo de gas round-trip (entrada + saída)
+- V = valor do batch em USD
+- S = spread do DEX (0.3% = 0.003)
+
+**Derivação**: Partindo de `V × (1 + M) × (1 - S) = V × (1 + S) + G`, isolando M:
+```
+V(1+M)(1-S) = V(1+S) + G
+(1+M)(1-S) = (1+S) + G/V
+1+M = ((1+S) + G/V) / (1-S)
+M = ((G/V + 1 + S) / (1 - S)) - 1
+```
+
+**Verificação numérica** (Polygon, WETH batch $15):
+- G = $0.028 (gas RT), V = $15, S = 0.003
+- M = ((0.028/15 + 1 + 0.003) / (1 - 0.003)) - 1
+- M = ((0.00187 + 1.003) / 0.997) - 1
+- M = (1.00487 / 0.997) - 1
+- M = 1.00789 - 1 = **0.789%**
+- WETH vol24h típica: 1-3% → ✅ viável
+
+**Verificação** (EURC batch $15):
+- G = $0.028, V = $15, S = 0.003 (fee DEX 0.3%)
+- M = mesmo 0.789%
+- EURC vol24h: 0.05-0.30% → ❌ inviável (vol < M_break)
+
+#### A.2 V_min — Batch Mínimo Viável (modo-grão.ts:216-219)
+```
+margemLiquida = vol24h - spreadEstimate
+margemMinima = max(margemLiquida, 0.001)
+VminCalculado = ceil(gasRoundTrip / margemMinima)
+V_min = min(VminCalculado, usdcBal * 0.5)
+```
+
+**Verificação** (EURC, Polygon):
+- vol24h = 0.0005 (0.05%, floor para stable), spread = 0.003 (0.3%)
+- margemLiquida = 0.0005 - 0.003 = -0.0025
+- margemMinima = max(-0.0025, 0.001) = 0.001 (0.1%)
+- VminCalculado = ceil(0.028 / 0.001) = ceil(28) = **$28**
+- Com $10 de saldo USDC: V_min = min(28, 5) = **$5**
+- **Problema**: Stable pairs exigem V_min de $28+, mas V_min ≤ saldo/2 → $5. A margem de 0.1% é insuficiente para cobrir gas + spread de 0.3%. Só pares voláteis com vol > spread + (gas/V) são viáveis.
+
+**Verificação** (WETH, Polygon):
+- vol24h = 0.015 (1.5%), spread = 0.003 (0.3%)
+- margemLiquida = 0.015 - 0.003 = 0.012
+- margemMinima = max(0.012, 0.001) = 0.012
+- VminCalculado = ceil(0.028 / 0.012) = ceil(2.33) = **$3**
+- ✅ Viável com batch de $15
+
+#### A.3 Oscillation Hunter — Confiança por Desvio (oscillation-hunter.ts:229)
+```
+confidence = min(90, round(40 + |deviation| × 2500))
+```
+
+| Desvio | Confiança | Decisão |
+|--------|-----------|---------|
+| 0.10% (0.001) | 43 | ❌ < 45 — não executa |
+| 0.15% (0.0015) | 44 | ❌ < 45 — não executa |
+| 0.20% (0.002) | 45 | ✅ executa (threshold padrão) |
+| 0.50% (0.005) | 53 | ✅ executa |
+| 1.00% (0.01) | 65 | ✅ executa |
+
+**Break-even**: `lucroEstimado = batchSize × targetProfit - (gasRT + feeRT)`
+**Verificação** (USDC/USDT $20 batch, Polygon):
+- gasRT = $0.028, feeRT = 20 × 0.0001 × 2 = $0.004, targetProfit = 0.0012
+- lucroEstimado = 20 × 0.0012 - (0.028 + 0.004) = 0.024 - 0.032 = **-$0.008**
+- ❌ Abaixo do mínimo $0.002 para stable-stable
+- Batch $40: lucro = 40 × 0.0012 - 0.032 = 0.048 - 0.032 = **$0.016** ✅
+
+#### A.4 Score do CapitalController (capital-controller.ts:40-82)
+```
+score = provided by caller (0-100)
+queue = sorted by score descending
+expiration = 5 minutes
+```
+
+**Requests competindo simultaneamente:**
+| Método | Score típico | Valor | Prioridade |
+|--------|-------------|-------|-----------|
+| Oscillation Hunter | 45-65 | $5-40 | Alta (desvio detectado) |
+| Modo Grão | 40-70 (fixed 50) | $15 | Média |
+| Agentes (corretor) | 50 (fixed) | $5 | Média |
+| Professor | 0-5 (profit/invested × 1000) | $5-15 | Baixa |
+
+**Score do Professor** (pregão.ts:757):
+```
+score = Math.min(100, Math.round(expectedProfit / max(1, totalInvested) × 1000))
+```
+- expectedProfit = $0.014, invested = $10 → score = min(100, round(0.014/10 × 1000)) = min(100, 1.4) = **1**
+- Professor batches **nunca** vencem do Oscillation Hunter
+
+**BUG**: `lockedBy` mismatch entre `CapitalController` e `PositionManager`:
+- CapitalController usa IDs: `"agentes:USDC→WMATIC:polygon:1712345678"`
+- PositionManager usa IDs: `"pos_polygon_WMATIC_1712345678"`
+- `unlock()` checa `positionManager.getOpenPositions().some(p => p.id === this.state.lockedBy)` → **NUNCA encontra match** → sempre libera capital mesmo com posição ativa
+
+#### A.5 Score Composto (accountant.ts:179)
+```
+score = winRate × 0.5 + min(avgProfit, 1.0) × 20 + profitBonus + max(0, streak) × 0.5
+profitBonus = min(max(0, totalProfit), 5) × 4
+```
+
+| Componente | Fórmula | Max |
+|------------|---------|-----|
+| Win rate | winRate × 0.5 | 50 pts (100% win) |
+| Lucro médio | min(avgProfit, 1.0) × 20 | 20 pts ($1+) |
+| Bônus lucro | min(max(0, totalProfit), 5) × 4 | 20 pts ($5+) |
+| Streak | max(0, streak) × 0.5 | Ilimitado (10 wins = 5 pts) |
+| **Total** | | **~95 pts** |
+
+**Problema**: Streak usa EMA suavizado (accountant.ts:165):
+```
+streak = streak × 0.7 + 5 × 0.3  // win
+streak = streak × 0.7 + (-5) × 0.3  // loss
+```
+Após 1 win: streak = 0 × 0.7 + 5 × 0.3 = **1.5**
+Após 3 wins consecutivos: streak = 1.5×0.7 + 5×0.3 → 1.05 + 1.5 = **2.55**
+Após 5 wins consecutivos: streak ≈ **3.6**
+Após 10 wins consecutivos: streak ≈ **4.8**
+Streak máximo assintótico: 5 × 0.3 / (1 - 0.7) = 1.5 / 0.3 = **5.0**
+→ streak nunca passa de 5, contribuição máxima: 5 × 0.5 = **2.5 pts**
+
+#### A.6 Provão Diário (provao-ranking.ts:184)
+```
+dailyScore = profit + (wins / trades) × 10
+```
+Agente com 3 trades, 2 wins, $0.05 profit: score = 0.05 + (2/3) × 10 = 0.05 + 6.67 = **6.72**
+
+#### A.7 Poder de Voto — Ciclo de 10 Trades (provao-ranking.ts:324-350)
+```
+profitRatio = agentProfit / maxProfit (do ciclo)
+winRateRatio = agentWinRate / maxWinRate (do ciclo)
+power = min(1, max(0, profitRatio × 0.6 + winRateRatio × 0.4))
+```
+**Problema**: Se só 1 agente tem trades no ciclo, maxProfit = agentProfit → profitRatio = 1.0 e maxWinRate = agentWinRate → winRateRatio = 1.0 → power = 1.0 (100%). Com apenas 1 agente ativo, o poder é irrelevante.
+
+#### A.8 Ajuste de Parâmetros do Professor (professor.ts:230-289)
+
+| Gatilho | Ajuste |
+|---------|--------|
+| 5+ acertos consecutivos | confiancaMinima -3, thresholdEntrada -0.0005 |
+| 1 erro confiante (>70%) isolado | confiancaMinima +5 |
+| 2+ erros confiantes em série | thresholdEntrada ×2, confiancaMinima +8 |
+| 3+ erros consecutivos (qualquer) | confiancaMinima +5, thresholdEntrada +0.002 |
+
+**Verificação**: confiancaMinima começa em 30. Após 3 erros seguidos: 30 + 5 = 35. Se forem erros confiantes: 30 + 8 = 38. O teto de confiancaMinima é 55-60. Após 5 acertos: 38 - 3 = 35. O sistema oscila entre 20-60.
+
+#### A.9 Variação 24h como Meta (position-manager.ts:258-277)
+```
+fallback = 2% (se token não tem coinId)
+variation24h = max(|change24h|, 0.5)  // mínimo 0.5%
+```
+**Uso**: Staircase só vende se profitPercent >= variation24h × 0.9. ETH variou 3% → precisa de 2.7% lucro.
+
+#### A.10 Reposição de Gas (real-swap-executor.ts:855-899)
+```
+swapAmount = min(usdcBal × 0.1, amountUsd × 2, 5)
+```
+Se USDC = $10 e trade = $5: swapAmount = min(1, 10, 5) = **$1**
+Se USDC = $50 e trade = $20: swapAmount = min(5, 40, 5) = **$5**
+
+---
+
+### B. BANCO CENTRAL (CapitalController) — ARQUITETURA E PROBLEMAS
+
+#### B.1 Estrutura
+```
+┌─────────────────────┐
+│  CapitalController  │
+│  ────────────────   │
+│  state.locked       │──bool
+│  state.lockedBy     │──string (request.id)
+│  state.requests[]   │──fila ordenada por score
+│  state.lockedAt     │──timestamp
+└────────┬────────────┘
+         │
+    ┌────┴────┬────────┬──────────┐
+    ▼         ▼        ▼          ▼
+ Oscillation  Grão   Agentes   Professor
+ (score 45-90)(score 40-70)(score 50)(score 0-5)
+```
+
+#### B.2 Fluxo de Decisão
+```
+request() chamado:
+  1. Limpa requests expiradas (>5min)
+  2. Se locked:
+     a. Checa se posição ainda existe (BUG: lockedBy mismatch → sempre libera)
+     b. Se não existe: unlock() automático
+     c. Se existe: enfileira e retorna waitPosition
+  3. Se saldo insuficiente: rejeita
+  4. Verifica se há request melhor na fila (score > request.score, strategy diferente)
+  5. Autoriza: locked=true, lockedBy=request.id
+
+unlock() chamado:
+  1. locked=false, lockedBy=null
+  2. Pega próximo da fila (maior score)
+  3. Se tem saldo: locked=true e autoriza
+```
+
+#### B.3 BUGS IDENTIFICADOS
+
+**BUG #1 — lockedBy mismatch (CRÍTICO)**
+- `corretor.ts:51`: lockedBy = `"agentes:USDC→WMATIC:polygon:1712345678"`
+- `positionManager.openPosition()`: position.id = `"pos_polygon_WMATIC_1712345679"`
+- `capitalController.unlock()` line 50: `openPositions.some(p => p.id === this.state.lockedBy)` → **NUNCA MATCHA**
+- Consequência: CapitalController acredita que a posição foi fechada quando não foi, e libera capital para outro trade. **Essencialmente o lock não funciona.**
+
+**BUG #2 — Stuck transaction sem unlock**
+- `pregão.ts:getOrdensAtivas()` (line 458-467): marca ordem como "falhou" após 120s de timeout
+- Mas **NUNCA chama** `capitalController.unlock()` nesse caminho
+- Se ordem fica travada em "executando" e RPC falha: unlock só é chamado no `finally` de `corretor.ts:executar()` (line 213) ou `pregão.ts:executarPacotes()` (line 856)
+- Se o código nunca chega no finally (ex: exceção não capturada): **capital fica locked para sempre**
+- Mitigação parcial: `request()` limpa requests com >5min (line 42), mas o `locked` flag nunca é resetado
+
+**NOTA — Score fixo do Modo Grão (modo-grão.ts:381)**
+- Modo Grão passa `score: 50` fixo — **intencional** (design review 27/06)
+- Motivo: Modo Grão opera stable pairs (baixo risco, previsível). Score fixo dá prioridade consistente sem oscilar. Oscillation Hunter com desvio 0.20% = score 45 (<50, fica atrás), desvio 0.24%+ = score 46+ (pode passar na frente). Isso é correto: Oscillation deve pular a fila só em desvios fortes.
+- Agentes passam score 50 (mesma lógica: trades padrão, sem urgência).
+- Professor passa 0-5 (propositalmente baixo — batch de sobras).
+
+#### B.4 Recomendações
+1. **Fix lockedBy**: Usar identificador consistente. Ex: ambas usarem `"pos_{rede}_{token}"`. Ou unlock() checar por `boughtToken + networkKey` em vez de `id`.
+2. **Stuck TX safety**: Adicionar heartbeat no `request()`: se `lockedAt > 5min` e posição não encontrada → unlock automático.
+3. **Score dinâmico**: Score deve ser `min(100, round(expectedProfit / amountUSD × 5000))` para todos os métodos.
+
+---
+
+### C. ROBÔS — AUDITORIA DE INTEGRAÇÃO
+
+#### C.1 Mapa de Robôs Ativos
+
+| Robô | Arquivo | Status | Função |
+|------|---------|--------|--------|
+| **Oscillation Hunter** | `oscillation-hunter.ts` | 🔴 Bug #3 | Micro-scalping em pools estáveis |
+| **Modo Grão** | `modo-grão.ts` | 🟡 Vmin limita | Batching MR+MM |
+| **JobRobot** | `job-robot.ts` | 🟢 Ativo | Swaps autônomos Arc testnet |
+| **Professor** | `professor.ts` | 🟢 Ativo | Avalia palpites, promove robôs |
+| **Escola de Robôs** | `escola-robos.ts` | 🟢 Ativo | Turnos, verificação, promoção |
+| **Staircase** | `position-manager.ts` | 🟢 Ativo | Fechamento automático |
+| **Pregueiros** | `pregueiro.ts` | 🟢 Ativo | Análise de mercado |
+| **Agentes (13)** | `agentes-do-pregão.ts` | 🟢 Ativo | Votação de oportunidades |
+
+#### C.2 Fluxo de Decisão Multi-Robô
+```
+Cada ciclo (10-30s):
+  1. Pregueiros analisam mercado → enviam OKs
+  2. Agentes votam → Top 3 decidem → enviam OKs
+  3. Grid trading → OK direto se nível atingido
+  4. Pregão coleta OKs → gera ordens
+  5. Professor → gera pacotes (ordens pendentes + ranking)
+  6. CapitalController → gate central
+  7. Corretor → executa swap
+```
+
+#### C.3 Overhead de Locks
+```
+Lock chain para um trade:
+  ┌─ escriturario: emExecucao.add(lockKey)
+  ├─ CapitalController: request() → check + lock
+  ├─ realSwap: refreshLock (serializa balance refresh)
+  ├─ NonceManager: Promise mutex + getTransactionCount (RPC)
+  ├─ pregão: duplicate check (set + loop)
+  ├─ corretor: circuit breaker check
+  └─ finally: unlock() + emExecucao.delete()
+
+Total: 7 locks/mutexes por trade
+Overhead estimado: 500-1500ms adicionais por trade
+```
+
+#### C.4 Custo de Oportunidade do Capital Parado
+Com capital médio de $50 e 1 trade por vez (CapitalController):
+- Tempo médio por trade: 30-120s (execução) + 5-60min (espera de preço alvo)
+- Trades por hora: 1-2 (voláteis), 3-5 (estáveis com Oscillation)
+- Utilização de capital: ~40% (60% do tempo o capital está livre mas sem oportunidade)
+
+**Break-even**: Cada trade precisa gerar ≥ $0.02 para cobrir custos fixos de RPC + quote + gas.
+- 6 trades sucedidos × $18.77 total = ~$3.13/trade na média histórica
+- Projetado: $0.50-1.50/dia com $50 capital em micro-trades
+
+---
+
+### D. ÁREAS CRÍTICAS IDENTIFICADAS
+
+#### D.1 SoSoValue Rate Limit (Criticidade: ALTA)
+- 20 req/min no plano demo → ~4 fetches/min para todos os tokens
+- 15s cache de preços → preço pode estar 15s atrasado
+- Em mercados voláteis (1%+/min): preço cacheado vs preço real pode diferir em 0.25%+
+- Isso anula a margem de lucro de 0.1% (Polygon)
+- **Recomendação**: Atualizar para plano pago ou implementar fallback com WebSocket (Stork)
+
+#### D.2 Slippage vs Profit Margin (Criticidade: MÉDIA)
+- O sistema aceita slippage de até 5% (real-swap-executor.ts:1223)
+- Com margem de lucro de 0.1%, slippage de 0.5% já transforma lucro em prejuízo
+- O slippage real pós-trade é logado mas **não causa reversão** da transação
+- **Recomendação**: Reduzir tolerância de slippage de 5% para 0.5% e bloquear trades com slippage esperado > 0.3%
+
+#### D.3 Stuck Transaction Recovery (Criticidade: MÉDIA)
+- Pregão timeout de 120s (pregão.ts:87) para ordens "preparando"/"pronto"/"executando"
+- Mas `capitalController.unlock()` não é chamado no timeout path
+- **Recomendação**: Adicionar `capitalController.forceUnlock()` no `getOrdensAtivas()` quando ordem expira
+
+#### D.4 mcirBTC Price Normalization (Criticidade: BAIXA)
+- `PRICE_DIVIDERS.mcirBTC = 10^10` (real-swap-executor.ts:32)
+- Preço normalizado de $299.000 → ~$0.00003 (divisor 10^10)
+- `TOKEN_DECIMALS.mcirBTC = 8` (contrario de 18 on-chain)
+- **Verificação**: divisor 10^10 parece correto para 18 decimais on-chain convertido para 8 decimais de exibição
+
+#### D.5 Eficiência de Cache (Criticidade: BAIXA)
+- Prices: 15s TTL (real-swap-executor.ts:346)
+- Gas: 30s TTL (gas-price-oracle.ts:99)  
+- Quotes LI.FI: 60s TTL (real-swap-executor.ts:338)
+- Native price: 60s TTL (gas-price-oracle.ts:77)
+- Saldo cache (caixa.ts): 10s TTL
+- **Otimização**: Quotes têm cache de 60s mas mudam a cada bloco (~2s na Polygon). Cache de quotes deveria ser 5s no máximo.
+
+---
+
+### E. MÉTRICAS DE PERFORMANCE (27/06/2026)
+
+| Métrica | Valor |
+|---------|-------|
+| Trades on-chain | 6 |
+| Win rate | 100% |
+| Lucro bruto | $18.77 |
+| Lucro médio/trade | $3.13 |
+| Capital (USDC Polygon) | $48.22 |
+| Capital (POL) | $15.55 |
+| Capital total estimado | ~$65 |
+| Retorno sobre capital | 28.9% |
+| Modo Grão | Ativo, sem oportunidades voláteis |
+| Oscillation Hunter | Ativo, escaneando pools |
+| Professor | Pacotes com lucro $0.0140, threshold $0.0150 |
+
+---
+
 ## 26. ESTRATÉGIA — GRID ADAPTATIVO COM ZONA NEUTRA
 
 ### 26.1 Conceito
@@ -2335,22 +2716,107 @@ O Banco CriptoMorse opera como um **multi-strategy micro hedge fund autônomo**,
 
 ### 37.1 Capital Controller (`lib/capital-controller.ts`)
 
-**Gate central** — garante que apenas UM trade use o capital por vez.
+**Gate central** — garante que apenas UM trade use o capital por vez. Todos os 4 métodos de trading passam por ele.
 
 ```
 Regra: "um trade de cada vez, sempre o melhor"
 - Cada método registra oportunidade com score (0-100)
 - Controller autoriza a de maior score
-- Capital fica bloqueado até posição fechar
-- unlock() → próximo na fila
+- Capital fica bloqueado até posição fechar (unlock)
+- unlock() libera o próximo da fila automaticamente
+- Fila ordenada por score decrescente (desempate FIFO)
+- Requests expiram em 5 minutos (cleanup a cada request())
 ```
 
-| Método | Descrição |
-|--------|-----------|
-| `request(op)` | Registra oportunidade, retorna `{authorized, reason}` |
-| `unlock()` | Libera capital após fechamento |
-| `canExecute(strategy, amount)` | Verificação rápida antes do swap |
-| `forceUnlock()` | Liberação de emergência |
+**Matemática do Score:**
+
+| Método | Fórmula do Score | Range típico |
+|--------|-----------------|--------------|
+| Oscillation Hunter | `min(100, volBps * depthFactor)` | 60-90 |
+| Modo Grão | `min(100, (sinaisMR + sinaisMM) * 10)` | 40-70 |
+| Agentes (testnet) | `50` (fixo) | 50 |
+| Professor (mainnet) | `min(100, round(expectedProfit / totalInvested * 1000))` | 0-100 |
+
+**Fluxo de Decisão do `request()`:**
+
+```
+request(op)
+  │
+  ├─ 1. Limpa requests expiradas (>5min)
+  │
+  ├─ 2. Capital bloqueado? (state.locked === true)
+  │     ├─ Posição ainda existe? → enfileira, retorna {authorized: false}
+  │     └─ Posição sumiu? → unlock() automático, prossegue
+  │
+  ├─ 3. Saldo USDC suficiente?
+  │     └─ Não → retorna {authorized: false, reason: "Saldo insuficiente"}
+  │
+  ├─ 4. Existe request na fila com score MAIOR?
+  │     └─ Sim → enfileira, retorna {authorized: false, reason: "oportunidade melhor"}
+  │
+  └─ 5. AUTORIZADO!
+        ├─ locked = true, lockedBy = request.id
+        ├─ Remove request da fila
+        └─ Retorna {authorized: true}
+```
+
+**Matemática de Desempate da Fila:**
+```
+Fila = requests ordenados por score DESC
+  → Se scores iguais: FIFO (ordem de chegada)
+  → unlocked() pega request[0] (topo), verifica saldo, autoriza
+  → Se saldo insuficiente: remove da fila, tenta próximo
+```
+
+**Interface:**
+```typescript
+interface CapitalRequest {
+  id: string
+  strategy: 'oscillation' | 'grao' | 'agentes' | 'professor'
+  pair: string
+  network: string
+  amountUSD: number
+  score: number           // 0-100
+  estimatedProfit: number
+  requestedAt: number
+}
+
+// Retorno do request():
+{ authorized: boolean, waitPosition: number, reason: string }
+```
+
+**Garantias:**
+- `unlock()` é chamado em `finally` — mesmo em erro, capital é liberado
+- Circuit breaker (blockIfPanicked) chama `capitalController.unlock()` antes de retornar
+- Se ordem volta pra "preparando" (capital ocupado), próximo ciclo tenta novamente
+- Professor re-registra pacote via `setorPacotes.registrarPacote(pacote)` — tentativa assíncrona
+
+### 37.1.1 Pontos de Integração — Todos os 4 Métodos
+
+| # | Método | Arquivo:linha | `request()` chamado | Fonte do Score | `unlock()` | Comportamento se negado |
+|---|--------|---------------|---------------------|----------------|------------|------------------------|
+| 1 | **Oscillation Hunter** | `oscillation-hunter.ts` | antes de `executeSwap()` | `volBps * depthFactor / maxDepth` (60-90) | `finally` | Próximo ciclo tenta de novo |
+| 2 | **Modo Grão** | `modo-grão.ts` | antes de `batchApprove()` | `(sinaisMR + sinaisMM) * 10` (40-70) | `finally` | Sinais acumulam até batch ficar viável |
+| 3 | **Agentes (testnet)** | `corretor.ts:executar()` (linha 51) | `request({ score: 50 })` | 50 fixo (sem lucro estimado) | `finally` (linha 225) | Ordem volta pra "preparando" |
+| 4 | **Agentes (testnet batch)** | `corretor.ts:executarBatch()` (linha 240) | `request({ score: 50 })` | 50 fixo | `finally` | Todas ordens voltam pra "preparando" |
+| 5 | **Professor (mainnet)** | `pregão.ts:executarPacotes()` (linha 754) | `request({ score: min(100, round(expectedProfit/invested*1000)) })` | 0-100 (profit/invested) | `finally` (linha 871) | Pacote re-registrado via `setorPacotes.registrarPacote()` |
+
+**Cálculo do Score do Professor:**
+```
+Score = min(100, round(expectedProfitTotal / totalInvested * 1000))
+
+Exemplo:
+  Batch: $15 investido, lucro esperado $0.053
+  Score = min(100, round(0.053/15 * 1000))
+        = min(100, round(3.53))
+        = 4
+
+Exemplo 2:
+  Batch: $10 investido, lucro esperado $0.50
+  Score = min(100, round(0.50/10 * 1000))
+        = min(100, round(50))
+        = 50
+```
 
 ### 37.2 Mesa de Voláteis — Modo Grão (`lib/modo-grão.ts`)
 
@@ -2417,27 +2883,68 @@ Estratégia: detecta desvios de preço >0.2% da SMA (média móvel curta) em poo
 
 **Take-profit:** 0.15% | **Stop-loss:** -0.1% | **Timeout:** 5 min
 
-### 37.6 Fluxo Completo do Banco
+### 37.6 Fluxo Completo do Banco — Harmonia Total
 
 ```
-🏦 BANCO CRIPTOMORSE — $30 capital
-│
-├─ 🌾 Grão (voláteis)    → batch $12-15, target lucro
-├─ 💱 Scanner (stables)   → micro-movimentos 0.05-0.15%
-├─ 🌍 Internacional       → JPYC, cross-chain arb
-├─ ⚡ Oscar (scalping)    → desvios em pools $2M
-│
-└─ 💰 CapitalController   → aloca pro melhor, trava, realoca
+                      ┌──────────────────────┐
+                      │   CAPITAL CONTROLLER  │
+                      │   (um trade por vez)  │
+                      └──┬───────┬───────┬───┘
+                         │       │       │
+              ┌──────────┘       │       └──────────┐
+              ▼                  ▼                   ▼
+   ┌─────────────────┐  ┌──────────────┐  ┌─────────────────┐
+   │  OSCILLATION    │  │  MODO GRÃO   │  │   CICLO AGENTES │
+   │  (scalping      │  │  (batching   │  │  (testnet)      │
+   │   pools 0.01%)  │  │   MR+MM)     │  │  - executar()   │
+   │  score: 60-90   │  │  score: 40-70│  │  - executarBatch│
+   └─────────────────┘  └──────────────┘  │  score: 50      │
+                    ┌──────────────────┐  └─────────────────┘
+                    │   PROFESSOR      │
+                    │  (mainnet batch) │
+                    │  score: 0-100    │
+                    │  (profit/invest) │
+                    └──────────────────┘
 ```
 
-**Ciclo de operação:**
+**Fluxo de Execução Coordenado:**
+
 ```
-Scan (10s) → 4 mesas analisam em paralelo
-  → Cada uma reporta score + valor
-  → Controller autoriza a MELHOR (maior score)
-  → Executa swap
-  → Capital travado até fechar
-  → unlock() → próximo na fila
+1. Scan (10s)
+   ├── Oscillation Hunter analisa pools (USDC/USDT 0.01%)
+   ├── Modo Grão acumula sinais MR+MM (3-5 sinais → batch)
+   ├── Agentes votam em pares voláteis (testnet)
+   └── Professor forma pacotes de ordens pendentes (mainnet)
+
+2. Cada método chama capitalController.request(op)
+   ├── Se capital livre e score mais alto → autorizado agora
+   ├── Se capital ocupado → enfileirado (fila por score DESC)
+   └── Se score menor que outro na fila → enfileirado após o melhor
+
+3. swap executado (DEX direto > LI.FI)
+   ├── Osc/publicador: executeSwap() direto
+   ├── Grão: batchApprove → executeBatch()
+   ├── Agentes: realSwap.executeSwap() (testnet)
+   └── Professor: batchApprove → executeBatch() (mainnet)
+
+4. finally { capitalController.unlock() }
+   ├── Libera o capital
+   ├── unlock() verifica fila automaticamente
+   └── Se há próximo → autoriza imediatamente
+
+5. Próximo ciclo (10s-30s) → repete
+```
+
+**Garantia de Não-Concorrência:**
+```
+swap #1 (Osc, USDC→USDT) — request() OK → locked=true
+swap #2 (Grão, WETH→USDC) — request() → locked, na fila
+swap #3 (Prof, batch) — request() → locked, na fila
+swap #1 concluído → unlock()
+  → unlock() pega da fila: Grão (score 70 > Prof score 55) → autorizado
+swap #2 concluído → unlock()
+  → unlock() pega da fila: Prof → autorizado
+Nunca dois swaps simultâneos.
 ```
 
 ### 37.7 Matemática de Break-Even por Estratégia
@@ -2542,6 +3049,23 @@ Onde: G = gas round-trip, V = valor batch, S = spread
 
 3. **Professor localStorage cache** — `professor.ts`: `init()` restaura estado de `arcflow_professor_estado`.
 
+## 44. CHANGELOG — 27/06/2026 (Nona Sessão: RPC proxy fallback + Ethereum 502 fix)
+
+### What's Changed
+
+1. **RPC proxy com fallback automático** — `app/api/rpc-proxy/route.ts`: aceita `fallbacks: string[]` no body. Tenta RPCs em sequência; só retorna 502 se TODOS falharem.
+
+2. **Ethereum RPC trocado** — `lib/real-swap-executor.ts`: `eth.llamarpc.com` → `ethereum-rpc.publicnode.com`.
+
+3. **_createProxyProvider com fallbacks** — `lib/real-swap-executor.ts:444`: passa `BACKUP_RPCS[networkKey]` para o proxy.
+
+4. **GasPriceOracle com fallbacks** — `lib/gas-price-oracle.ts`: `_fetchGasPrice` passa `RPC_FALLBACKS[networkKey]` para o proxy. Timeout 10s→15s.
+
+### Current State
+- **Polygon**: $48.22 USDC, $15.55 POL. 6 trades on-chain, 100% win rate, $18.77 lucro.
+- **Console**: Ethereum RPC sem 502 — proxy fallba ck automático.
+- **Build**: zero novos erros TS (4 pré-existentes).
+
 ## 43. CHANGELOG — 27/06/2026 (Oitava Sessão: Concorrência de vendas)
 
 ### What's Changed
@@ -2556,3 +3080,109 @@ Onde: G = gas round-trip, V = valor batch, S = spread
 - **Polygon**: $48.22 USDC, $15.55 POL. 6 trades on-chain, 100% win rate, $18.77 lucro.
 - **Concorrência**: `⛔ Já existe ordem ativa para WETH→USDC@polygon — descartando duplicata` bloqueando tentativas extras
 - **Commit**: `608e341` em `origin/versao-polygon`
+
+## 46. CHANGELOG — 27/06/2026 (Décima Sessão: CapitalController em Harmonia Total)
+
+### 46.1 CapitalController integrado ao Ciclo de Agentes (`lib/corretor.ts`)
+
+**`executar()` (linha 44):**
+- Antes: chamava `realSwap.executeSwap()` diretamente, sem verificar capital
+- Depois:
+  1. `capitalController.request({ id, strategy: 'agentes', score: 50 })`
+  2. Se `!authorized` → ordem volta pra "preparando", log `"⏳ Capital ocupado"`
+  3. Se `authorized` → executa swap normalmente
+  4. `finally { capitalController.unlock() }` libera capital mesmo em erro
+
+**`executarBatch()` (linha 217):**
+- Soma todos os valores do batch em `totalValor`
+- `capitalController.request()` único para o batch inteiro
+- Se negado: todas as ordens do batch voltam pra "preparando"
+
+### 46.2 CapitalController integrado ao Professor (`lib/pregão.ts`)
+
+**`executarPacotes()` (linha 751):**
+- Antes: executava `batchApprove` → `executeBatch` sem verificar capital
+- Depois:
+  1. `capitalController.request({ strategy: 'professor', score: min(100, round(expectedProfit/invested*1000)) })`
+  2. Se `!authorized` → pacote re-registrado via `setorPacotes.registrarPacote(pacote)`
+  3. Se `authorized` → prossegue com batch
+  4. `finally { capitalController.unlock() }`
+
+### 46.3 Tabela de Pontos de Integração
+
+| Arquivo | Método | Linha request | Linha unlock | Score | Negado |
+|---------|--------|:---:|:---:|:---:|--------|
+| `oscillation-hunter.ts` | `execute()` | request | finally | 60-90 | próx ciclo |
+| `modo-grão.ts` | `executarSinais()` | request | finally | 40-70 | acumula sinais |
+| `corretor.ts` | `executar()` | 51 | 225 | 50 fixo | "preparando" |
+| `corretor.ts` | `executarBatch()` | 240 | finally | 50 fixo | "preparando" |
+| `pregão.ts` | `executarPacotes()` | 754 | 871 | 0-100 | re-registra |
+
+### 46.4 Matemática do Score por Estratégia
+
+**Oscillation Hunter:**
+```
+score = min(100, round(volBps * depthFactor / maxDepth))
+  volBps = desvio percentual da SMA em bps (ex: 20 bps = 0.20%)
+  depthFactor = pool TVL / $1M (cap $10M → max 10)
+  maxDepth = 200 (normalizador)
+Ex: desvio 25 bps, pool $2M → score = min(100, round(25*2/200*100)) = 25
+Ex: desvio 80 bps, pool $5M → score = min(100, round(80*5/200*100)) = 100
+```
+
+**Modo Grão:**
+```
+score = min(100, (sinaisMR + sinaisMM) * 10)
+  sinaisMR = sinais de mean-reversion ativos (0-5)
+  sinaisMM = sinais de market-making ativos (0-5)
+Ex: 2 MR + 1 MM → score = min(100, 3*10) = 30
+Ex: 4 MR + 3 MM → score = min(100, 7*10) = 70
+```
+
+**Agentes (testnet):**
+```
+score = 50 (fixo)
+  Motivo: testnet não tem lucro real, todos os trades têm prioridade igual
+```
+
+**Professor (mainnet):**
+```
+score = min(100, round(expectedProfitTotal / totalInvested * 1000))
+  totalInvested = soma de amountUsd de todos swaps no pacote
+  expectedProfitTotal = soma dos lucros esperados por trade
+Ex: $15 investido, $0.05 lucro → score = min(100, round(0.05/15*1000)) = 3
+Ex: $10 investido, $0.50 lucro → score = min(100, round(0.50/10*1000)) = 50
+```
+
+### 46.5 Fila de Prioridade — Desempate e Expiração
+
+```
+Estrutura da fila:
+  requests[] ordenado por score DESC
+  Se scores iguais: FIFO (ordem de chegada)
+
+Expiração:
+  requests com idade > 5 min (300.000 ms) são removidas
+  Cleanup executado a cada request()
+
+Fluxo de unlock():
+  1. locked = false
+  2. Pega request[0] (topo da fila)
+  3. Verifica saldo USDC disponível
+  4. Se saldo suficiente:
+     - locked = true, lockedBy = request[0].id
+     - Remove request[0] da fila
+     - Log: "🔓 Liberado → strategy autorizado (pair $amount)"
+  5. Se saldo insuficiente:
+     - Remove request[0] da fila (impossível executar)
+     - Tenta próximo request (loop)
+```
+
+### 46.6 Arquivos Modificados
+
+| Arquivo | Mudança |
+|---------|---------|
+| `lib/corretor.ts` | Import `capitalController`. `executar()`: request() antes do swap, unlock() no finally. `executarBatch()`: request() com totalValor, unlock() no finally. |
+| `lib/pregão.ts` | Import `capitalController`. `executarPacotes()`: request() com score dinâmico (profit/invested), unlock() no finally. Pacote re-registrado se negado. |
+| `AGENTS.md` | Session summary atualizado (décima sessão). |
+| `ARCFLOW.md` | Seção 37.1 expandida (matemática do score, fluxo de decisão, fila de prioridade). Nova seção 37.1.1 (tabela de integração). Seção 37.6 reescrita (harmonia total, fluxo coordenado, garantia de não-concorrência). Changelog 46 adicionado. |

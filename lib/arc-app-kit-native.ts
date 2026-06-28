@@ -74,7 +74,7 @@ class ArcAppKit {
       try {
         const { initiateUserControlledWalletsClient } = await import('@circle-fin/user-controlled-wallets');
         this.circleClient = initiateUserControlledWalletsClient({
-          apiKey: process.env.CIRCLE_API_KEY || '',
+          apiKey: process.env.KIT_KEY || '',
         });
         return this.circleClient;
       } catch {

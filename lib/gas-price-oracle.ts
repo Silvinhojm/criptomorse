@@ -14,7 +14,30 @@ const GAS_COST_ESTIMATE: Record<string, number> = {
   sepolia: 0.006,
 };
 
-const GAS_UNITS_SWAP = 200000;
+const RPC_FALLBACKS: Record<string, string[]> = {
+  ethereum: [
+    "https://rpc.ankr.com/eth",
+    "https://ethereum-rpc.publicnode.com",
+    "https://cloudflare-eth.com",
+  ],
+  polygon: [
+    "https://polygon.llamarpc.com",
+    "https://polygon-rpc.com",
+    "https://rpc-mainnet.maticvigil.com",
+  ],
+  arbitrum: [
+    "https://rpc.ankr.com/arbitrum",
+    "https://arb1.arbitrum.io/rpc",
+  ],
+  sepolia: [
+    "https://sepolia.gateway.tenderly.co",
+    "https://ethereum-sepolia.publicnode.com",
+  ],
+  base: [],
+  arc: [],
+};
+
+const GAS_UNITS_SWAP = 350000; // swaps reais usam ~300k-500k gas (era 200k, subestimava 40%)
 
 const STABLECOIN_SYMBOLS = new Set(["USDC", "USDT", "DAI", "EURC", "ARC"]);
 
@@ -27,17 +50,21 @@ class GasPriceOracle {
   private cache: Map<string, { gasCostUsd: number; timestamp: number }> = new Map();
   private nativePriceCache: Map<string, { price: number; timestamp: number }> = new Map();
 
-  private async _fetchGasPrice(rpcUrl: string): Promise<bigint> {
+  private async _fetchGasPrice(rpcUrl: string, fallbacks?: string[]): Promise<bigint> {
     const res = await fetch('/api/rpc-proxy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         rpcUrl,
         body: { jsonrpc: '2.0', id: 1, method: 'eth_gasPrice', params: [] },
+        fallbacks,
       }),
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(15000),
     })
-    if (!res.ok) throw new Error(`RPC proxy ${res.status}`)
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new Error(`RPC proxy ${res.status}: ${text.slice(0, 100)}`)
+    }
     const data = await res.json()
     if (data.error) throw new Error(data.error.message)
     return BigInt(data.result)
@@ -75,7 +102,7 @@ class GasPriceOracle {
     if (!net) return GAS_COST_ESTIMATE[networkKey] ?? 0.05;
 
     try {
-      let gasPriceWei = await this._fetchGasPrice(net.rpcUrl);
+      let gasPriceWei = await this._fetchGasPrice(net.rpcUrl, RPC_FALLBACKS[networkKey]);
       if (gasPriceWei === 0n) throw new Error("Gas price is 0");
 
       // Arc min base fee is 20 Gwei

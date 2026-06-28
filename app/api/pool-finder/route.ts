@@ -40,8 +40,8 @@ export async function GET(req: Request) {
 
     const allPairs = results
       .flat()
-      .filter((p: any) => parseFloat(p.liquidity?.usd ?? '0') > 50000)
-      .filter((p: any) => parseFloat(p.volume?.h24 ?? '0') > 10000)
+      .filter((p: any) => parseFloat(p.liquidity?.usd ?? '0') > 10000)
+      .filter((p: any) => parseFloat(p.volume?.h24 ?? '0') > 5000)
       .map((p: any) => ({
         address: p.pairAddress,
         chain: p.chainId,

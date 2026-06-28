@@ -2,17 +2,10 @@
 // Módulo separado que varre pools reais via Pool Finder → analisa → injeta no Pregão
 
 import { getTopPools, type PoolInfo } from './pool-finder'
+import type { OkSignal } from './pregão'
 
-interface PregãoRef {
-  receberOK: (ok: {
-    agente: string
-    fromToken: string
-    toToken: string
-    rede: string
-    confianca: number
-    poolAddress?: string
-    dex?: string
-  }) => void
+type PregãoRef = {
+  receberOK: (signal: OkSignal) => void
   adicionarLog: (msg: string) => void
 }
 
@@ -69,11 +62,13 @@ export class PoolScannerExecutor {
               `[PoolScanner] ✓ ${pool.token0}/${pool.token1} score=${pool.score} lucro est. $${lucroPotencial.toFixed(4)}`,
             )
             this.pregao?.receberOK({
-              agente: 'PoolScanner',
+              pregueiro: `PoolScanner:${pool.dex ?? 'unknown'}`,
+              par: `${pool.token0}→${pool.token1}`,
               fromToken: pool.token0,
               toToken: pool.token1,
               rede: 'polygon',
               confianca: Math.min(90, pool.score),
+              timestamp: Date.now(),
               poolAddress: pool.address,
               dex: pool.dex,
             })

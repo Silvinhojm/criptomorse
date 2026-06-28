@@ -14,7 +14,7 @@
 //   Win rate esperado: 65% (mean reversion em stables é confiável)
 //   Lucro diário estimado: $0.50-1.50 com $20 capital
 
-import { realSwap, type NetworkKey, type TokenSymbol } from './real-swap-executor'
+import { realSwap, isStable, type NetworkKey, type TokenSymbol } from './real-swap-executor'
 import { gasPriceOracle } from './gas-price-oracle'
 import { capitalController } from './capital-controller'
 import { getTopPools, type PoolInfo } from './pool-finder'
@@ -35,10 +35,12 @@ export interface TargetPool {
 
 // Fallback: pools hardcoded caso API falhe
 const FALLBACK_POOLS: TargetPool[] = [
-  { network: 'polygon', fromToken: 'USDC', toToken: 'USDT', poolAddress: '', feeTier: 0.0001, tvlEstimate: 2000000, minDeviation: 0.0020, targetProfit: 0.0015, stopLoss: -0.0010, dex: 'fallback' },
-  { network: 'polygon', fromToken: 'USDC', toToken: 'DAI', poolAddress: '', feeTier: 0.0005, tvlEstimate: 1500000, minDeviation: 0.0025, targetProfit: 0.0020, stopLoss: -0.0015, dex: 'fallback' },
-  { network: 'base', fromToken: 'USDC', toToken: 'DAI', poolAddress: '', feeTier: 0.0005, tvlEstimate: 800000, minDeviation: 0.0020, targetProfit: 0.0015, stopLoss: -0.0010, dex: 'fallback' },
-  { network: 'polygon', fromToken: 'USDC', toToken: 'EURC', poolAddress: '', feeTier: 0.003, tvlEstimate: 500000, minDeviation: 0.0080, targetProfit: 0.0060, stopLoss: -0.0040, dex: 'fallback' },
+  { network: 'polygon', fromToken: 'USDC', toToken: 'USDT', poolAddress: '', feeTier: 0.0001, tvlEstimate: 2000000, minDeviation: 0.0015, targetProfit: 0.0012, stopLoss: -0.0010, dex: 'fallback' },
+  { network: 'polygon', fromToken: 'USDC', toToken: 'DAI', poolAddress: '', feeTier: 0.0005, tvlEstimate: 1500000, minDeviation: 0.0020, targetProfit: 0.0015, stopLoss: -0.0015, dex: 'fallback' },
+  { network: 'base', fromToken: 'USDC', toToken: 'DAI', poolAddress: '', feeTier: 0.0005, tvlEstimate: 800000, minDeviation: 0.0015, targetProfit: 0.0012, stopLoss: -0.0010, dex: 'fallback' },
+  { network: 'polygon', fromToken: 'USDC', toToken: 'EURC', poolAddress: '', feeTier: 0.003, tvlEstimate: 500000, minDeviation: 0.0060, targetProfit: 0.0040, stopLoss: -0.0030, dex: 'fallback' },
+  { network: 'arbitrum', fromToken: 'USDC', toToken: 'USDT', poolAddress: '', feeTier: 0.0001, tvlEstimate: 1000000, minDeviation: 0.0015, targetProfit: 0.0012, stopLoss: -0.0010, dex: 'fallback' },
+  { network: 'arbitrum', fromToken: 'USDC', toToken: 'DAI', poolAddress: '', feeTier: 0.0005, tvlEstimate: 500000, minDeviation: 0.0020, targetProfit: 0.0015, stopLoss: -0.0015, dex: 'fallback' },
 ]
 
 let TARGET_POOLS: TargetPool[] = [...FALLBACK_POOLS]
@@ -145,9 +147,11 @@ class OscillationHunter {
             stopLoss: -0.0010,
             dex: p.dex,
           }))
+        // Ordena: fee menor primeiro (stablecoins 0.01% > 0.05% > 0.3%)
+        converted.sort((a, b) => a.feeTier - b.feeTier)
         TARGET_POOLS = converted.slice(0, 10)
         console.log(`[OscillationHunter] ${TARGET_POOLS.length} pools reais carregadas:`,
-          TARGET_POOLS.map(p => `${p.fromToken}/${p.toToken} (${p.dex})`).join(', '))
+          TARGET_POOLS.map(p => `${p.fromToken}/${p.toToken} (${p.dex} fee ${(p.feeTier*100).toFixed(2)}%)`).join(', '))
       }
     } catch (e) {
       console.warn(`[OscillationHunter] Pool Finder falhou, usando fallback (${FALLBACK_POOLS.length} pools)`)
@@ -206,20 +210,20 @@ class OscillationHunter {
         // Só age se desvio > threshold mínimo da pool
         if (Math.abs(deviation) < pool.minDeviation) continue
 
-        // Verificar se a tendência é de reversão (mean reversion)
-        // Se preço caiu (deviation negativo) e últimos 2 pontos estão subindo → reversão
-        const recentTrend = history.length >= 3
-          ? history[history.length - 1] - history[history.length - 3]
+        // Verificar se a tendência é de reversão (mean reversion, 2 pontos)
+        const recentTrend = history.length >= 2
+          ? history[history.length - 1] - history[history.length - 2]
           : 0
         const isReversing = (deviation < 0 && recentTrend > 0) || (deviation > 0 && recentTrend < 0)
         if (!isReversing) continue // espera confirmação de reversão antes de entrar
 
-        const batchSize = Math.min(30, Math.max(5, Math.floor(pool.tvlEstimate * 0.00002)))
+        const batchSize = Math.min(100, Math.max(5, Math.floor(pool.tvlEstimate * 0.00005)))
         const gasRT = gasCost * 2
         const feeRT = batchSize * pool.feeTier * 2
         const custoTotal = gasRT + feeRT
         const lucroEstimado = batchSize * pool.targetProfit - custoTotal
-        if (lucroEstimado < 0.005) continue
+        const isStablePair = isStable(pool.fromToken as TokenSymbol) && isStable(pool.toToken as TokenSymbol)
+        if (lucroEstimado < (isStablePair ? 0.002 : 0.005)) continue
 
         const direction = deviation < 0 ? 'buy' : 'sell'
         const confidence = Math.min(90, Math.round(40 + Math.abs(deviation) * 2500))
@@ -311,12 +315,18 @@ class OscillationHunter {
       const currentPrice = await this.getPrice(pos.pool.toToken).catch(() => 0)
       if (currentPrice <= 0) continue
 
-      if (currentPrice >= pos.targetPrice || currentPrice <= pos.stopPrice) {
+      const isStablePair = isStable(pos.pool.fromToken as TokenSymbol) && isStable(pos.pool.toToken as TokenSymbol)
+
+      // Stables: sem stop loss (sempre revertem ao peg), só take-profit e timeout
+      if (!isStablePair && currentPrice <= pos.stopPrice) {
+        await this.closePosition(pos, currentPrice)
+      } else if (currentPrice >= pos.targetPrice) {
         await this.closePosition(pos, currentPrice)
       }
 
-      // Timeout: fecha após 5 minutos se não bateu target nem stop
-      if (Date.now() - pos.entryTime > 300_000) {
+      // Timeout: 5min para stables, 3min para voláteis
+      const timeout = isStablePair ? 300_000 : 180_000
+      if (Date.now() - pos.entryTime > timeout) {
         console.log(`[Oscar] ⏰ Timeout ${pos.pool.toToken} — fechando a mercado`)
         await this.closePosition(pos, currentPrice)
       }
@@ -358,4 +368,4 @@ class OscillationHunter {
 }
 
 export const oscillationHunter = new OscillationHunter()
-export type { HuntState, OscillationSignal, HuntPosition, TargetPool }
+export type { HuntState, OscillationSignal, HuntPosition }

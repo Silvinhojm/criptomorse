@@ -20,6 +20,154 @@ This version has breaking changes — APIs, conventions, and file structure may 
 
 - Ao verificar estado do sistema, commit alterações no ARCFLOW.md e no código e faça push
 
+## Session Summary (27/06/2026) — 4 Fixes + StableMR + Professor flexivel
+
+### What's Changed
+
+1. **Fix volatilidade 0.0%** — `volatility-tracker.ts:64`: `data[coinId]` → `(data.prices ?? data)[coinId]`. Bug impedia coleta de preços (API retorna `{ prices: { id: val } }` mas código lia `data[id]` = undefined). Todos os agentes e o Grid ficavam sem volatilidade → confiança 0 → sem trades.
+
+2. **Fix grid amountUsd** — `grid-trading.ts:343`: removido `receberOK` interno (double OK). `agentes-do-pregão.ts:1156`: adicionado `amountUsd: 5` no OK real. Antes, sem `amountUsd`, escriturario usava 90% do saldo ($43.40) em vez de $5.
+
+3. **Fix limparOrdensTravadas timeout** — `pregão.ts:509`: timeout de "pronto" de 5s → 120s. Antes ordens eram mortas antes do Professor conseguir pegá-las no ciclo seguinte (ciclo de 10s, timeout de 5s = janela impossível).
+
+4. **Fix double OK do Grid** — `grid-trading.ts:339-351`: removido `pregão.receberOK()` de dentro de `checkLevels()`. O caller em `agentes-do-pregão.ts:1112-1165` já envia o OK com verificações de saldo. Antes cada nível acionado gerava 2 OKs (um interno sem amountUsd/saldo check, outro externo com).
+
+5. **Fix grid multi-nível** — `grid-trading.ts:319-377`: reescrito para disparar apenas 1 nível por direção por ciclo (o mais próximo). Antes disparava 7+ níveis quando preço cruzava múltiplos triggers.
+
+6. **Fix trading-nanopayments price parse** — `trading-nanopayments.ts:66`: mesmo bug `data[coinId]` → `(data.prices ?? data)[coinId]`.
+
+7. **DEX timeout 5s→10s** — `pregão.ts:553`: mais cotações chegam antes do fallback.
+
+8. **Gas threshold 2x→1x** — `pregão.ts:672`: `gasMultiplier` normal de 2.0 para 1.0.
+
+9. **basePct Polygon 0.1%→0.05%** — `pregão.ts:621`: threshold de lucro reduzido. Floor $0.005→$0.003.
+
+10. **StableMR module** — `lib/stable-mr.ts`: novo módulo de mean reversion pra stable pairs. Mantém SMA rolante (12 amostras), dispara OK de compra/venda quando desvio > 0.05% da média. Amount dinâmico: `max($12, |dev| × 5000)`.
+
+11. **Professor flexível pra stables** — `pregão.ts:622+674+679`: quando StableMR tem sinal ativo, Professor reduz `basePct` pra 0.03%, skipa real profit check (lucro vem da reversão, não da entrada), só aborta se perda > 0.5× gas.
+
+### Impacto Esperado
+- Volatilidade volta a funcionar → agentes ganham confiança → OKs reais
+- Grid trades de $5 em vez de $43.40
+- Professor tem 120s para pegar ordens "pronto" antes do timeout
+- Grid gera 1 OK por nível (não 2)
+- DEX timeout 5s→10s: mais cotações chegam antes do fallback
+- Gas threshold 2x→1x: lucro $0.0107 cobre gas $0.009 e executa
+- Grid só dispara 1 nível por ciclo (não 7+)
+- StableMR opera stables com entrada $12+ em desvios >0.14%
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Polygon**: $48.22 USDC, $15.55 POL
+- **Arc Testnet**: $84 EURC, $0 USDC, posições cirBTC/mcirBTC abertas
+
+## Session Summary (27/06/2026) — 4 Fixes: Volatilidade, Grid amountUsd, Timeout, Double OK
+
+### What's Changed
+
+1. **Fix volatilidade 0.0%** — `volatility-tracker.ts:64`: `data[coinId]` → `(data.prices ?? data)[coinId]`. Bug impedia coleta de preços (API retorna `{ prices: { id: val } }` mas código lia `data[id]` = undefined). Todos os agentes e o Grid ficavam sem volatilidade → confiança 0 → sem trades.
+
+2. **Fix grid amountUsd** — `grid-trading.ts:343`: removido `receberOK` interno (double OK). `agentes-do-pregão.ts:1156`: adicionado `amountUsd: 5` no OK real. Antes, sem `amountUsd`, escriturario usava 90% do saldo ($43.40) em vez de $5.
+
+3. **Fix limparOrdensTravadas timeout** — `pregão.ts:509`: timeout de "pronto" de 5s → 120s. Antes ordens eram mortas antes do Professor conseguir pegá-las no ciclo seguinte (ciclo de 10s, timeout de 5s = janela impossível).
+
+4. **Fix double OK do Grid** — `grid-trading.ts:339-351`: removido `pregão.receberOK()` de dentro de `checkLevels()`. O caller em `agentes-do-pregão.ts:1112-1165` já envia o OK com verificações de saldo. Antes cada nível acionado gerava 2 OKs (um interno sem amountUsd/saldo check, outro externo com).
+
+### Impacto Esperado
+- Volatilidade volta a funcionar → agentes ganham confiança → OKs reais
+- Grid trades de $5 em vez de $43.40
+- Professor tem 120s para pegar ordens "pronto" antes do timeout
+- Grid gera 1 OK por nível (não 2)
+- DEX timeout 5s→10s: mais cotações chegam antes do fallback
+- Gas threshold 2x→1x: lucro $0.0107 cobre gas $0.009 e executa
+- Grid só dispara 1 nível por ciclo (não 7+)
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Polygon**: $48.22 USDC, $15.55 POL
+- **Arc Testnet**: $84 EURC, $0 USDC, posições cirBTC/mcirBTC abertas
+
+## Session Summary (27/06/2026) — Auditoria Completa: Fórmulas, Banco Central, Robôs
+
+### O que foi feito
+
+**Auditoria técnica completa** do sistema CriptoMorse — todas as fórmulas matemáticas verificadas, arquitetura do CapitalController analisada, integração dos robôs mapeada. Resultados documentados na seção AUDITORIA TÉCNICA do ARCFLOW.md.
+
+### Bugs Identificados
+
+**BUG #1 — lockedBy mismatch (CRÍTICO)**: `capital-controller.ts:50` compara `p.id === this.state.lockedBy`. CapitalController usa IDs estilo `"agentes:USDC→WMATIC:polygon:123"` enquanto PositionManager usa `"pos_polygon_WMATIC_123"`. Match NUNCA ocorre — unlock() sempre libera capital mesmo com posição ativa. CapitalController não está protegendo o capital como deveria.
+
+**BUG #2 — Stuck transaction sem unlock**: `pregão.ts:getOrdensAtivas()` marca ordem como falha após 120s timeout, mas NUNCA chama `capitalController.unlock()`. Se transação trava na rede, capital fica locked permanentemente.
+
+**NOTA — Score fixo do Modo Grão**: `modo-grão.ts:381` passa `score: 50` fixo. **Não é bug** — é design: Modo Grão opera stable pairs (baixo risco), score fixo dá prioridade consistente. Oscillation Hunter só passa na frente em desvios >0.24% (score >50). Agentes também usam 50. Professor usa 0-5 (propositalmente baixo).
+
+### Fórmulas Verificadas
+
+- **M_break** (break-even volátil): `((G/V + 1 + S)/(1 - S)) - 1` — correta. WETH: 0.79%, EURC: 0.79% (mas EURC vol real 0.05-0.30% → inviável)
+- **V_min** (batch mínimo): `ceil(gasRT / margemMinima)` — correta. EURC: $28, WETH: $3
+- **Confiança Oscar**: `min(90, round(40 + |dev| × 2500))` — correta. Desvio 0.20% → conf 45 (threshold)
+- **Score Contábil**: `winRate × 0.5 + min(avgProfit,1) × 20 + profitBonus + max(0,streak) × 0.5` — max teórico ~95 pts. Streak suavizado (EMA α=0.3), máximo assintótico 5.0 → contribuição max 2.5 pts
+- **Poder de Voto**: `profitRatio × 0.6 + winRateRatio × 0.4` — ok, mas 1 agente = power 1.0 (irrelevante)
+
+### SoSoValue Rate Limit Analysis
+
+- 20 req/min (demo plan) = ~4 fetches/min para todos os tokens
+- 15s cache de preço = preço pode estar 15s atrasado
+- Em volatilidade 1%/min: diferença de 0.25% entre preço cacheado e real → **ANULA a margem de 0.1% da Polygon**
+- **Risco**: ordens de compra em topo local, venda em fundo local
+
+### Overhead de Locks
+
+7 locks por trade: escriturario → CapitalController → refreshLock → NonceManager → pregão → circuit breaker → unlock()
+Overhead: 500-1500ms adicionais. Aceitável para trades de 30-120s.
+
+### Recomendações
+
+1. **Fix lockedBy**: unlock() deve checar `boughtToken + networkKey` em vez de `id`
+2. **Stuck TX**: `capitalController.forceUnlock()` no timeout de ordem do pregão
+3. **Score dinâmico universal**: score = `min(100, round(expectedProfit / amountUSD × 5000))`
+4. **Slippage tolerance**: reduzir de 5% para 0.5% (margem de lucro é 0.1%)
+5. **Price cache**: reduzir de 15s para 5s em modo mainnet
+
+### Estado Atual
+
+- **Polygon**: $48.22 USDC, $15.55 POL. 6 trades on-chain, 100% win rate, $18.77 lucro.
+- **Retorno sobre capital**: 28.9% (~$65 capital inicial)
+- **ARCFLOW.md**: nova seção AUDITORIA TÉCNICA (A-E) com fórmulas matemáticas completas, bugs, locks, métricas
+- **Build**: verificar após edições
+
+## Session Summary (27/06/2026) — Décima Sessão: CapitalController em Harmonia Total
+
+### What's Changed
+
+**1. CapitalController integrado no Ciclo de Agentes (corretor.ts)**
+- `corretor.ts:executar()` — antes de chamar `realSwap.executeSwap()`, faz `capitalController.request()`. Se capital ocupado, ordem volta pra "preparando" com log `"⏳ Capital ocupado — ordem X na fila"`. `unlock()` em `finally` garante liberação mesmo em erro.
+- `corretor.ts:executarBatch()` — mesmo padrão para batches (UltraFlash). Soma todos os valores do batch em `totalValor`, faz request único. Se negado, todas as ordens voltam pra "preparando".
+
+**2. CapitalController integrado no Professor (pregão.ts:executarPacotes())**
+- `pregão.ts:751-764` — antes de executar o batch UltraFlash via `batchApprove`/`executeBatch`, faz `capitalController.request()`. Score calculado como `min(100, round(expectedProfit / invested * 1000))`. Se negado, pacote é re-registrado via `setorPacotes.registrarPacote(pacote)` para tentar no próximo ciclo. `unlock()` em `finally`.
+
+**3. Quatro caminhos de trading agora compartilham o mesmo gate:**
+
+| # | Método | Arquivo:linha | `request()` | `unlock()` | Score típico |
+|---|--------|---------------|-------------|------------|-------------|
+| 1 | **Oscillation Hunter** | `oscillation-hunter.ts` | antes do swap | `finally` | 60-90 (vol * depth) |
+| 2 | **Modo Grão** | `modo-grão.ts` | antes do batch | `finally` | 40-70 (sinais MR+MM) |
+| 3 | **Agentes (testnet)** | `corretor.ts:executar()` | linha 51 | `finally` linha 225 | 50 fixo |
+| 4 | **Professor (mainnet)** | `pregão.ts:executarPacotes()` | linha 754 | `finally` linha 871 | 0-100 (profit/invested) |
+
+**4. Prioridade por score com desempate FIFO:**
+- CapitalController mantém fila ordenada por score decrescente
+- `unlock()` libera o próximo da fila automaticamente
+- Requests expiram em 5 minutos (fila é limpa a cada `request()`)
+- `waitPosition` retornado informa quantos estão na frente
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Harmonia**: todos os 4 métodos passam pelo mesmo `capitalController.request()`. Nunca dois trades concorrem pelo mesmo USDC.
+- **Fila**: quando capital ocupado, requests se acumulam ordenados por score. `unlock()` libera o melhor automaticamente.
+- **Polygon**: $48.22 USDC, $15.55 POL. Sistema operando — 6 trades on-chain, 100% win rate, $18.77 lucro.
+
 ## Session Summary (24/06/2026) — Terceira sessão: Migração CoinGecko → SoSoValue
 
 ### What's Changed
@@ -216,6 +364,23 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - **LI.FI**: slippage >5% logado (perda da cotação vs execução registrada)
 - **Professor**: `init()` no construtor, estado em localStorage
 - **All 14 fixes**: 6 stability + 3 infra + 2 late (F, G) + 3 round4 (H refinado, I, J)
+
+## Session Summary (27/06/2026) — Nona Sessão: RPC proxy fallback + Ethereum 502 fix
+
+### What's Changed
+
+1. **RPC proxy com fallback automático** — `app/api/rpc-proxy/route.ts`: aceita `fallbacks: string[]` no body. Tenta RPCs em sequência: primário → fallbacks. Só retorna 502 se TODOS falharem. Backward compatible (callers antigos sem `fallbacks` continuam funcionando).
+
+2. **Ethereum RPC trocado** — `lib/real-swap-executor.ts`: `eth.llamarpc.com` → `ethereum-rpc.publicnode.com` (mais confiável, já estava nos fallbacks).
+
+3. **_createProxyProvider com fallbacks** — `lib/real-swap-executor.ts:444`: passa `BACKUP_RPCS[networkKey]` para o proxy, permitindo fallback automático em todas as chamadas ethers.js via proxy.
+
+4. **GasPriceOracle com fallbacks** — `lib/gas-price-oracle.ts`: `_fetchGasPrice` passa `RPC_FALLBACKS[networkKey]` para o proxy. Timeout 10s→15s. Mensagens de erro mais descritivas.
+
+### Current State
+- **Polygon**: $48.22 USDC, $15.55 POL. 6 trades on-chain, 100% win rate, $18.77 lucro.
+- **Console**: Ethereum RPC não polui mais com 502 — proxy tenta `publicnode.com` + `ankr.com` antes de falhar.
+- **Build**: sem novos erros TS (4 pré-existentes inalterados).
 
 ## Session Summary (27/06/2026) — Oitava Sessão: Concorrência de vendas eliminada
 

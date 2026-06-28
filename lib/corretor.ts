@@ -3,6 +3,7 @@ import { pairProfitability } from "./pair-profitability"
 import { pregão, type OrdemExecucao } from "./pregão"
 import { blockIfPanicked, recordTradeResult } from "./circuit-breaker"
 import { positionManager } from "./position-manager"
+import { capitalController } from "./capital-controller"
 // feeMonetization removido — taxa fantasma que só encolhe o trade sem beneficiar ninguém
 
 import { accountant } from "./accountant"
@@ -41,17 +42,32 @@ class Corretor {
   }
 
   async executar(ordem: OrdemExecucao, valorTrade: number) {
+    const fromKey = ordem.fromToken as TokenSymbol
+    const toKey = ordem.toToken as TokenSymbol
+    const redeKey = ordem.rede as NetworkKey
+
+    // 🔒 CapitalController: verifica se pode executar
+    const ccId = `agentes:${ordem.par}:${redeKey}:${Date.now()}`
+    const approval = capitalController.request({
+      id: ccId, strategy: 'agentes',
+      pair: ordem.par, network: redeKey,
+      amountUSD: valorTrade, score: 50,
+      estimatedProfit: 0, requestedAt: Date.now(),
+    })
+    if (!approval.authorized) {
+      this.log(`⏳ Capital ocupado — ordem ${ordem.id} na fila (${approval.reason})`)
+      pregão.atualizarOrdem(ordem.id, { status: "preparando" })
+      return
+    }
+
     pregão.atualizarOrdem(ordem.id, { status: "executando" })
 
     if (blockIfPanicked()) {
       this.log(`🚨 Circuit breaker ativo — ordem ${ordem.id} bloqueada`)
       pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+      capitalController.unlock()
       return
     }
-
-    const fromKey = ordem.fromToken as TokenSymbol
-    const toKey = ordem.toToken as TokenSymbol
-    const redeKey = ordem.rede as NetworkKey
 
     // 🔥 Multi-chain: alterna rede se necessário (CCTP bridge + auto-gas no executeSwap)
     const currentNet = realSwap.getNetworkKey()
@@ -193,6 +209,8 @@ class Corretor {
     } catch (err: any) {
       this.log(`❌ Erro na execução: ${err.message}`)
       pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+    } finally {
+      capitalController.unlock()
     }
   }
 
@@ -212,6 +230,24 @@ class Corretor {
         pregão.atualizarOrdem(o.id, { status: "falhou" })
       }
       this.log(`🚨 Circuit breaker ativo — batch ${redeKey} bloqueado`)
+      return
+    }
+
+    // 🔒 CapitalController: verifica capital para o batch
+    const totalValor = valores.reduce((s, v) => s + v, 0)
+    const ccId = `agentes:batch:${redeKey}:${Date.now()}`
+    const pairs = ordens.map(o => o.par).join("+")
+    const approval = capitalController.request({
+      id: ccId, strategy: 'agentes',
+      pair: pairs, network: redeKey,
+      amountUSD: totalValor, score: 50,
+      estimatedProfit: 0, requestedAt: Date.now(),
+    })
+    if (!approval.authorized) {
+      for (const o of ordens) {
+        pregão.atualizarOrdem(o.id, { status: "preparando" })
+      }
+      this.log(`⏳ Capital ocupado — batch ${pairs} na fila (${approval.reason})`)
       return
     }
 
@@ -428,6 +464,8 @@ class Corretor {
         const ordem = ordens.find(o => o.fromToken === s.fromToken && o.toToken === s.toToken)
         if (ordem) pregão.atualizarOrdem(ordem.id, { status: "falhou" })
       }
+    } finally {
+      capitalController.unlock()
     }
   }
 
