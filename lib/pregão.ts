@@ -4,7 +4,8 @@ import { isStable } from "./real-swap-executor"
 import { setorPacotes, type TradeIntent } from "./setor-pacotes"
 import { batchApprove, executeBatch, type UltraFlashSwap } from "./ultraflash"
 import { realSwap, NETWORKS, type NetworkKey, type TokenSymbol, TOKEN_DECIMALS, isArcStressMode } from "./real-swap-executor"
-import { hasDirectDex, getDirectDexQuote, calculateAmountOutMin } from "./direct-dex"
+import { hasDirectDex, hasV3Router, getDirectDexQuote, getDirectDexQuoteV3, calculateAmountOutMin, sanitizeQuote } from "./direct-dex"
+import { poolProfiler } from "./pool-profiler"
 import { getQuote } from "./lifi-executor"
 import { ethers } from "ethers"
 import { gasPriceOracle } from "./gas-price-oracle"
@@ -529,13 +530,21 @@ class Pregão {
   }
 
   private _quoteWithTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T | null> {
+    let timeoutId: NodeJS.Timeout
+    const timeoutPromise = new Promise<null>(resolve => {
+      timeoutId = setTimeout(() => {
+        this.log(`[PREGÃO] ⏰ ${label} atingiu o limite de timeout de ${ms}ms`)
+        resolve(null)
+      }, ms)
+    })
     return Promise.race([
-      promise,
-      new Promise<null>((_, reject) =>
-        setTimeout(() => reject(new Error(`${label} timeout (${ms}ms)`)), ms)
-      ),
+      promise.then(result => {
+        clearTimeout(timeoutId)
+        return result
+      }),
+      timeoutPromise,
     ]).catch(err => {
-      this.log(`[PREGÃO] ⏰ ${err.message}`)
+      this.log(`[PREGÃO] ❌ Erro de execução na promise principal [${label}]: ${err.message}`)
       return null
     })
   }
@@ -554,35 +563,110 @@ class Pregão {
     const fromPrice = await realSwap.fetchTokenPrice(trade.fromToken).catch(() => 1)
     const fromAmountRaw = ethers.parseUnits((trade.amount / fromPrice).toFixed(fromDecimals), fromDecimals)
 
-    const [dexQuote, lifiQuote] = await Promise.all([
-      hasDirectDex(redeKey)
-        ? this._quoteWithTimeout(
-            getDirectDexQuote(redeKey, realSwap.getProvider()!, fromTokenAddr, toTokenAddr, fromAmountRaw),
-            10000, `DEX ${trade.fromToken}→${trade.toToken}`
-          )
-        : Promise.resolve(null),
-      // Pula LI.FI em trades < $20 — fee 0.1% do aggregator mata lucro
-      trade.amount >= 20 ? this._quoteWithTimeout(
-        getQuote({
-          fromChain: net.chainId, toChain: net.chainId,
-          fromToken: fromTokenAddr, toToken: toTokenAddr,
-          fromAmount: fromAmountRaw.toString(),
-          fromAddress: realSwap.getAddress(),
-          toAddress: realSwap.getAddress(), slippage: 0.005,
-        }),
-        10000, `LI.FI ${trade.fromToken}→${trade.toToken}`
-      ) : Promise.resolve(null),
-    ])
+    const isStablePair = isStable(trade.fromToken as TokenSymbol) && isStable(trade.toToken as TokenSymbol)
 
-    const dexOut = dexQuote && dexQuote.amountOut > 0n
-      ? Number(ethers.formatUnits(dexQuote.amountOut, toDecimals))
+    // ─── V3 quote para stable pairs (0.01% fee tier) ────────────
+    let v3Quote: import("./direct-dex").DirectDexQuote | null = null
+    if (isStablePair && hasV3Router(redeKey)) {
+      const provider = realSwap.getProvider()
+      if (provider) {
+        const pools = await poolProfiler.getPools(redeKey, fromTokenAddr, toTokenAddr)
+        if (pools.length > 0) {
+          const bestFee = pools.reduce((b, p) => p.fee < b.fee ? p : b, pools[0])
+          v3Quote = await this._quoteWithTimeout(
+            getDirectDexQuoteV3(redeKey, provider, fromTokenAddr, toTokenAddr, fromAmountRaw, bestFee.fee),
+            10000, `V3 ${trade.fromToken}→${trade.toToken}`
+          )
+          // Sanitiza: rejeita quote anômalo (ex: USDC→DAI $0.50)
+          if (v3Quote && !sanitizeQuote(v3Quote, fromDecimals, toDecimals, {
+            amountInUsd: trade.amount, isStablePair: true, maxDeviationPct: 0.10,
+          })) {
+            v3Quote = null
+          }
+        }
+      }
+    }
+
+    // ─── V2 quote (fallback) ────────────────────────────────────
+    const dexQuote = !v3Quote && hasDirectDex(redeKey)
+      ? await this._quoteWithTimeout(
+          getDirectDexQuote(redeKey, realSwap.getProvider()!, fromTokenAddr, toTokenAddr, fromAmountRaw),
+          10000, `DEX V2 ${trade.fromToken}→${trade.toToken}`
+        )
+      : null
+
+    // ─── LI.FI (só para trades ≥ $20 ou se DEX falhou) ──────────
+    const lifiQuote = (trade.amount >= 20 || (!v3Quote && !dexQuote)) ? await this._quoteWithTimeout(
+      getQuote({
+        fromChain: net.chainId, toChain: net.chainId,
+        fromToken: fromTokenAddr, toToken: toTokenAddr,
+        fromAmount: fromAmountRaw.toString(),
+        fromAddress: realSwap.getAddress(),
+        toAddress: realSwap.getAddress(), slippage: 0.005,
+      }),
+      10000, `LI.FI ${trade.fromToken}→${trade.toToken}`
+    ) : null
+
+    const bestQuote = v3Quote ?? dexQuote
+    const dexOut = bestQuote && bestQuote.amountOut > 0n
+      ? Number(ethers.formatUnits(bestQuote.amountOut, toDecimals))
       : 0
+
     const lifiOut = lifiQuote?.transactionRequest?.data && lifiQuote?.transactionRequest?.to
       ? parseFloat(lifiQuote.toAmount ?? "0") / Math.pow(10, toDecimals)
       : 0
 
-    if (dexOut >= lifiOut && dexOut > 0 && dexQuote) {
-      const amountOutMin = calculateAmountOutMin(dexQuote.amountOut, 100)
+    // Escolhe melhor rota: V3 > V2 > LI.FI
+    if (dexOut >= lifiOut && dexOut > 0 && bestQuote) {
+      // ─── Bug #2: Barreira econômica no fallback V3→V2 ────────────
+      // Se V3 falhou e caiu em V2, a fee de 0.3% pode inviabilizar o trade.
+      // Só executa V2 se o lucro esperado cobre fee V2 + gas.
+      if (bestQuote.dexType === "v2" && isStablePair) {
+        const feeCost = trade.amount * 0.003
+        const estimatedGasUsd = 0.007
+        const minExpectedProfit = feeCost + estimatedGasUsd
+        if (trade.expectedProfit < minExpectedProfit) {
+          this.log(`[PREGÃO] 🛑 Abortando Fallback V2 para ${trade.fromToken}→${trade.toToken}. Lucro esperado ($${trade.expectedProfit.toFixed(4)}) não cobre a taxa V2 + Gás ($${minExpectedProfit.toFixed(4)})`)
+          return null
+        }
+      }
+
+      // ─── Melhoria #5: Log da rota escolhida ─────────────────────
+      if (bestQuote.dexType === "v3") {
+        this.log(`[PREGÃO] ⚡ Rota ótima via V3 [Fee: ${((bestQuote.fee ?? 100) / 10000).toFixed(3)}%] para ${trade.fromToken}→${trade.toToken}`)
+      } else if (bestQuote.dexType === "v2") {
+        this.log(`[PREGÃO] 🔄 Rota via Fallback V2 [Fee: 0.3%] para ${trade.fromToken}→${trade.toToken}`)
+      }
+
+      const amountOutMin = calculateAmountOutMin(bestQuote.amountOut, isStablePair ? 30 : 100)
+
+      if (bestQuote.dexType === "v3") {
+        // V3 calldata: exactInputSingle
+        const iface = new ethers.Interface([
+          "function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96) params) external payable returns (uint256 amountOut)",
+        ])
+        return {
+          fromToken: trade.fromToken, toToken: trade.toToken,
+          amountRaw: fromAmountRaw, amountUsd: trade.amount,
+          target: bestQuote.router,
+          calldata: iface.encodeFunctionData("exactInputSingle", [{
+            tokenIn: fromTokenAddr,
+            tokenOut: toTokenAddr,
+            fee: bestQuote.fee ?? 100,
+            recipient: realSwap.getAddress(),
+            deadline: Math.floor(Date.now() / 1000) + 600,
+            amountIn: fromAmountRaw,
+            amountOutMinimum: amountOutMin,
+            sqrtPriceLimitX96: 0n,
+          }]),
+          value: 0n,
+          spender: bestQuote.router,
+          expectedToAmount: dexOut,
+          network: redeKey,
+        }
+      }
+
+      // V2 calldata: swapExactTokensForTokens
       const deadline = Math.floor(Date.now() / 1000) + 600
       const iface = new ethers.Interface([
         "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)",
@@ -590,16 +674,17 @@ class Pregão {
       return {
         fromToken: trade.fromToken, toToken: trade.toToken,
         amountRaw: fromAmountRaw, amountUsd: trade.amount,
-        target: dexQuote.router,
+        target: bestQuote.router,
         calldata: iface.encodeFunctionData("swapExactTokensForTokens", [
-          fromAmountRaw, amountOutMin, dexQuote.path, realSwap.getAddress(), deadline,
+          fromAmountRaw, amountOutMin, bestQuote.path, realSwap.getAddress(), deadline,
         ]),
-        value: 0n, spender: dexQuote.router,
+        value: 0n, spender: bestQuote.router,
         expectedToAmount: dexOut, network: redeKey,
       }
     }
 
     if (lifiOut > 0 && lifiQuote?.transactionRequest) {
+      this.log(`[PREGÃO] 🌐 Rota via agregador LI.FI para ${trade.fromToken}→${trade.toToken}`)
       return {
         fromToken: trade.fromToken, toToken: trade.toToken,
         amountRaw: fromAmountRaw, amountUsd: trade.amount,
@@ -695,13 +780,13 @@ class Pregão {
     if (temGridTrade) {
       this.log(`[PREGÃO] 📐 Grid entrada aceita — DEX fee $${(-lucroRealEsperado).toFixed(4)} é custo de entrada, lucro na reversão`)
     } else if (temDesvioEstavel) {
-      // StableMR: entrada sempre perde spread DEX (~0.06%), protege contra perda anormal > gas
-      const gasCheck = estimatedGasTotal * 0.5
-      if (lucroRealEsperado < -gasCheck) {
-        this.log(`[PREGÃO] 🌾 StableMR perde $${(-lucroRealEsperado).toFixed(4)} > gas $${gasCheck.toFixed(4)} — abortando`)
+      // StableMR: DEX fee ~0.3% é esperado na entrada, aborta só se perda > 1% do amount
+      const totalAmount = swaps.reduce((s, sw) => s + sw.amountUsd, 0)
+      if (lucroRealEsperado < -totalAmount * 0.01) {
+        this.log(`[PREGÃO] 🌾 StableMR perda $${(-lucroRealEsperado).toFixed(4)} > 1% de $${totalAmount.toFixed(2)} — abortando`)
         return
       }
-      this.log(`[PREGÃO] 🌾 StableMR desvio ${((stableSignals.find(s => pacote.trades.some(t => `${t.fromToken}→${t.toToken}` === s.pair))?.deviation ?? 0) * 100).toFixed(3)}% — entrada aceita (lucro na reversão)`)
+      this.log(`[PREGÃO] 🌾 StableMR DEX fee $${(-lucroRealEsperado).toFixed(4)} (${((-lucroRealEsperado / totalAmount) * 100).toFixed(2)}%) — entrada aceita, lucro na reversão`)
     } else {
       const gasMultiplier = isUltimaTentativa ? 0.5 : 1.0
       if (lucroRealEsperado < lucroMinimoTotal && !isUltimaTentativa) {

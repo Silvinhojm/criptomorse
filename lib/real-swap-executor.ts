@@ -182,6 +182,12 @@ export const TRADING_PAIRS: Record<NetworkKey, Array<{ from: TokenSymbol; to: To
     { from: "WETH",   to: "USDC",   label: "WETH→USDC" },    // era "ETH→USDC"
     { from: "USDC",   to: "DAI",    label: "USDC→DAI" },
     { from: "DAI",    to: "USDC",   label: "DAI→USDC" },
+    { from: "USDC",   to: "EURC",   label: "USDC→EURC" },
+    { from: "EURC",   to: "USDC",   label: "EURC→USDC" },
+    { from: "EURC",   to: "DAI",    label: "EURC→DAI" },
+    { from: "DAI",    to: "EURC",   label: "DAI→EURC" },
+    { from: "EURC",   to: "USDT",   label: "EURC→USDT" },
+    { from: "USDT",   to: "EURC",   label: "USDT→EURC" },
   ],
   ethereum: [
     { from: "USDC", to: "WETH", label: "USDC→WETH" },

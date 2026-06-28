@@ -1,37 +1,51 @@
+// lib/stable-mr.ts
+// Stable Mean Reversion — Engine Estocástica Pi (Modo Grão V2)
+//
+// Combina:
+//   1. PoolProfiler — só opera pares com pool V3 confirmada
+//   2. PiFilter — distribuição Gaussiana com threshold adaptativo via π
+//   3. DEX quoting — preço real da pool V3 (zero dependência SoSoValue)
+//   4. Lote dinâmico — escala por sigma² para diluir custo de gás
+
 import { pregão } from "./pregão"
-import { TRADING_PAIRS, realSwap } from "./real-swap-executor"
+import { TRADING_PAIRS, realSwap, NETWORKS, TOKEN_DECIMALS } from "./real-swap-executor"
+import { poolProfiler } from "./pool-profiler"
+import { getDirectDexQuoteV3, getDirectDexQuoteV2, hasDirectDex, hasV3Router, sanitizeQuote } from "./direct-dex"
+import {
+  createInitialState, updatePiFilter,
+  type PiFilterState, type PiFilterConfig,
+} from "./math/pi-filter"
+import { ethers } from "ethers"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 
-const SMA_WINDOW = 12
-const DEVIATION_THRESHOLD = 0.0005
 const CACHE_TTL_MS = 10_000
 const STORAGE_KEY = "arcflow_stable_mr"
 
-interface PriceSample {
-  price: number
-  ts: number
+const PI_CONFIG: PiFilterConfig = {
+  alphaMin: 0.05,
+  alphaMax: 0.30,
+  volNormalizer: 0.005,
+  sigmaEntryBuy: -1.5,
+  sigmaEntrySell: 1.5,
+  baseAmount: 12,
+  maxAmount: 30,
 }
 
-interface PairState {
-  history: PriceSample[]
-  lastSignal: "buy" | "sell" | null
-  signalTs: number
-  sma: number
-  lastPrice: number
-  deviation: number
-}
-
-type State = Record<string, PairState>
+type State = Record<string, PiFilterState>
 
 export interface StableMRSnapshot {
   key: string
   pair: string
   network: string
-  sma: number
+  ewma: number
   lastPrice: number
-  deviation: number
+  sigma: number
+  confidence: number
+  alpha: number
+  volatility: number
   signal: "buy" | "sell" | "none"
+  suggestedAmount?: number
 }
 
 function loadState(): State {
@@ -47,65 +61,109 @@ function saveState(s: State) {
 
 class StableMR {
   private state: State = {}
+  private lastSignalTs: Map<string, number> = new Map()
 
   async check(network: string) {
     this.state = loadState()
+    const provider = realSwap.getProvider()
+    if (!provider) return
 
-    const pairs = (TRADING_PAIRS[network as keyof typeof TRADING_PAIRS] || []).filter((p: any) =>
+    const stablePairs = (TRADING_PAIRS[network as keyof typeof TRADING_PAIRS] || []).filter((p: any) =>
       STABLES.has(p.from) && STABLES.has(p.to)
     )
 
-    for (const pair of pairs) {
+    if (!stablePairs || stablePairs.length === 0) {
+      pregão.adicionarLog("[STABLE-MR] ⚠️ Varredura pulada: sem pares estáveis configurados ou RPC indisponível.")
+      return
+    }
+
+    const net = NETWORKS[network as keyof typeof NETWORKS]
+    if (!net) return
+
+    for (const pair of stablePairs) {
       const key = `${pair.from}→${pair.to}@${network}`
+      const fromAddr = (net.tokens as any)[pair.from]
+      const toAddr = (net.tokens as any)[pair.to]
+      if (!fromAddr || !toAddr) continue
+
+      // ─── Filtro de pool V3 ────────────────────────────────────────
+      const pools = await poolProfiler.getPools(network as any, fromAddr, toAddr)
+      if (pools.length === 0) continue
+      const bestFee = pools.reduce((best: any, p: any) => p.fee < best.fee ? p : best, pools[0])
+
+      // ─── Inicializa estado PiFilter ───────────────────────────────
       if (!this.state[key]) {
-        this.state[key] = { history: [], lastSignal: null, signalTs: 0, sma: 1, lastPrice: 0, deviation: 0 }
+        this.state[key] = createInitialState()
       }
-
       const ps = this.state[key]
-      const price = await this.getPrice(pair.label)
-      if (!price || price <= 0) continue
 
-      const last = ps.history[ps.history.length - 1]
-      if (last && Date.now() - last.ts < CACHE_TTL_MS) continue
+      // ─── Preço via DEX V3 quote ───────────────────────────────────
+      const quoteAmount = ethers.parseUnits("10000", TOKEN_DECIMALS[pair.from] ?? 6)
+      let price: number | null = null
 
-      ps.history.push({ price, ts: Date.now() })
-      if (ps.history.length > SMA_WINDOW) ps.history.shift()
-
-      ps.lastPrice = price
-
-      if (ps.history.length < 4) continue
-
-      ps.sma = ps.history.reduce((s: number, p: PriceSample) => s + p.price, 0) / ps.history.length
-      ps.deviation = (price - ps.sma) / ps.sma
-
-      const sinceLastSignal = Date.now() - ps.signalTs
-      const isBuy = ps.deviation <= -DEVIATION_THRESHOLD
-      const isSell = ps.deviation >= DEVIATION_THRESHOLD
-
-      if ((isBuy || isSell) && sinceLastSignal > CACHE_TTL_MS) {
-        const devAbs = Math.abs(ps.deviation)
-        let amountUsd = Math.max(12, Math.round(devAbs * 5000 * 100) / 100)
-        const bal = realSwap.getBalance(pair.from)
-        const fromPrice = await realSwap.fetchTokenPrice(pair.from as any).catch(() => 1)
-        const balUsd = bal * (STABLES.has(pair.from) ? 1 : fromPrice)
-        amountUsd = Math.min(amountUsd, Math.floor(balUsd * 0.9 * 100) / 100)
-
-        if (amountUsd < 5) continue
-
-        pregão.receberOK({
-          pregueiro: "StableMR",
-          rede: network as any,
-          par: pair.label,
-          confianca: 75,
-          amountUsd,
-          timestamp: Date.now(),
-          fromToken: pair.from,
-          toToken: pair.to,
-        })
-        ps.lastSignal = isBuy ? "buy" : "sell"
-        ps.signalTs = Date.now()
-        pregão.adicionarLog(`🌾 StableMR ${isBuy ? "COMPRA" : "VENDA"} ${pair.label} (desvio ${(ps.deviation * 100).toFixed(3)}%, $${amountUsd})`)
+      if (hasV3Router(network)) {
+        const v3quote = await getDirectDexQuoteV3(
+          network, provider, fromAddr, toAddr, quoteAmount, bestFee.fee
+        )
+        if (v3quote && sanitizeQuote(v3quote, TOKEN_DECIMALS[pair.from] ?? 6, TOKEN_DECIMALS[pair.to] ?? 6, {
+          amountInUsd: 10000, isStablePair: true, maxDeviationPct: 0.10,
+        })) {
+          const inAmt = Number(ethers.formatUnits(quoteAmount, TOKEN_DECIMALS[pair.from] ?? 6))
+          const outAmt = Number(ethers.formatUnits(v3quote.amountOut, TOKEN_DECIMALS[pair.to] ?? 6))
+          price = outAmt / inAmt
+        }
       }
+
+      // Fallback V2
+      if (price === null && hasDirectDex(network)) {
+        const v2quote = await getDirectDexQuoteV2(
+          network, provider, fromAddr, toAddr, quoteAmount
+        )
+        if (v2quote && sanitizeQuote(v2quote, TOKEN_DECIMALS[pair.from] ?? 6, TOKEN_DECIMALS[pair.to] ?? 6, {
+          amountInUsd: 10000, isStablePair: true, maxDeviationPct: 0.10,
+        })) {
+          const inAmt = Number(ethers.formatUnits(quoteAmount, TOKEN_DECIMALS[pair.from] ?? 6))
+          const outAmt = Number(ethers.formatUnits(v2quote.amountOut, TOKEN_DECIMALS[pair.to] ?? 6))
+          price = outAmt / inAmt
+        }
+      }
+
+      if (price === null || price <= 0) continue
+
+      // ─── Filtro estocástico Pi ────────────────────────────────────
+      const { state: newState, signal } = updatePiFilter(ps, price, PI_CONFIG)
+      this.state[key] = newState
+
+      if (!signal || signal.direction === "none") continue
+
+      // ─── Rate limit entre sinais ───────────────────────────────────
+      const sinceLastSignal = Date.now() - (this.lastSignalTs.get(key) ?? 0)
+      if (sinceLastSignal < CACHE_TTL_MS) continue
+      this.lastSignalTs.set(key, Date.now())
+
+      // ─── Verifica saldo e envia OK ─────────────────────────────────
+      const bal = realSwap.getBalance(pair.from)
+      const amountUsd = Math.min(signal.suggestedAmount, Math.floor(bal * 0.9 * 100) / 100)
+
+      if (amountUsd < 5) continue
+
+      pregão.receberOK({
+        pregueiro: "StableMR",
+        rede: network as any,
+        par: pair.label,
+        confianca: signal.confidence,
+        amountUsd,
+        timestamp: Date.now(),
+        fromToken: pair.from,
+        toToken: pair.to,
+      })
+
+      pregão.adicionarLog(
+        `🌾 PiEngine ${signal.direction === "buy" ? "COMPRA" : "VENDA"} ${pair.label} ` +
+        `(σ=${signal.sigma.toFixed(2)}, conf=${signal.confidence}%, ` +
+        `α=${newState.alpha.toFixed(3)}, vol=${(newState.volatility * 100).toFixed(3)}%, ` +
+        `threshold=${(signal.threshold * 100).toFixed(3)}%, $${amountUsd})`
+      )
     }
 
     saveState(this.state)
@@ -114,28 +172,21 @@ class StableMR {
   getSnapshot(): StableMRSnapshot[] {
     const result: StableMRSnapshot[] = []
     for (const [key, ps] of Object.entries(this.state)) {
-      if (ps.history.length < 4) continue
+      if (ps.samples < 3) continue
       const [pair, network] = key.split("@")
+      const sigma = ps.sigma ?? 0
       result.push({
-        key,
-        pair,
-        network,
-        sma: ps.sma,
+        key, pair, network,
+        ewma: ps.ewma,
         lastPrice: ps.lastPrice,
-        deviation: ps.deviation,
-        signal: ps.deviation <= -DEVIATION_THRESHOLD ? "buy" : ps.deviation >= DEVIATION_THRESHOLD ? "sell" : "none",
+        sigma,
+        confidence: ps.confidence,
+        alpha: ps.alpha,
+        volatility: ps.volatility,
+        signal: sigma <= PI_CONFIG.sigmaEntryBuy ? "buy" : sigma >= PI_CONFIG.sigmaEntrySell ? "sell" : "none",
       })
     }
     return result
-  }
-
-  private async getPrice(pairLabel: string): Promise<number | null> {
-    const [from, to] = pairLabel.split("→")
-    const fromPrice = await realSwap.fetchTokenPrice(from as any).catch(() => 0)
-    const toPrice = await realSwap.fetchTokenPrice(to as any).catch(() => 0)
-    if (!fromPrice || !toPrice) return null
-    if (STABLES.has(from)) return toPrice / fromPrice
-    return fromPrice / toPrice
   }
 }
 

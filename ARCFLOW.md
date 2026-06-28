@@ -75,14 +75,16 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
        │   ├── escola-robos.ts           ← Escola de robôs (turnos, verificação, jobs)
        │   └── parametros-robos.ts       ← Parâmetros ajustáveis por robô
        │
-        ├── SUPORTE
-        │   ├── persistence.ts            ← localStorage
-       │   ├── circuit-breaker.ts        ← Parada de emergência
-       │   ├── fee-monetization.ts       ← Taxas
-       │   ├── gas-price-oracle.ts       ← Preço do gás
-       │   ├── provao-ranking.ts         ← Sistema de competição (provão, bônus, poder de voto)
-       │   ├── contracts.ts              ← Bytecode + ABI JobProof (deploy on-chain)
-       │   └── networks.ts / real-swap-executor.ts ← Config de redes
+         ├── SUPORTE
+         │   ├── persistence.ts            ← localStorage
+        │   ├── circuit-breaker.ts        ← Parada de emergência
+        │   ├── fee-monetization.ts       ← Taxas
+        │   ├── gas-price-oracle.ts       ← Preço do gás
+        │   ├── provao-ranking.ts         ← Sistema de competição (provão, bônus, poder de voto)
+        │   ├── contracts.ts              ← Bytecode + ABI JobProof (deploy on-chain)
+        │   ├── pool-profiler.ts          ← Consulta on-chain pools V3 (QuickSwap/Uniswap)
+        │   ├── math/pi-filter.ts         ← Engine estocástica Gaussiana (Modo Grão V2)
+        │   └── networks.ts / real-swap-executor.ts ← Config de redes
        │
        └── SISTEMA ARC ECOSYSTEM
             ├── agent-registry.ts         ← Registro de agentes (ERC-8004)
@@ -1172,26 +1174,86 @@ A SalaDeAula agora tem 3 abas:
 
 ---
 
-## NOTAS DE SESSÃO — 27/06/2026: StableMR + Professor flexível
+## NOTAS DE SESSÃO — 28/06/2026: StableMR na Polygon + EURC pairs + guardas ajustados
 
 ### Módulo: StableMR (`lib/stable-mr.ts`)
-- Novo pregueiro `StableMR` que monitora SMA rolante (12 amostras) de pares stable
-- Dispara OK de compra quando preço desvia **0.05%+ abaixo** da SMA
-- Dispara OK de venda quando preço desvia **0.05%+ acima** da SMA
+- Pregueiro `StableMR` que monitora SMA rolante (12 amostras, 10s entre amostras = 120s window)
+- **Threshold**: 0.10% (0.001) — dispara em desvios 2σ para EURC/USDC (vol típica 0.05%)
+- Dispara OK de compra quando `deviation <= -0.10%`
+- Dispara OK de venda quando `deviation >= +0.10%`
 - Amount dinâmico: `max($12, |deviation| × 5000)`, cap `saldo × 0.9`
 - Expõe `getSnapshot()` para o Professor consultar SMA, desvio e direção em tempo real
 - Estado persistido em `localStorage` (chave `arcflow_stable_mr`)
 
-### Professor flexível pra stables (`pregão.ts`)
-- Quando `stableMR.getSnapshot()` mostra desvio ativo no par:
-  - `basePct`: 0.05% → 0.03% (threshold menor)
+### Professor flexível pra stables (`pregão.ts:697-704`)
+- Quando `temDesvioEstavel` (stableMR.getSnapshot() mostra sinal no par):
+  - `basePct`: 0.03% (threshold reduzido)
   - Real profit check: **skipado** (lucro vem da reversão, não da entrada)
-  - Só aborta se perda do swap > `0.5 × gas` (proteção contra slippage extremo)
+  - Guard relaxado: aborta só se `lucroRealEsperado < -1% do amount` (~$0.125 em $12.50)
+  - Motivo: DEX fee 0.3% (SushiSwap) em trade de $12.50 gera perda de $0.038 na cotação — 8× maior que o guard antigo (0.5× gas = $0.0025)
+
+### Pares EURC adicionados à Polygon (`real-swap-executor.ts:185-190`)
+- USDC→EURC, EURC→USDC, EURC→DAI, DAI→EURC, EURC→USDT, USDT→EURC
+- EURC token: `0xc52d20D70d2B1E27C2cb85AA0E3a9F5b4AEBf7e7`, COIN_ID: `1673723677362320241`
+- Antes: EURC pairs só existiam na Arc e Ethereum
 
 ### Grid multi-nível (`grid-trading.ts`)
 - Agora dispara apenas 1 nível por direção por ciclo (o mais próximo do preço)
 - Antes: 7+ níveis por ciclo quando preço cruzava múltiplos triggers
 - Código: encontra `hitBuy` (maior triggerPrice ≤ currentPrice) e `hitSell` (menor triggerPrice ≥ currentPrice)
+
+## NOTAS DE SESSÃO — 28/06/2026 (tarde): PiFilter warmup + noiseProbability + BigInt
+
+### Bug 1 — PiFilter sem warmup (`lib/math/pi-filter.ts`)
+- **Sintoma**: σ explodia para 4.47 no sample #2 (vol ≈ 0.0002%), disparando falsos positivos em todo ciclo de inicialização
+- **Causa**: `sigma = diff / volatility` com volatilidade near-zero durante warmup → σ = 30+ com qualquer micropasso
+- **Fix**: `WARMUP_SAMPLES = 18` — bloqueia emissão de sinais até EWMA/variância estabilizarem
+- **Guard**: `if (s.samples < WARMUP_SAMPLES) return { state: s, signal: null }` após cálculo de direção
+
+### Bug 2 — noiseProbability invertida (`lib/math/pi-filter.ts:188`)
+- **Sintoma**: `noiseProbability(sigma)` retornava 1.0 para todo σ (0.5 a 2.5)
+- **Causa**: código retornava `2 * (1 - p)` em vez de `2 * p`
+  - `p` = P(X > |sigma|) via Abramowitz & Stegun 26.2.17 (aproximação de 1-Φ)
+  - `2 * (1 - p)` = `2 * Φ(sigma)` = probabilidade de estar DENTRO do intervalo → sempre >1, cap 1.0
+  - `2 * p` = P(|X| > sigma) = probabilidade bilateral de ser ruído
+- **Fix**: `return Math.min(1, 2 * p)` — agora retorna 0.617/0.317/0.134/0.046/0.012 para σ=0.5/1.0/1.5/2.0/2.5
+
+### Bug 3 — BigInt no JSON.stringify (`lib/pool-profiler.ts`)
+- **Sintoma**: `TypeError: Do not know how to serialize a BigInt` ao salvar cache
+- **Causa**: `PoolInfo.liquidity: bigint` (retornado pela pool V3) quebrava `JSON.stringify`
+- **Fix**: `_save()` converte `liquidity` → `liqStr: string` via `.toString()`, `_load()` reconverte `BigInt(liqStr)`
+
+### Dry-run validado (`scripts/dry-run-grao-v2.ts`)
+- 5 cenários, todos passam:
+  1. Ruído 0.008% → σ=-1.03, sinal "none" (filtrado)
+  2. Anomalia -0.15% → σ=-2.73, COMPRA, lote $30 (2.5× base)
+  3. Descolamento +1% → σ=2.81, VENDA, lote $30 (cap)
+  4. noiseProbability: 0.617/0.317/0.134/0.046/0.012
+  5. PoolProfiler cache: liqStr → JSON → BigInt roundtrip
+- Warmup compartilhado com ruído DEX realista (±0.017%) para calibrar vol ≈ 0.013%
+
+### PiFilter — Parâmetros (`lib/math/pi-filter.ts`)
+| Parâmetro | Valor | Descrição |
+|-----------|-------|-----------|
+| `WARMUP_SAMPLES` | 18 | Ticks mínimos antes de emitir sinais |
+| `alphaMin` | 0.05 | Suavização EWMA em baixa volatilidade |
+| `alphaMax` | 0.30 | Suavização EWMA em alta volatilidade |
+| `volNormalizer` | 0.005 (0.5%) | Vol que produz α = 0.10 |
+| `sigmaEntryBuy` | -1.5 | σ negativo para entrada compra |
+| `sigmaEntrySell` | 1.5 | σ positivo para entrada venda |
+| `baseAmount` | $12 | Lote base em USD |
+| `maxAmount` | $30 | Lote máximo (cap) |
+| Threshold π/2 | `vol × π/2` | Expande zona de ruído em 57% |
+| Lote dinâmico | `baseAmount × (σ/σ_entry)²` | Escala quadrática com sigma |
+
+### PoolProfiler — Parâmetros (`lib/pool-profiler.ts`)
+| Parâmetro | Valor | Descrição |
+|-----------|-------|-----------|
+| `CACHE_TTL_FOUND` | 5 min | Cache para pools confirmadas |
+| `CACHE_TTL_MISS` | 1 hora | Cache para pools ausentes/erro RPC |
+| `FEE_TIERS` | 100, 500, 3000 | Fee tiers consultadas (0.01%, 0.05%, 0.30%) |
+| `STORAGE_KEY` | `arcflow_pool_profiler` | Chave localStorage |
+| Serialização | `liqStr: string` | BigInt serializado como string JSON-safe |
 
 ## NOTAS DE SESSÃO — 27/06/2026: 4 Fixes Críticos
 
