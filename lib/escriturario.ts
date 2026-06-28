@@ -4,6 +4,7 @@ import { corretor } from "./corretor"
 import { unifiedBalance } from "./unified-balance"
 import { caixa } from "./caixa"
 import { COIN_IDS } from "./coin-ids"
+import { positionManager } from "./position-manager"
 
 const VALOR_PADRAO_TRADE = 5
 const emExecucao = new Set<string>()
@@ -62,28 +63,43 @@ class Escriturário {
         await realSwap.switchNetwork(ordemNet)
       }
 
+      // Sempre fazer refresh em mainnet — cache pode estar 0 (swap em confirmação, entre ciclos)
+      await realSwap.refreshAllBalances()
       let saldoTokens = realSwap.getBalance(fromToken as TokenSymbol)
-      if (saldoTokens < 1) {
-        if (isTestnet) this.log(`🔄 Saldo ${fromToken}=${saldoTokens.toFixed(4)} — refresh on-chain...`)
-        await realSwap.refreshAllBalances()
-        saldoTokens = realSwap.getBalance(fromToken as TokenSymbol)
-        if (isTestnet) this.log(`📊 Após refresh: ${saldoTokens.toFixed(4)} ${fromToken}`)
-        if (saldoTokens < 0.0001 && fromToken === "USDC") {
-          let totalUb = 0
-          try {
-            if (isTestnet) {
-              totalUb = unifiedBalance.getUnifiedBalance()
-            } else {
-              const s = await caixa.getSaldo("mainnet")
-              totalUb = s.totalUSD
-            }
-          } catch {
-            totalUb = 0
+      this.log(`📊 Saldo de ${fromToken}: ${saldoTokens.toFixed(6)}`)
+
+      // Se saldo aparece zerado mas há posição aberta (venda de volátil), usar o amount da posição
+      if (saldoTokens < 0.0001 && !isFromStable && !isTestnet) {
+        const ordensAtivas = pregão.getOrdensAtivas()
+        const jaTemPosicao = ordensAtivas.some(o =>
+          o.fromToken === fromToken && o.toToken === ordem.toToken && o.rede === ordem.rede &&
+          (o.status === "preparando" || o.status === "pronto" || o.status === "executando")
+        )
+        if (!jaTemPosicao) {
+          const pos = positionManager.getOpenPositions()
+            .find(p => p.boughtToken === fromToken && p.networkKey === ordem.rede && p.status === "open")
+          if (pos) {
+            this.log(`🏦 Posição ${pos.id} encontrada — amountBought=${pos.amountBought.toFixed(6)} ${fromToken}`)
+            saldoTokens = pos.amountBought
           }
-          if (totalUb > saldoTokens) {
-            this.log(`🏦 Usando unified balance: $${totalUb.toFixed(2)} USDC disponível (CCTP bridge fará a ponte)`)
-            saldoTokens = totalUb
+        }
+      }
+
+      if (saldoTokens < 0.0001 && fromToken === "USDC") {
+        let totalUb = 0
+        try {
+          if (isTestnet) {
+            totalUb = unifiedBalance.getUnifiedBalance()
+          } else {
+            const s = await caixa.getSaldo("mainnet")
+            totalUb = s.totalUSD
           }
+        } catch {
+          totalUb = 0
+        }
+        if (totalUb > saldoTokens) {
+          this.log(`🏦 Usando unified balance: $${totalUb.toFixed(2)} USDC disponível (CCTP bridge fará a ponte)`)
+          saldoTokens = totalUb
         }
       }
 
