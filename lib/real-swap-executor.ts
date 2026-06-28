@@ -662,6 +662,15 @@ class RealSwapExecutor {
     return this.tokenBalances.get(token)?.balance ?? 0;
   }
 
+  /** Atualiza saldo no cache por delta (ex: swap gastou USDC, recebeu WMATIC) */
+  private _updateCacheBalance(token: TokenSymbol, delta: number): void {
+    const current = this.tokenBalances.get(token)
+    if (current) {
+      const novo = Math.max(0, current.balance + delta)
+      this.tokenBalances.set(token, { ...current, balance: novo })
+    }
+  }
+
   hasToken(token: TokenSymbol): boolean {
     const net = NETWORKS[this.networkKey];
     return token in net.tokens;
@@ -1169,6 +1178,7 @@ class RealSwapExecutor {
       const isSellingForStable = isStable(toToken) && !isStable(fromToken);
       const action: "BUY" | "SELL" | "HOLD" = isBuyingVolatile ? "BUY" : isSellingForStable ? "SELL" : "BUY";
       const preSwapBalance = this.getBalance(toToken);
+      const fromAmountTokens = amountUsd / fromPrice; // tokens gastos do fromToken
 
       // Executa a melhor rota
       log(`🚀 Executando rota ${bestRoute.label}...`);
@@ -1184,7 +1194,10 @@ class RealSwapExecutor {
             return this._fail(fromToken, toToken, amountUsd,
               `Ambas rotas falharam: ${bestRoute.label} + ${fallbackRoute.label}`, timestamp);
           }
-          // Fallback sucedeu — continua abaixo
+          // Fallback sucedeu — atualiza cache manualmente ANTES do refresh
+          this._updateCacheBalance(fromToken, -fromAmountTokens);
+          this._updateCacheBalance(toToken, bestToEstimate);
+
           await this.refreshAllBalances();
           const postSwapBalance = this.getBalance(toToken);
           const actualToAmount = Math.max(0, postSwapBalance - preSwapBalance);
@@ -1211,7 +1224,11 @@ class RealSwapExecutor {
           `${bestRoute.label} falhou: ${result.error || "erro desconhecido"}`, timestamp);
       }
 
-      // Sucesso na melhor rota
+      // Sucesso na melhor rota — atualiza cache manualmente ANTES do refresh
+      // (refresh pode falhar e restaurar saldos pré-swap, travando o cache)
+      this._updateCacheBalance(fromToken, -fromAmountTokens);
+      this._updateCacheBalance(toToken, bestToEstimate);
+
       await this.refreshAllBalances();
       const postSwapBalance = this.getBalance(toToken);
       const actualToAmount = Math.max(0, postSwapBalance - preSwapBalance);
