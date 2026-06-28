@@ -68,6 +68,31 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - **StableMR**: integrado com PiFilter, DEX V3 quoting, PoolProfiler para filtro de pool
 - **Modo Grão V2**: pronto para mainnet — aguardando monitoramento de logs `🌾 PiEngine`
 
+## Session Summary (28/06/2026 noite) — Diagnóstico + StableMR V2 fallback + Modo Grão + PiEngineMonitor
+
+### Diagnóstico Operacional
+- **StableMR nunca emitia `🌾 PiEngine`**: `poolProfiler.getPools()` falhava (QuickSwap V3 sem pools EURC ou RPC timeout) → `pools.length === 0` → `continue` pulava o par sem tentar V2
+- **Modo Grão preso em test mode** na Polygon: `start()` foi chamado na Sepolia, rede trocada depois sem re-inicializar
+- **PoolProfiler enterrava pares por 1h**: RPC falha → cache miss TTL 1h; primeira falha bloqueava EURC por 1h inteira
+
+### Correções
+
+1. **StableMR V2 fallback** (`lib/stable-mr.ts:83-131`): reestruturado para tentar V2 quando V3 não acha pools. PiFilter inicializado antes da consulta de pool.
+
+2. **Modo Grão network-aware** (`lib/modo-grão.ts:269-283`): `_lastNetwork` detecta mudança de rede no ciclo, desliga test mode ao trocar testnet→mainnet.
+
+3. **PoolProfiler TTL 5min** (`lib/pool-profiler.ts:45`): `CACHE_TTL_MISS` 1h→5min, log de diagnóstico nas primeiras 3 falhas RPC.
+
+4. **PiEngineMonitor** (`app/components/PiEngineMonitor.tsx`): telemetria Gaussiana em tempo real no dashboard — warmup bar, sigma com gradiente de cores (cinza→azul→violeta→pulse verde/vermelho), prob. ruído, histórico de roteamento ⚡V3/🔄V2/🛑Abortado/⏳Requote, estados nulos com fallback amigável.
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Dry-run**: 5/5 ✅
+- **StableMR**: 10 pares EURC na Polygon, V2 fallback ativo quando V3 ausente
+- **Modo Grão**: auto-desliga test mode em mainnet, re-inicializa ao trocar rede
+- **PoolProfiler**: TTL miss 5min, BigInt-safe, log diagnóstico RPC
+- **Dashboard**: PiEngineMonitor integrado abaixo do Modo Grão, polling 2s
+
 ## Session Summary (27/06/2026) — 4 Fixes + StableMR + Professor flexivel
 
 ### What's Changed

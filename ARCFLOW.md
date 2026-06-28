@@ -1174,6 +1174,58 @@ A SalaDeAula agora tem 3 abas:
 
 ---
 
+## NOTAS DE SESSÃO — 28/06/2026 (noite): Diagnóstico + StableMR V2 fallback + Modo Grão + PiEngineMonitor
+
+### Diagnóstico Operacional
+- **StableMR não emitia `🌾 PiEngine`** — `poolProfiler.getPools()` falhava (QuickSwap V3 sem pools EURC), `pools.length === 0` dava `continue` pulando o par inteiro sem tentar V2
+- **Modo Grão preso em test mode** na Polygon — `start()` foi chamado na Sepolia, depois usuário trocou pra Polygon mas `start()` nunca foi re-chamado
+- **PoolProfiler enterrava pares por 1h** — RPC falha → cache miss com TTL de 1 hora. A primeira falha bloqueava EURC por 1h inteira
+
+### Correções Aplicadas
+
+**Fix 1 — StableMR V2 fallback** (`lib/stable-mr.ts:83-131`)
+- Reestruturado: PiFilter inicializado antes da consulta de pool
+- Quando `pools.length === 0`, agora tenta V2 direto (SushiSwap) em vez de pular o par
+- Quando pools encontradas, tenta V3 primeiro, fallback V2 se falhar
+
+**Fix 2 — Modo Grão network-aware** (`lib/modo-grão.ts:269-283`)
+- `_lastNetwork` rastreia rede atual no ciclo
+- Ao detectar mudança de rede: testnet→mainnet desliga test mode automaticamente
+- `_lastSignal` atualizado com o par correto da nova rede
+
+**Fix 3 — PoolProfiler TTL reduzido** (`lib/pool-profiler.ts:45`)
+- `CACHE_TTL_MISS`: 1h → 5min (retry mais rápido após falha RPC)
+- Log de diagnóstico: `console.warn` nas primeiras 3 falhas RPC
+
+### PiEngineMonitor — Telemetria Visual (`app/components/PiEngineMonitor.tsx`)
+- **Warmup:** barra de progresso `14/18` com gradiente vermelho→âmbar→verde, badge `[Amostrando]` / `[Operacional]`
+- **Sigma (σ):** cor condicional baseada em impacto (cinza <1.1 ruído, azul 1.1-1.5 atenção, violeta 1.5-π/2 entrada, verde/vermelho ≥π/2 rompida com animação pulse)
+- **Prob. Ruído:** percentual derivado da confiança CDF do PiFilter
+- **Histórico de Roteamento:** tags `⚡ V3` / `🔄 V2` / `🛑 Abortado` / `⏳ Requote` com métricas
+- **Estados nulos:** fallback `~` e mensagem "Buscando rota..." (cache 5min)
+- Polling 2s, `useMemo` para cálculos (sem re-renders)
+
+### Arquivos Modificados
+| Arquivo | Status | Mudança |
+|---------|--------|---------|
+| `app/components/PiEngineMonitor.tsx` | Novo | 290 linhas, componente React 19 |
+| `lib/math/pi-filter.ts` | Modificado | `WARMUP_SAMPLES` exportado |
+| `lib/stable-mr.ts` | Modificado | V2 fallback + `samples` no snapshot |
+| `lib/modo-grão.ts` | Modificado | Network-aware re-initialization |
+| `lib/pool-profiler.ts` | Modificado | TTL 5min + log diagnóstico |
+| `app/components/PregãoDashboard.tsx` | Modificado | PiEngineMonitor integrado |
+| `ARCFLOW.md` | Modificado | Esta nota de sessão |
+| `AGENTS.md` | Modificado | Session summary |
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Dry-run**: 5/5 ✅
+- **PiFilter**: warmup 18 ticks, sigma threshold ±1.5, lote dinâmico baseAmount × (σ/σ_entry)², cap $30
+- **StableMR**: 10 pares EURC na Polygon, V3→V2 fallback, PiEngine integrado
+- **Modo Grão**: auto-desliga test mode em mainnet, re-inicializa ao trocar rede
+- **PoolProfiler**: cache 5min, BigInt-safe, retry rápido pós-falha RPC
+- **Dashboard**: telemetria Gaussiana em tempo real com gradiente de cores π/2
+
 ## NOTAS DE SESSÃO — 28/06/2026: StableMR na Polygon + EURC pairs + guardas ajustados
 
 ### Módulo: StableMR (`lib/stable-mr.ts`)
