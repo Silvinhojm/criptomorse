@@ -273,6 +273,7 @@ class Pregão {
     // Separa por tipo: agentes vs pregueiros
     const okAgentes = okValidos.filter(p => p.nome.startsWith("Agente:"))
     const okPregueiros = okValidos.filter(p => !p.nome.startsWith("Agente:") && !p.nome.startsWith("Grid:"))
+    const okStableMR = okValidos.filter(p => p.nome.startsWith("StableMR"))
 
     // 🎓 Verifica se o sinal vem de um robô em turno ativo E verificado (jobs como prova)
     // 🏆 Ou robô promovido pelo Professor (avaliação de pares consistente)
@@ -288,8 +289,11 @@ class Pregão {
     const gridOk = okValidos.filter(p => p.nome.startsWith("Grid:"))
     const TEM_GRID = gridOk.length >= 1
 
+    // StableMR: 1 OK direto (bypassa consenso de agentes)
+    const TEM_STABLE_MR = okStableMR.length >= 1
+
     // Verifica se tem consenso (robô verificado ou promovido em turno não precisa de consenso)
-    const temConsenso = isVerified || isPromovido || TEM_GRID || TEM_LIMIAR_HIBRIDO || okAgentes.length >= limiarAgentes || okPregueiros.length >= 3
+    const temConsenso = isVerified || isPromovido || TEM_GRID || TEM_STABLE_MR || TEM_LIMIAR_HIBRIDO || okAgentes.length >= limiarAgentes || okPregueiros.length >= 3
 
     if (!temConsenso) {
       return
@@ -312,6 +316,9 @@ class Pregão {
     } else if (TEM_GRID) {
       participantes = gridOk.slice(0, 1)
       origem = "📐 Grid"
+    } else if (TEM_STABLE_MR) {
+      participantes = okStableMR.slice(0, 1)
+      origem = "💱 StableMR"
     } else if (TEM_LIMIAR_HIBRIDO) {
       // Híbrido: 1 agente + 1 pregueiro
       participantes = [okAgentes[0], okPregueiros[0]]
@@ -357,9 +364,9 @@ class Pregão {
       return
     }
 
-    // Grid orders bypass confidence minimum
+    // Grid e StableMR bypass confidence minimum (entrada com fee baixo, lucro na reversão)
     const MAINNETS = new Set(["polygon", "base", "ethereum", "arbitrum"])
-    if (!TEM_GRID && MAINNETS.has(rede) && confiancaMedia < 40) {
+    if (!TEM_GRID && !TEM_STABLE_MR && MAINNETS.has(rede) && confiancaMedia < 40) {
       this.log(`🚫 Confiança ${confiancaMedia}% < 40% mínimo em mainnet — ordem rejeitada`)
       return
     }

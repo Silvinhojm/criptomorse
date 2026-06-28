@@ -20,6 +20,14 @@ const PERF_KEY = "arcflow_grid_performance"
 const GAS_ESTIMATE_GRID: Record<string, number> = { polygon: 0.005, base: 0.003, arc: 0.001, ethereum: 0.50, arbitrum: 0.01, sepolia: 0.006 }
 const SPREAD_PCT = 0.005
 
+// Dip gate: só compra volátil se preço cair ao menos X% abaixo do centro
+const MIN_DIP_PCT: Record<string, number> = {
+  WMATIC: 0.02,  // 2% — precisa de queda real pra cobrir DEX fee 0.25% + gas
+  WETH:   0.015, // 1.5%
+  WBTC:   0.01,  // 1%
+  ARB:    0.02,  // 2%
+}
+
 export interface GridTradeRecord {
   token: TokenSymbol
   direction: "buy" | "sell"
@@ -322,8 +330,15 @@ class AdaptiveGridTrading {
       const tokenOpen = openPositions.filter(p => p.boughtToken === g.token).length
 
       // Encontra o buy mais próximo (maior triggerPrice ainda abaixo de currentPrice)
+      const minDip = MIN_DIP_PCT[g.token] ?? 0
       const hitBuy = pendingBuys
         .filter(l => currentPrice <= l.triggerPrice)
+        .filter(l => {
+          // Dip gate: só compra se preço caiu o suficiente abaixo do centro
+          // (evita comprar a mercado onde DEX fee come o lucro)
+          const distanceFromCenter = (g.centerPrice - currentPrice) / g.centerPrice
+          return distanceFromCenter >= minDip
+        })
         .sort((a, b) => b.triggerPrice - a.triggerPrice)[0]
 
       // Encontra o sell mais próximo (menor triggerPrice ainda acima de currentPrice)
