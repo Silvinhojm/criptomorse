@@ -98,6 +98,7 @@ class ModoGrao {
   private _lastError: string | null = null
   private _executando = false
   private _simPrice = 0
+  private _lastNetwork = ''
 
   private getPair() { return getNetworkPair() }
 
@@ -269,7 +270,24 @@ class ModoGrao {
     this._cycleCount++
     const now = Date.now()
 
-    // 0. Robô Ajustador: recalibra thresholds conforme mercado
+    // 0. Detecta mudança de rede (testnet→mainnet desliga test mode)
+    const netKey = realSwap.getNetworkKey()
+    if (netKey !== this._lastNetwork) {
+      const net = NETWORKS[netKey as NetworkKey]
+      const isTestnet = net?.isTestnet ?? false
+      if (!isTestnet && this._testMode) {
+        this._testMode = false
+        if (typeof window !== 'undefined') localStorage.setItem('arcflow_modograo_testmode', '0')
+        console.log(`[ModoGrão] 🔄 Rede alterada para ${netKey} (mainnet) — test mode desligado`)
+      }
+      this._lastNetwork = netKey
+      this._lastSignal = this._testMode
+        ? `🧪 Modo teste (${netKey}) — volatilidade mock 0.5%`
+        : `${isTestnet ? '🧪 Testnet' : '🌐 Mainnet'} — ${this.getPair().toToken}/${this.getPair().fromToken}`
+      this.notify()
+    }
+
+    // 1. Robô Ajustador: recalibra thresholds conforme mercado
     await this.ajustarAoMercado()
 
     // 1. Prices + volatility

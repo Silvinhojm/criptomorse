@@ -86,22 +86,20 @@ class StableMR {
       const toAddr = (net.tokens as any)[pair.to]
       if (!fromAddr || !toAddr) continue
 
-      // ─── Filtro de pool V3 ────────────────────────────────────────
-      const pools = await poolProfiler.getPools(network as any, fromAddr, toAddr)
-      if (pools.length === 0) continue
-      const bestFee = pools.reduce((best: any, p: any) => p.fee < best.fee ? p : best, pools[0])
-
       // ─── Inicializa estado PiFilter ───────────────────────────────
       if (!this.state[key]) {
         this.state[key] = createInitialState()
       }
       const ps = this.state[key]
 
-      // ─── Preço via DEX V3 quote ───────────────────────────────────
+      // ─── Preço via DEX V3 (se pool existir) ou fallback V2 ─────────
       const quoteAmount = ethers.parseUnits("10000", TOKEN_DECIMALS[pair.from] ?? 6)
       let price: number | null = null
 
-      if (hasV3Router(network)) {
+      // Tenta V3 via PoolProfiler
+      const pools = await poolProfiler.getPools(network as any, fromAddr, toAddr)
+      if (pools.length > 0 && hasV3Router(network)) {
+        const bestFee = pools.reduce((best: any, p: any) => p.fee < best.fee ? p : best, pools[0])
         const v3quote = await getDirectDexQuoteV3(
           network, provider, fromAddr, toAddr, quoteAmount, bestFee.fee
         )
@@ -114,7 +112,7 @@ class StableMR {
         }
       }
 
-      // Fallback V2
+      // Fallback V2 (também usado quando PoolProfiler não acha V3)
       if (price === null && hasDirectDex(network)) {
         const v2quote = await getDirectDexQuoteV2(
           network, provider, fromAddr, toAddr, quoteAmount

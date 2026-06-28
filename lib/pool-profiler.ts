@@ -42,7 +42,9 @@ function cacheKey(network: string, tokenA: string, tokenB: string, fee: number):
 
 const STORAGE_KEY = "arcflow_pool_profiler"
 const CACHE_TTL_FOUND = 300_000   // 5 min para pools confirmadas
-const CACHE_TTL_MISS = 3_600_000  // 1 hora para pools ausentes/erro
+const CACHE_TTL_MISS = 300_000    // 5 min para retry (reduzido de 1h — RPCs podem falhar temporariamente)
+let _rpcErrorCount = 0
+const MAX_RPC_ERROR_LOG = 3 // evita spam de logs
 
 interface CacheEntry {
   info: PoolInfo | null  // null = pool não encontrada
@@ -98,6 +100,10 @@ class PoolProfiler {
         this.cache.set(key, { info, ts: Date.now(), ttl: CACHE_TTL_FOUND })
         results.push(info)
       } catch {
+        if (_rpcErrorCount < MAX_RPC_ERROR_LOG) {
+          console.warn(`[PoolProfiler] ⚠️ RPC falhou ao consultar pool ${fee} — retry em ${CACHE_TTL_MISS / 60000}min`)
+          _rpcErrorCount++
+        }
         this.cache.set(key, { info: null, ts: Date.now(), ttl: CACHE_TTL_MISS })
       }
     }
