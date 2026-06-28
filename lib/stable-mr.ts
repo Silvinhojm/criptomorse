@@ -82,6 +82,7 @@ class StableMR {
     if (!net) return
 
     for (const pair of stablePairs) {
+      try {
       const key = `${pair.from}→${pair.to}@${network}`
       const fromAddr = (net.tokens as any)[pair.from]
       const toAddr = (net.tokens as any)[pair.to]
@@ -163,6 +164,12 @@ class StableMR {
         `α=${newState.alpha.toFixed(3)}, vol=${(newState.volatility * 100).toFixed(3)}%, ` +
         `threshold=${(signal.threshold * 100).toFixed(3)}%, $${amountUsd})`
       )
+      } catch (err: any) {
+        // Isola falha por par — RPC 502 num par não mata os outros 9
+        if (err?.code === "SERVER_ERROR" || err?.message?.includes("502")) {
+          pregão.adicionarLog(`[STABLE-MR] ⚠️ RPC falhou para ${pair.label} — pulando par (próximo ciclo tenta de novo)`)
+        }
+      }
     }
 
     saveState(this.state)
