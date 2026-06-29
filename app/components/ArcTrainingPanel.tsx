@@ -72,12 +72,12 @@ export function ArcTrainingPanel({ network }: { network: string }) {
         <button
           onClick={handleStart}
           disabled={state.active}
-          style={{ ...btnBase, background: state.active ? "#334155" : "#22c55e", color: "#fff" }}
+          style={{ ...btnBase, background: "#22c55e", color: "#fff", opacity: state.active ? 0.5 : 1 }}
         >▶ Iniciar</button>
         <button
           onClick={handleStop}
           disabled={!state.active}
-          style={{ ...btnBase, background: !state.active ? "#334155" : "#ef4444", color: "#fff" }}
+          style={{ ...btnBase, background: "#ef4444", color: "#fff", opacity: state.active ? 1 : 0.5 }}
         >⏹ Parar</button>
       </div>
 
