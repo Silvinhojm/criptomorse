@@ -366,7 +366,8 @@ class RealSwapExecutor {
       const body = await res.json();
       const prices = body?.prices;
       const price = (prices && prices[coinId]) ?? 0;
-      const divider = PRICE_DIVIDERS[token] ?? 1;
+      const netCfg = NETWORKS[this.networkKey]
+      const divider = netCfg?.isTestnet ? 1 : (PRICE_DIVIDERS[token] ?? 1);
       const adjustedPrice = price > 0 ? price / divider : 0;
       if (adjustedPrice > 0) {
         this.priceCache.set(token, { price: adjustedPrice, timestamp: Date.now() });
@@ -521,12 +522,20 @@ class RealSwapExecutor {
         rpcCall(rpcUrl, 'eth_call', [{ to: address, data: '0x313ce567' }, 'latest']),
       ]).then(([raw, decimals]) => ({ raw: BigInt(raw), decimals: BigInt(decimals) }))
 
+    const ZERO_ADDR = '0x0000000000000000000000000000000000000000'
     let anyProviderSucceeded = false
     const fetchFrom = async (prov: ethers.Provider, label: string): Promise<number> => {
       let nonZero = 0
       let tokenCount = 0
       await Promise.all(
         (Object.entries(net.tokens) as [string, string][]).map(async ([symbol, address]) => {
+          if (address.toLowerCase() === ZERO_ADDR) {
+            const nativeBal = await prov.getBalance(this.userAddress).catch(() => 0n)
+            const balance = parseFloat(ethers.formatUnits(nativeBal, 18))
+            newBalances.set(symbol, { symbol, balance, address, decimals: 18 })
+            if (balance > 0.0001) nonZero++
+            return
+          }
           try {
             const contract = new ethers.Contract(address, ERC20_ABI, prov);
             const [raw, decimals] = await Promise.all([
@@ -555,6 +564,17 @@ class RealSwapExecutor {
       let ok = 0
       await Promise.all(
         (Object.entries(net.tokens) as [string, string][]).map(async ([symbol, address]) => {
+          if (address.toLowerCase() === ZERO_ADDR) {
+            try {
+              const { raw } = await erc20BalanceOf(address, this.userAddress!, rpcUrl)
+              const balance = parseFloat(ethers.formatUnits(raw, 18))
+              newBalances.set(symbol, { symbol, balance, address, decimals: 18 })
+              if (balance > 0.0001) ok++
+            } catch {
+              newBalances.set(symbol, { symbol, balance: 0, address, decimals: 18 })
+            }
+            return
+          }
           try {
             const { raw, decimals } = await erc20BalanceOf(address, this.userAddress!, rpcUrl)
             const balance = parseFloat(ethers.formatUnits(raw, Number(decimals)))
@@ -1057,9 +1077,9 @@ class RealSwapExecutor {
         }
       }
 
-      // LI.FI — pula em trades < $20 (fee do aggregator mata lucro)
+      // LI.FI — pula em trades < $20 e em testnet (TVL baixa, "fly" perde dinheiro)
       let lifiQuote: QuoteResult | null = null;
-      if (amountUsd >= 20) {
+      if (amountUsd >= 20 && !net.isTestnet) {
         try {
           lifiQuote = await getQuote({
             fromChain: net.chainId, toChain: net.chainId,

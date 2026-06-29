@@ -243,7 +243,8 @@ class PositionManager {
       const body = await res.json();
       const prices = body?.prices;
       const price = (prices && prices[coinId]) ?? 1.0;
-      const divider = PRICE_DIVIDERS[token] ?? 1;
+      const netCfg = NETWORKS[realSwap.getNetworkKey()]
+      const divider = netCfg?.isTestnet ? 1 : (PRICE_DIVIDERS[token] ?? 1);
       const adjustedPrice = price > 0 ? price / divider : 0;
       if (adjustedPrice > 0) {
         this.priceCache.set(token, { price: adjustedPrice, timestamp: Date.now() });
