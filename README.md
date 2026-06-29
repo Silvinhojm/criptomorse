@@ -1,38 +1,95 @@
-# Criptomorse — Sistema de Micro-Trading Autônomo Multi-Rede
+# CriptoMorse — Multi-Chain Autonomous Micro-Trading System
 
-## Getting Started
+Sistema de trading autônomo multi-rede que opera como uma mesa de pregão digital. Uma **inteligência coletiva** de agentes analisa mercados, vota oportunidades e executa swaps on-chain em Polygon, Arc Testnet, Base e Ethereum.
 
-First, run the development server:
+O nome vem do **agente Morse**, que lê padrões de candle como código Morse — traduzindo sinais de mercado em decisões de compra e venda.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+---
+
+## Arquitetura
+
+```
+Agent Swarm (13 agentes)
+    ↓ votam (OKs com confiança)
+Pregão (livro de ordens central)
+    ↓ seleciona melhor oportunidade
+Capital Controller (gate de 1 trade por vez)
+    ↓ autoriza
+Broker (corretor.ts) → DEX Direct / LI.FI
+    ↓ executa
+Position Manager + Accountant (aprendizado)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Módulos Principais
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| Módulo | Descrição |
+|--------|-----------|
+| **Agentes** | 13 agentes de trading com confiança dinâmica e votação |
+| **Pregão** | Livro de ordens central, matching e OKs |
+| **Capital Controller** | Gate FIFO: 1 trade por vez, prioridade por score |
+| **StableMR** | Mean reversion para pares stablecoin (EURC/USDC) |
+| **Modo Grão** | Batch trading com PiFilter Gaussian signal detection |
+| **Oscillation Hunter** | Micro-scalping em pools Uniswap V3 profundas |
+| **Grid Trading** | Grid adaptativo com 15 níveis e deriva de preço |
+| **Professor** | Avaliador de palpites com ajuste fino de parâmetros |
+| **Escola de Robôs** | Sistema de educação e promoção de agentes |
+| **Arc Training** | Treinamento autônomo na Arc testnet com snapshots |
+| **PiFilter** | Filtro Gaussiano para detecção de sinal em ruído DEX |
+| **Circuit Breaker** | Proteção contra perdas consecutivas |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+---
 
-## Learn More
+## Features
 
-To learn more about Next.js, take a look at the following resources:
+- **Multi-chain**: Polygon (mainnet), Arc Testnet, Base, Ethereum, Sepolia
+- **Swaps reais**: DEX direct (SushiSwap V2, Uniswap V3) + LI.FI aggregator
+- **Staircase**: Fechamento automático de posições com garantia de lucro
+- **Stable pairs**: EURC/USDC mean reversion com fallback V2
+- **Agentes clássicos**: 13 estratégias (Volume, Notícias, RSI, MACD, Oscar, etc.)
+- **Dashboard**: Posições abertas, trades recentes, telemetria PiEngine
+- **AMM próprio**: GenericAMMPair USDC→EURC deployado na Arc testnet
+- **On-chain registry**: ERC-8004 AgentIdentity + ERC-8183 Job Marketplace
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+---
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Stack
 
-## Deploy on Vercel
+| Categoria | Tecnologias |
+|-----------|-------------|
+| Framework | Next.js 15.5 (Turbopack) + React 19.2 + TypeScript 5 (strict) |
+| Blockchain | ethers v6, viem 2.x, wagmi 3.x |
+| Swaps | LI.FI SDK v4, Uniswap V3 SDK, SushiSwap |
+| Wallet | Circle app-kit (user-controlled-wallets) |
+| Estilo | Tailwind CSS 4.3, lucide-react |
+| Gráficos | recharts 3.x |
+| Contratos | Solidity + OpenZeppelin v5 |
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+---
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
-# criptomorse-arc
-Banking-grade stablecoin wallet on Arc Testnet with ERC-8183 agentic jobs
+## Scripts
+
+| Comando | Descrição |
+|---------|-----------|
+| `npm run dev` | Dev server (porta 3000) |
+| `npm run dev:polygon` | Polygon mainnet (porta 3000) |
+| `npm run dev:testnet` | Arc testnet (porta 3001) |
+| `npm run dev:sepolia` | Sepolia testnet (porta 3003) |
+| `npm run build` | Produção |
+| `npm run lint` | ESLint |
+
+---
+
+## Documentação
+
+- [`ARCFLOW.md`](ARCFLOW.md) — Mapa completo do sistema, parâmetros, arquitetura, auditoria matemática
+- [`AGENTS.md`](AGENTS.md) — Histórico de sessões e regras para IAs contribuidoras
+
+---
+
+## Repositório
+
+Desenvolvido em `versao-polygon` — deploys automáticos via Vercel.
+
+```
+https://arcflow-steel.vercel.app
+```
