@@ -361,8 +361,16 @@ class Pregão {
       )
     }
     if (isNaN(confiancaMedia) || !isFinite(confiancaMedia) || confiancaMedia < 30) {
-      this.log(`⛔ Confiança inválida (${confiancaMedia}%) — ordem descartada`)
-      return
+      // Fallback: se o cálculo ponderado deu 0 mas há participantes com confiança válida,
+      // usa a maior confiança individual (caso agente com score=0 anule o peso)
+      const maxIndividualConf = Math.max(...participantes.map(p => p.sinal.confianca ?? 0))
+      if (maxIndividualConf >= 30) {
+        this.log(`⚠️ Confiança ponderada ${confiancaMedia}% anulada — usando max individual ${maxIndividualConf}%`)
+        confiancaMedia = Math.round(maxIndividualConf)
+      } else {
+        this.log(`⛔ Confiança inválida (${confiancaMedia}%) — participantes: ${participantes.map(p => `${p.nome}=${p.sinal.confianca}%`).join(', ')}`)
+        return
+      }
     }
 
     // Grid e StableMR bypass confidence minimum (entrada com fee baixo, lucro na reversão)
@@ -519,11 +527,13 @@ class Pregão {
         o.status = "falhou"
         mudou = true
         this.log(`🧹 Ordem ${o.id} travada em "${o.status}" — marcada como falha`)
+        capitalController.forceUnlock()
       }
       if (o.status === "executando" && agora - o.timestamp > 30000) {
         o.status = "falhou"
         mudou = true
         this.log(`🧹 Ordem ${o.id} travada em "executando" — marcada como falha`)
+        capitalController.forceUnlock()
       }
     }
     if (mudou) this._saveOrdens()
@@ -618,20 +628,7 @@ class Pregão {
 
     // Escolhe melhor rota: V3 > V2 > LI.FI
     if (dexOut >= lifiOut && dexOut > 0 && bestQuote) {
-      // ─── Bug #2: Barreira econômica no fallback V3→V2 ────────────
-      // Se V3 falhou e caiu em V2, a fee de 0.3% pode inviabilizar o trade.
-      // Só executa V2 se o lucro esperado cobre fee V2 + gas.
-      if (bestQuote.dexType === "v2" && isStablePair) {
-        const feeCost = trade.amount * 0.003
-        const estimatedGasUsd = 0.007
-        const minExpectedProfit = feeCost + estimatedGasUsd
-        if (trade.expectedProfit < minExpectedProfit) {
-          this.log(`[PREGÃO] 🛑 Abortando Fallback V2 para ${trade.fromToken}→${trade.toToken}. Lucro esperado ($${trade.expectedProfit.toFixed(4)}) não cobre a taxa V2 + Gás ($${minExpectedProfit.toFixed(4)})`)
-          return null
-        }
-      }
-
-      // ─── Melhoria #5: Log da rota escolhida ─────────────────────
+      // ─── Log da rota escolhida ─────────────────────
       if (bestQuote.dexType === "v3") {
         this.log(`[PREGÃO] ⚡ Rota ótima via V3 [Fee: ${((bestQuote.fee ?? 100) / 10000).toFixed(3)}%] para ${trade.fromToken}→${trade.toToken}`)
       } else if (bestQuote.dexType === "v2") {
@@ -775,28 +772,18 @@ class Pregão {
     const lucroRealEsperado = expectedReturnUSD - swaps.reduce((s, sw) => s + sw.amountUsd, 0)
     const estimatedGasTotal = gasCost * (1 + swaps.length * 0.3)
 
-    // Grid: compra volátil com fee DEX 0.3% ($0.06 em $20), lucro esperado da reversão
-    // Skipa todas as checagens — só executa
+    // Grid: skipa todas as checagens — só executa
     if (temGridTrade) {
       this.log(`[PREGÃO] 📐 Grid entrada aceita — DEX fee $${(-lucroRealEsperado).toFixed(4)} é custo de entrada, lucro na reversão`)
-    } else if (temDesvioEstavel) {
-      // StableMR: DEX fee ~0.3% é esperado na entrada, aborta só se perda > 1% do amount
+    } else {
+      // Todos os trades (StableMR, agentes, professor): DEX fee ~0.3% é custo de entrada
+      // Aborta só se perda > 1% do amount total (guarda contra slippage catastrófico)
       const totalAmount = swaps.reduce((s, sw) => s + sw.amountUsd, 0)
       if (lucroRealEsperado < -totalAmount * 0.01) {
-        this.log(`[PREGÃO] 🌾 StableMR perda $${(-lucroRealEsperado).toFixed(4)} > 1% de $${totalAmount.toFixed(2)} — abortando`)
+        this.log(`[PREGÃO] 🛑 Perda $${(-lucroRealEsperado).toFixed(4)} > 1% de $${totalAmount.toFixed(2)} — abortando`)
         return
       }
-      this.log(`[PREGÃO] 🌾 StableMR DEX fee $${(-lucroRealEsperado).toFixed(4)} (${((-lucroRealEsperado / totalAmount) * 100).toFixed(2)}%) — entrada aceita, lucro na reversão`)
-    } else {
-      const gasMultiplier = isUltimaTentativa ? 0.5 : 1.0
-      if (lucroRealEsperado < lucroMinimoTotal && !isUltimaTentativa) {
-        this.log(`[PREGÃO] ⏳ Lucro real $${lucroRealEsperado.toFixed(4)} < mínimo $${lucroMinimoTotal.toFixed(4)} — requote rejeitado (attempt #${pacote.attempts})`)
-        return
-      }
-      if (lucroRealEsperado < estimatedGasTotal * gasMultiplier && !isUltimaTentativa) {
-        this.log(`[PREGÃO] ⏳ Lucro $${lucroRealEsperado.toFixed(4)} < ${gasMultiplier}x gas $${(estimatedGasTotal * gasMultiplier).toFixed(4)} — aguardando (attempt #${pacote.attempts})`)
-        return
-      }
+      this.log(`[PREGÃO] ✅ DEX fee $${(-lucroRealEsperado).toFixed(4)} (${((-lucroRealEsperado / totalAmount) * 100).toFixed(2)}%) — entrada aceita, lucro na reversão/subida`)
     }
 
     const pkgResult: PackageResult = {

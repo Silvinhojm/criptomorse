@@ -110,11 +110,25 @@ export interface CCTPStep {
 export class CCTPService {
   private providers: Record<string, ethers.JsonRpcProvider>;
 
+  // Balance cache: 10s TTL + 200ms rate limit entre RPC calls
+  private balanceCache: Map<string, { balance: number; timestamp: number }> = new Map();
+  private lastRpcCall = 0;
+  private readonly BALANCE_CACHE_TTL = 10_000;
+  private readonly RPC_RATE_LIMIT_MS = 200;
+
   constructor() {
     this.providers = {};
     for (const [chain, config] of Object.entries(CCTP_CONFIG)) {
       this.providers[chain] = new ethers.JsonRpcProvider(config.rpcUrl);
     }
+  }
+
+  private async waitForRateLimit() {
+    const elapsed = Date.now() - this.lastRpcCall;
+    if (elapsed < this.RPC_RATE_LIMIT_MS) {
+      await new Promise(r => setTimeout(r, this.RPC_RATE_LIMIT_MS - elapsed));
+    }
+    this.lastRpcCall = Date.now();
   }
 
   async estimateFee(fromChain: string, toChain: string, amount: number): Promise<number> {
@@ -381,13 +395,22 @@ export class CCTPService {
       throw new Error(`Unsupported chain: ${chain}`);
     }
 
+    const cacheKey = `${chain}:${address.toLowerCase()}`;
+    const cached = this.balanceCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.BALANCE_CACHE_TTL) {
+      return cached.balance;
+    }
+
+    await this.waitForRateLimit();
     const provider = this.providers[chain];
     const usdc = new ethers.Contract(config.usdc, USDC_ABI, provider);
     const [balance, decimals] = await Promise.all([
-      usdc.balanceOf(address),
+      usdc.balanceOf(address).catch(() => 0n),
       usdc.decimals().catch(() => 6),
     ]);
-    return parseFloat(ethers.formatUnits(balance, decimals));
+    const parsed = parseFloat(ethers.formatUnits(balance, decimals));
+    this.balanceCache.set(cacheKey, { balance: parsed, timestamp: Date.now() });
+    return parsed;
   }
 }
 

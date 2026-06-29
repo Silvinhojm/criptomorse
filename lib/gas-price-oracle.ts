@@ -34,7 +34,10 @@ const RPC_FALLBACKS: Record<string, string[]> = {
     "https://ethereum-sepolia.publicnode.com",
   ],
   base: [],
-  arc: [],
+  arc: [
+    "https://rpc.testnet.arc.network",
+    "https://testnet.arc.network/rpc",
+  ],
 };
 
 const GAS_UNITS_SWAP = 350000; // swaps reais usam ~300k-500k gas (era 200k, subestimava 40%)
@@ -111,6 +114,15 @@ class GasPriceOracle {
         const feeGwei = ethers.formatUnits(gasPriceWei, "gwei");
         if (BigInt(Math.floor(Number(feeGwei))) < MIN_GWEI) {
           gasPriceWei = ethers.parseUnits(MIN_GWEI.toString(), "gwei");
+        }
+      }
+
+      // Ethereum min base fee is 5 Gwei (RPCs sometimes return <1 gwei)
+      if (networkKey === "ethereum") {
+        const MIN_GWEI_ETH = 5n;
+        const feeGwei = ethers.formatUnits(gasPriceWei, "gwei");
+        if (BigInt(Math.floor(Number(feeGwei))) < MIN_GWEI_ETH) {
+          gasPriceWei = ethers.parseUnits(MIN_GWEI_ETH.toString(), "gwei");
         }
       }
 

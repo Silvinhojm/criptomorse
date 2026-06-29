@@ -45,9 +45,11 @@ class CapitalController {
 
     // Se já tem capital bloqueado
     if (this.state.locked) {
-      // Verificar se a posição ainda está aberta
+      // Verificar se a posição ainda está aberta (match por boughtToken:networkKey)
       const openPositions = positionManager.getOpenPositions()
-      const stillOpen = openPositions.some(p => p.id === this.state.lockedBy)
+      const stillOpen = openPositions.some(p =>
+        `${p.boughtToken}:${p.networkKey}` === this.state.lockedBy
+      )
       if (!stillOpen) {
         this.unlock()
       } else {
@@ -73,7 +75,7 @@ class CapitalController {
 
     // Autorizado!
     this.state.locked = true
-    this.state.lockedBy = request.id
+    this.state.lockedBy = `${request.pair.split('→')[1]}:${request.network}`
     this.state.lockedAt = Date.now()
     this.state.requests = this.state.requests.filter(r => r.id !== request.id)
 
@@ -92,7 +94,7 @@ class CapitalController {
       const availableUSDC = realSwap.getBalance("USDC")
       if (availableUSDC >= next.amountUSD) {
         this.state.locked = true
-        this.state.lockedBy = next.id
+        this.state.lockedBy = `${next.pair.split('→')[1]}:${next.network}`
         this.state.lockedAt = Date.now()
         this.state.requests.shift()
         console.log(`[Capital] 🔓 Liberado → ${next.strategy} autorizado (${next.pair} $${next.amountUSD})`)

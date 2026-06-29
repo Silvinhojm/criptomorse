@@ -68,8 +68,8 @@ class Escriturário {
       let saldoTokens = realSwap.getBalance(fromToken as TokenSymbol)
       this.log(`📊 Saldo de ${fromToken}: ${saldoTokens.toFixed(6)}`)
 
-      // Se saldo aparece zerado mas há posição aberta (venda de volátil), usar o amount da posição
-      if (saldoTokens < 0.0001 && !isFromStable && !isTestnet) {
+      // Se saldo aparece zerado mas há posição aberta (venda), usar o amount da posição
+      if (saldoTokens < 0.0001) {
         const ordensAtivas = pregão.getOrdensAtivas()
         const jaTemPosicao = ordensAtivas.some(o =>
           o.fromToken === fromToken && o.toToken === ordem.toToken && o.rede === ordem.rede &&
@@ -137,6 +137,14 @@ class Escriturário {
 
       if (!isTestnet) {
         this.log(`📦 Ordem ${ordem.par} na mainnet — aguardando batch via Professor`)
+        // Timeout de 2min: se o Professor não pegar a ordem, marca como falha
+        setTimeout(() => {
+          const o = pregão.getOrdensAtivas().find(o => o.id === ordem.id)
+          if (o && (o.status === "pronto" || o.status === "preparando")) {
+            pregão.atualizarOrdem(ordem.id, { status: "falhou", errorMsg: "Timeout aguardando batch do Professor" })
+            this.log(`⏰ Ordem ${ordem.par} expirou — Professor não processou em 2min`)
+          }
+        }, 120_000)
         return
       }
 

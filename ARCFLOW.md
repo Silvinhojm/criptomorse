@@ -678,6 +678,7 @@ NVIDIA_API_KEY=
 | AgenticCommerce (ERC-8183, Arc oficial) | `0x0747EEf0706327138c69792bF28Cd525089e4583` |
 | **AgentIdentity (ERC-8004, próprio)** | **`0xd2a801e60a0ab36da3fb17d4a7654b494ba8326b`** |
 | **ERC8183 Job Marketplace (próprio)** | **`0x319227cf1de5c61d11313af8226a8f5309fa70d9`** |
+| **GenericAMMPair USDC→EURC (próprio)** | **`0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb`** |
 
 ---
 
@@ -3078,9 +3079,29 @@ Onde: G = gas round-trip, V = valor batch, S = spread
 
 ---
 
-## 38. MICROPOOL AMM (`contracts/MicroPool.sol`)
+## 38. AMMs PRÓPRIOS (Arc Testnet)
 
-**Contrato AMM minimalista (Uniswap V2) para pools de stablecoin com range tight.**
+### 38.1 GenericAMMPair (`contracts/GenericAMMPair.sol`)
+
+**Uniswap V2-style constant product AMM (forked de dharmanan/ARC-Testnet-Lend).** 0.3% fee, emergency pause, initial liquidity ratio guard (10-90%).
+
+| Função | Descrição |
+|--------|-----------|
+| `swap(tokenIn, amountIn, minAmountOut)` | Swap com slippage protection |
+| `addLiquidity(amount0, amount1)` | Adicionar liquidez proporcional |
+| `removeLiquidity(liquidityAmount)` | Retirar liquidez |
+| `getAmountOut(tokenIn, amountIn)` | Preview do swap |
+| `reserve0()` / `reserve1()` | Reserves atuais |
+| `pause()` / `unpause()` | Emergency pause (owner only) |
+
+**Deployado:** USDC→EURC na Arc Testnet (`0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb`)
+**Liquidez inicial:** $17.28 USDC + $16.00 EURC (ratio 0.9259 ≈ $1.08/EURC)
+**Deploy:** `node scripts/deployAMMArc.js`
+**Add liquidity:** `node scripts/addLiquidityAMM.js`
+
+### 38.2 MicroPool (`contracts/MicroPool.sol`)
+
+**Contrato AMM minimalista legado.** Substituído pelo GenericAMMPair.
 
 | Função | Descrição |
 |--------|-----------|
@@ -3090,13 +3111,135 @@ Onde: G = gas round-trip, V = valor batch, S = spread
 | `getPrice(baseToken)` | Preço atual do pool |
 | `getPoolImbalance()` | % de desequilíbrio em bps |
 
-**Deploy:** `node scripts/deployMicroPoolArc.js` (requer PRIVATE_KEY + faucet USDC/EURC)
+**Deploy:** `node scripts/deployMicroPoolArc.js`
 
-**Limitação matemática:** com $100 TVL, trade de $1 causa ~4% slippage. Só viável com TVL >$1000 ou volume externo.
+### 38.3 Integração no Trading
+
+O `arc-direct-swap.ts` agora roteia swaps USDC↔EURC na Arc testnet através do GenericAMMPair real em vez do synthetic path (1:1 sem on-chain). Fallback para synthetic se o AMM falhar.
+
+**Swap flow:**
+1. Approve AMM para gastar fromToken (MaxUint256)
+2. `getAmountOut(tokenIn, amountIn)` → toAmount estimado
+3. `swap(tokenIn, amountIn, minAmountOut)` com 0.5% slippage tolerance
+4. `balanceOf` diff para confirmar recebimento
+
+**Frontend:** Componente `AMMPoolStatus` mostra reserves, preço e slippage estimado para trade de $5.
 
 ---
 
-## 39. SESSION SUMMARY — Quinta Sessão (25/06/2026)
+## 39. ARC TRAINING — Sistema de Treinamento Autônomo
+
+### 39.1 visão Geral
+
+`lib/arc-training.ts` — orchestrator que coordena o ciclo de treinamento dos agentes na Arc testnet. Usa a infraestrutura existente (pregueiros, agentes, ArcBandit, Professor) e apenas monitora/orquestra, sem duplicar lógica.
+
+### 39.2 Arquitetura
+
+```
+ArcTraining.start()
+  ├── Cria subscriber: onCycle(tick)
+  │     ├── 1. Executa pregueiros (market-making coverage)
+  │     ├── 2. Executa agentes (votação completa)
+  │     ├── 3. Executa ArcBandit (bandit decide trade)
+  │     ├── 4. Chama Professor para avaliar palpites
+  │     │     └── Professor ajusta params via _aplicarAjustes()
+  │     │     └── Professor salva estado em localStorage
+  │     ├── A cada 5 ciclos: snapshot agentes + parâmetros
+  │     └── Após 200 ciclos: stop() automático
+  └── Estado persistido em arcflow_arc_training (localStorage)
+```
+
+### 39.3 Features
+
+- **Start/Stop**: `start()` com worker automático, `stop()` com limpeza
+- **Subscribe**: callback `onCycle(tick, estado)` para UI em tempo real
+- **Snapshots**: a cada 5 ciclos, tira foto de agentes (top 5 scores) + parâmetros (conf.min, entrada% de cada robô)
+- **Persistência**: `_salvarEstado()` após cada ciclo, `_carregarEstado()` no start()
+- **Auto-stop**: após 200 ciclos, para automaticamente
+
+### 39.4 UI — ArcTrainingPanel
+
+`app/components/ArcTrainingPanel.tsx` — componente React que integra no `DashboardShell.tsx`.
+
+| Elemento | Descrição |
+|----------|-----------|
+| Status | "Treinando (ciclo X/200)" ou "Parado" |
+| Botão | Iniciar / Parar |
+| Top 5 | Agentes com maior score + delta desde último snapshot |
+| Parâmetros | conf.min, entrada% de cada robô ativo |
+| Logs | Últimas 5 entradas do ciclo atual |
+
+**Visibilidade**: apenas quando `network === "arc"` (Arc testnet).
+
+### 39.5 Integração com BUG #4 (Score Floor -500)
+
+O sistema de treinamento depende do score floor -500 (`escola-robos.ts:126`) para que agentes com penalidades catastróficas (-9.424pts) possam se recuperar. Sem o floor, agentes com score < -500 nunca seriam selecionados pelo bandit, criando um ciclo de feedback negativo que impedia o treinamento.
+
+### 39.6 Arquivos
+
+| Arquivo | Descrição |
+|---------|-----------|
+| `lib/arc-training.ts` | Orchestrator principal |
+| `app/components/ArcTrainingPanel.tsx` | Painel de dashboard |
+| `app/components/DashboardShell.tsx` | Import + render do painel |
+| `lib/escola-robos.ts` | Score floor -500 (BUG #4) |
+| `lib/pregão.ts` | Fallback de confiança max-individual (BUG #2) |
+
+---
+
+## 40. M_BREAK FILTER — Filtro de Volatilidade Mínima
+
+### 40.1 Conceito
+
+O M_break filter impede que agentes votem em pares cuja volatilidade 24h não cobre o custo da taxa DEX (0.3% V2). A fórmula usada é a mesma auditada no ARCFLOW.md seção AUDITORIA TÉCNICA:
+
+```
+M_break = ((gasCost/amount + 1 + spreadDex) / (1 - spreadDex)) - 1
+
+onde:
+  spreadDex = 0.003 (0.3% — taxa SushiSwap/Uniswap V2)
+  gasCost   = gas estimado da rede (POL, ETH)
+  amount    = valor do trade em USD
+```
+
+### 40.2 Implementação
+
+`lib/agentes-do-pregão.ts:1378-1402`:
+
+```typescript
+// Antes de cada votação de par, verifica se vol >= M_break
+if (!isTestnet) {
+  const mBreak = ((gasCost / amount + 1 + spreadDex) / (1 - spreadDex)) - 1
+  if (vol24h < mBreak) {
+    // Skip — vol não cobre custo DEX
+    continue
+  }
+}
+```
+
+### 40.3 Impacto
+
+| Par | Vol 24h | M_break ($5) | M_break ($20) | Filtrado? |
+|-----|---------|:---:|:---:|:---:|
+| EURC/USDC | ~0.05% | 0.63% | 0.33% | ✅ Sim (ambos) |
+| WMATIC/USDC | ~1.5% | 0.63% | 0.33% | ❌ Não |
+| WETH/USDC | ~1.8% | 0.63% | 0.33% | ❌ Não |
+
+EURC é filtrado em todos os amounts. WMATIC e WETH passam livremente.
+
+### 40.4 Gas Cost por Rede (estimado para $5 trade)
+
+| Rede | Gas Cost | M_break |
+|------|:--------:|:-------:|
+| Polygon | $0.006 | 0.63% |
+| Ethereum | $2.50 | 55.3% |
+| Arc Testnet | $0.00 (gasless) | 0.60% (só DEX fee) |
+
+Testnet é isenta (gasless). Mainnet Ethereum com $5 trade tem M_break de 55% — praticamente nenhum par passa.
+
+---
+
+## 41. SESSION SUMMARY — Quinta Sessão (25/06/2026)
 
 ### What's Changed
 
@@ -3300,3 +3443,61 @@ Fluxo de unlock():
 | `lib/pregão.ts` | Import `capitalController`. `executarPacotes()`: request() com score dinâmico (profit/invested), unlock() no finally. Pacote re-registrado se negado. |
 | `AGENTS.md` | Session summary atualizado (décima sessão). |
 | `ARCFLOW.md` | Seção 37.1 expandida (matemática do score, fluxo de decisão, fila de prioridade). Nova seção 37.1.1 (tabela de integração). Seção 37.6 reescrita (harmonia total, fluxo coordenado, garantia de não-concorrência). Changelog 46 adicionado. |
+
+---
+
+## 47. CHANGELOG — 29/06/2026 (AMM + Arc Training + 3 Bug Fixes + M_break)
+
+### 47.1 GenericAMMPair na Arc
+
+- **Novo**: `contracts/GenericAMMPair.sol` — Uniswap V2-style AMM, 0.3% fee, pause + liquidity guard (10-90%), deployed em `0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb`
+- **Novo**: `scripts/deployAMMArc.js`, `scripts/addLiquidityAMM.js` — deploy + add liquidity ($17.28 USDC + $16.00 EURC)
+- **Modificado**: `lib/arc-direct-swap.ts` — stable→stable swaps roteiam via AMM real com `getAmountOut()` live
+- **Novo**: `app/components/AMMPoolStatus.tsx` — widget dashboard com reserves, price, slippage
+
+### 47.2 Arc Training System
+
+- **Novo**: `lib/arc-training.ts` — orchestrator com `start()/stop()/subscribe()`, cycles a cada 15s, snapshots a cada 5 ciclos, auto-stop após 200 ciclos
+- **Novo**: `app/components/ArcTrainingPanel.tsx` — painel visível apenas na Arc testnet com status, top 5 agentes, parâmetros calibrados, logs
+
+### 47.3 BUG #1 — Saldo 0.000000 para non-USDC na Arc
+
+- **`lib/real-swap-executor.ts:540,562`**: Adicionado `console.warn` nos catch blocks de `balanceOf`/`decimals` para logar qual token falhou + erro
+- **`lib/escriturario.ts:72`**: Removido guard `!isFromStable && !isTestnet` que impedia fallback de posição para tokens não-USDC em testnet
+- **`lib/arc-direct-swap.ts:30`**: Corrigido EURC address em `STABLECOINS` de `0x89B5...cF04` para `0x89B5...Aa3b`
+
+### 47.4 BUG #2 — MarketMaker confiança 70% descartada como 0%
+
+- **`lib/pregão.ts:363-376`**: Se weighted average confidence dá 0 (porque score do agente é 0, anulando peso), usa maior confiança individual dos participantes com log de diagnóstico
+
+### 47.5 BUG #3 — Ordens "aguardando batch via Professor" presas
+
+- **`lib/escriturario.ts:139-148`**: `setTimeout(120s)` marca ordem como `falhou` se Professor não processar, com log `⏰ Ordem X expirou`
+
+### 47.6 BUG #4 — Score floor -500
+
+- **`lib/escola-robos.ts:126`**: `robo.pontos = Math.max(-500, robo.pontos)` após cada penalidade. Agentes com -9.424pts recuperam para -500 imediatamente
+
+### 47.7 M_break Filter
+
+- **`lib/agentes-do-pregão.ts:1378-1402`**: Novo filtro que calcula `M_break = ((gasCost/amount + 1 + spreadDex) / (1 - spreadDex)) - 1` com `spreadDex = 0.003` e skipa pares onde `vol24h < M_break`. Testnet isenta (gasless). EURC filtrado; WMATIC/WETH passam.
+
+### 47.8 Fixes Operacionais
+
+- **`app/api/price/route.ts:56`**: fallback pega SoSoValue retornando 0 (POL $0.00 bug)
+- **`lib/gas-price-oracle.ts:120`**: ETH minimum floor 5 gwei
+- **`app/components/layout/Header.tsx:34`**: `refreshAllBalances()` a cada 5s
+- **`lib/capital-controller.ts`**: lockedBy compara `boughtToken:networkKey` em vez de raw request ID
+- **`lib/pregão.ts:limparOrdensTravadas()`**: `forceUnlock()` em ordens presas >2min
+- **`lib/cctp.ts:getUSDCBalance()`**: 10s TTL + 200ms rate limit entre RPC calls
+
+### 47.9 Arquivos Novos
+
+| Arquivo | Descrição |
+|---------|-----------|
+| `lib/arc-training.ts` | Orchestrator de treinamento |
+| `app/components/ArcTrainingPanel.tsx` | Painel UI de treinamento |
+| `app/components/AMMPoolStatus.tsx` | Widget de status do AMM |
+| `contracts/GenericAMMPair.sol` | AMM Uniswap V2-style |
+| `scripts/deployAMMArc.js` | Deploy do AMM |
+| `scripts/addLiquidityAMM.js` | Add liquidez ao AMM |

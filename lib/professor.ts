@@ -9,6 +9,8 @@ import { pregão } from "./pregão"
 import { TRADING_PAIRS, NETWORKS, realSwap, type TokenSymbol, type NetworkKey } from "./real-swap-executor"
 import { COIN_IDS } from "./coin-ids"
 
+const STABLES = new Set(["USDC", "USDT", "DAI", "EURC", "USDC.e"])
+
 export interface PalpiteRobo {
   roboNome: string
   rede: string
@@ -179,10 +181,16 @@ class Professor {
 
     const variacao = ((precoAtual - palpite.precoNoPalpite) / palpite.precoNoPalpite) * 100
 
+    // Em pares stable-stable (EURC/USDC, etc.), volatilidade é <0.1% — usar threshold reduzido
+    const fromSymbol = palpite.fromToken as TokenSymbol
+    const toSymbol = palpite.toToken as TokenSymbol
+    const isStablePair = STABLES.has(fromSymbol) && STABLES.has(toSymbol)
+    const threshold = isStablePair ? 0.02 : 0.1
+
     let acertou = false
-    if (palpite.direcao === "buy" && variacao > 0.1) {
+    if (palpite.direcao === "buy" && variacao > threshold) {
       acertou = true
-    } else if (palpite.direcao === "sell" && variacao < -0.1) {
+    } else if (palpite.direcao === "sell" && variacao < -threshold) {
       acertou = true
     }
 
@@ -227,11 +235,24 @@ class Professor {
     this._salvarEstado()
   }
 
+  private _ultimoParAjuste = new Map<string, string>()
+  private _ajusteCount = new Map<string, number>()
+
   private _aplicarAjustes(palpite: PalpiteRobo, acertou: boolean): boolean {
     const nome = palpite.roboNome
     const params = parametrosRobos.get(nome)
     let ajustou = false
     let motivo = ""
+
+    // Reseta streak se o par mudou — erro em USDC→mcirBTC não deve contaminar cirBTC→EURC
+    const parAtual = palpite.par
+    const ultimoPar = this._ultimoParAjuste.get(nome)
+    if (ultimoPar && ultimoPar !== parAtual) {
+      this.streakErro.set(nome, 0)
+      this.streakAcerto.set(nome, 0)
+      this._ajusteCount.set(nome, 0)
+    }
+    this._ultimoParAjuste.set(nome, parAtual)
 
     if (acertou) {
       this.streakAcerto.set(nome, (this.streakAcerto.get(nome) || 0) + 1)
@@ -253,6 +274,17 @@ class Professor {
 
       const streak = this.streakErro.get(nome) || 0
       const foiConfiante = palpite.confianca > 70
+      const ajusteCount = this._ajusteCount.get(nome) || 0
+
+      // Se params já estão no teto, não ajusta nem loga
+      if (params.confiancaMinima >= 55 && params.thresholdEntrada >= 0.015) {
+        return false
+      }
+
+      // Limite de 10 ajustes consecutivos — após isso, aceita que o robô não acerta esse par
+      if (ajusteCount >= 10) {
+        return false
+      }
 
       if (foiConfiante && streak >= 2) {
         // Erro confiante + streak: aumenta thresholdEntrada drasticamente
@@ -261,6 +293,7 @@ class Professor {
           confiancaMinima: Math.min(60, params.confiancaMinima + 8),
         }, `erro confiante em sequência — endurecendo entrada`)
         ajustou = true
+        this._ajusteCount.set(nome, ajusteCount + 1)
         motivo = gerarFeedbackAjuste(nome, `erro confiante #${streak}, endurecendo entrada`, novos)
       } else if (streak >= 3) {
         // Streak de erros: aumenta confiancaMinima gradualmente
@@ -269,6 +302,7 @@ class Professor {
           thresholdEntrada: Math.min(0.015, params.thresholdEntrada + 0.002),
         }, `${streak} erros consecutivos — aumentando seletividade`)
         ajustou = true
+        this._ajusteCount.set(nome, ajusteCount + 1)
         motivo = gerarFeedbackAjuste(nome, `${streak} erros consecutivos, aumentando seletividade`, novos)
       } else if (foiConfiante) {
         // Erro isolado confiante: sobe confiancaMinima
@@ -276,6 +310,7 @@ class Professor {
           confiancaMinima: Math.min(50, params.confiancaMinima + 5),
         }, `erro confiante — precisa de mais convicção para entrar`)
         ajustou = true
+        this._ajusteCount.set(nome, ajusteCount + 1)
         motivo = gerarFeedbackAjuste(nome, `erro confiante, elevando exigência`, novos)
       }
     }

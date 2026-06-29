@@ -492,8 +492,77 @@ Overhead: 500-1500ms adicionais. Aceitável para trades de 30-120s.
 - Grid $20 + profit check skip: passa pelo quoting sem rejeição por lucro negativo na compra
 - DEX fee 0.3% ($0.06) aceito como custo de entrada, grid espera movimento de preço pra lucrar na venda
 
+## Session Summary (29/06/2026) — 6 Fixes: RPC fallbacks, Balance race, EURC→USDC, Stork, Professor
+
+### What's Changed
+
+1. **RPC fallbacks Arc testnet** — `lib/real-swap-executor.ts:332-334`: adicionado `arc` key com 2 URLs (`rpc.testnet.arc.network`, `testnet.arc.network/rpc`) em `BACKUP_RPCS`. Antes `arc: []` — sem fallback, única URL falhava → proxy 502. Mesma correção em `lib/gas-price-oracle.ts:20-23`.
+
+2. **Balance race condition (atomic swap)** — `lib/real-swap-executor.ts:_refreshAllBalancesImpl()`: substituído `this.tokenBalances.clear()` + repopulate por `newBalances` local, com swap atômico `this.tokenBalances = newBalances` ao final. Antes, `clear()` executava antes do repopulate, e `getBalance()` concorrente via escriturario via 0 saldo → `❌ Saldo insuficiente`.
+
+3. **EURC→USDC synthetic** — `lib/arc-direct-swap.ts:71-80`: novo synthetic path que detecta stable→stable em testnet e retorna sucesso 1:1 sem on-chain. Antes EURC (`0x89B5`) rejeitava `transfer(self)` e catch block caía em `Nenhuma rota disponível`.
+
+4. **Stork auto-disable** — `lib/pair-price-feed.ts:100-101`: `storkFailCount` + `storkDisabledPermanently` — após 10 falhas consecutivas do oracle Stork, desativa permanentemente (não tenta mais). Antes retentava a cada 60s com log de warn.
+
+5. **Professor — cirBTC PRICE_DIVIDER** — `lib/real-swap-executor.ts:32`: adicionado `cirBTC: 10_000_000_000` ao `PRICE_DIVIDERS`. Antes cirBTC usava raw BTC price (~$60k) sem divider → erro de 5,999,900% em avaliações.
+
+6. **Professor — stable pair threshold** — `lib/professor.ts:186-189`: threshold reduzido de 0.1% para 0.02% em pares stable-stable. Antes EURC/USDC com vol 0.05% nunca atingia threshold 0.1% → todo palpite virava "erro" → parâmetros endureciam até conf=55%, entrada=1.5%, score -30k.
+
+### Professor streak fix (29/06/2026 tarde)
+
+**Bug fatal**: robôs com 30+ erros consecutivos em `USDC→mcirBTC` (Arc testnet) chegavam ao teto (conf.min=55%, entrada=1.50%) mas continuavam logando `"aumentando seletividade"` a cada erro — streak infinito sem parar.
+
+**Fix** (`lib/professor.ts:238-245`):
+1. **Streak reseta por par** — `_ultimoParAjuste` detecta mudança de par e zera streak. Erro em `USDC→mcirBTC` não contamina `cirBTC→EURC`
+2. **Cap de 10 ajustes por par** — `_ajusteCount` limita correções consecutivas. Após 10 ajustes, professor para de modificar parâmetros e aceita que o robô não acerta aquele par
+3. **Early exit no teto** — se `confiancaMinima >= 55 && thresholdEntrada >= 0.015`, retorna sem logar
+
+### Polygon trade destravado (29/06/2026 noite)
+
+**Análise**: 3 bloqueios impediam TODOS os trades na Polygon:
+1. V3 pools não encontradas (RPC fail) → fallback V2 (0.3% fee) → `_quoteTrade` abortava (lucro $0.005 < fee+gas $0.022)
+2. `executarPacotes` else branch exigia `lucroReal > lucroMinimo` — DEX fee 0.3% deixava lucro negativo → abortava
+3. Grão `minVolatility2h` de 0.09% bloqueava EURC (vol real 0.05%)
+
+**Fixes**:
+1. **Removeu V2 profit check** (`pregão.ts:624-632`): `_quoteTrade` não aborta mais V2 com base em lucro esperado. Quem decide é o caller.
+2. **Unificou guard de perda** (`pregão.ts:780-800`): Grid, StableMR e agentes agora usam o mesmo guard — só aborta se perda > 1% do amount. DEX fee de 0.3% é aceito como custo de entrada para qualquer estratégia.
+3. **minVol fixo para stables** (`modo-grão.ts:250`): stable pairs usam floor de 0.03% em vez de `gas/batch` (0.09%). EURC (vol 0.05%) agora passa.
+
+## Session Summary (29/06/2026 tarde) — AMM + M_break + Arc Training + 6 Bug Fixes
+
+### What's Changed
+
+1. **GenericAMMPair deployado na Arc** — `contracts/GenericAMMPair.sol` (Uniswap V2-style, 0.3% fee, pause + liquidity guard), `scripts/deployAMMArc.js`, `scripts/addLiquidityAMM.js`. Pool USDC→EURC em `0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb` com $17.28 USDC + $16.00 EURC. Integrado em `arc-direct-swap.ts` — stable→stable swaps roteiam via AMM real com `getAmountOut()` live.
+
+2. **AMMPoolStatus widget** — `app/components/AMMPoolStatus.tsx` + `DashboardShell.tsx`: reservas, preço, slippage em tempo real na rede Arc.
+
+3. **5 Fixes operacionais**:
+   - `app/api/price/route.ts:56`: fallback pega SoSoValue retornando 0 (POL $0.00 bug)
+   - `lib/gas-price-oracle.ts:120`: ETH minimum floor 5 gwei
+   - `app/components/Header.tsx:34`: `refreshAllBalances()` a cada 5s
+   - `lib/capital-controller.ts`: lockedBy compara `boughtToken:networkKey` em vez de raw request ID
+   - `lib/pregão.ts:limparOrdensTravadas()`: `forceUnlock()` em ordens presas >2min
+
+4. **Rate-limited balance cache** — `lib/cctp.ts:getUSDCBalance()`: 10s TTL + 200ms rate limit entre RPC calls.
+
+5. **M_break filter** — `lib/agentes-do-pregão.ts:1378-1402`: volatilidade mínima para cobrir taxa DEX (0.3% V2, fórmula auditada). EURC (vol ~0.05%) filtrado, WETH (~1.5%) passa.
+
+6. **BUG #4 — Score floor -500** — `lib/escola-robos.ts:126`: `robo.pontos = Math.max(-500, robo.pontos)`. Agentes com -9.424pts (Liquidator) voltam para -500 imediatamente.
+
+7. **Arc Training system** — `lib/arc-training.ts`: orchestrator com start/stop, subscribe, snapshots de agentes + parâmetros a cada 5 ciclos. `app/components/ArcTrainingPanel.tsx`: painel visível na rede Arc com botões Iniciar/Parar, top 5 agentes, parâmetros calibrados.
+
+8. **BUG #1 — Balance fetch logs** — `lib/real-swap-executor.ts:540,562`: `console.warn` nos catch blocks do `_refreshAllBalancesImpl` (antes silencioso). `lib/escriturario.ts:72`: fallback de posição estendido para testnets + stablecoins.
+
+9. **BUG #2 — MarketMaker conf fallback** — `lib/pregão.ts:363-376`: se weighted average dá 0, usa maior confiança individual dos participantes com log de diagnóstico.
+
+10. **BUG #3 — Timeout batch Professor** — `lib/escriturario.ts:139-148`: `setTimeout(120s)` marca ordem como `falhou` se Professor não processar.
+
+11. **EURC address fix** — `lib/arc-direct-swap.ts:30`: `STABLECOINS` usava address errado `0x89B5...cF04` → corrigido para `0x89B5...Aa3b` (igual NETWORKS + AMM).
+
 ### Current State
 - **Build**: limpo (zero erros TS)
-- **Polygon**: Grid $20 via SushiSwap direto, profit check skipado
-- **StableMR**: $12 via SushiSwap, profit check skipado (inalterado)
-- **Professor**: quotes DEX direto têm 0.3% fee (SushiSwap) em vez de 0.4% (SushiSwap + LI.FI)
+- **Arc Testnet**: AMM USDC/EURC ativo, ArcTrainingPanel rodando, score floor -500, balance logs ativos
+- **Polygon**: M_break filtrando pares inviáveis, MarketMaker com fallback de confiança, timeout de batch 2min
+- **Professor**: treinando na Arc com snapshots, parâmetros calibrados visíveis no dashboard
+- **Pendente**: BUGs #1/#2/#3 requerem monitoramento dos novos logs para confirmar resolução completa

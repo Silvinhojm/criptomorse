@@ -28,6 +28,7 @@ import { professor } from "@/lib/professor"
 import { pairSector } from "@/lib/pair-sector"
 import { StableOpportunities } from "./StableOpportunities"
 import { PiEngineMonitor } from "./PiEngineMonitor"
+import { ArcTrainingPanel } from "./ArcTrainingPanel"
 
 const COR_PREGÃO = "#d4a574"
 const COR_FUNDO = "#0f172a"
@@ -1055,6 +1056,9 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
 
       {/* π Monitor de Microestrutura Pi-Engine */}
       <PiEngineMonitor logs={logs} network={redeRef.current} />
+
+      {/* 🎓 Arc Training */}
+      <ArcTrainingPanel network={redeRef.current} />
 
       {/* 📦 Carteira — Posições Abertas + Últimas Operações */}
       <div style={{ marginBottom: 12, background: "rgba(212,165,116,0.05)", borderRadius: 12, padding: 12, border: "1px solid rgba(212,165,116,0.15)" }}>

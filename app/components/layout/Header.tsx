@@ -31,6 +31,7 @@ export default function Header({ onToggleWallet, currentNetworkKey, onNetworkCha
     setStatus(realSwap.getAddress() ? "conectado" : "desconectado")
 
     const t = setInterval(() => {
+      realSwap.refreshAllBalances().catch(() => {})
       setBalance(realSwap.getBalance("USDC"))
     }, 5000)
     return () => clearInterval(t)

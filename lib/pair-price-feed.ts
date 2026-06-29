@@ -62,10 +62,14 @@ class PairPriceFeed {
   private storkContract: ethers.Contract | null = null;
   private useStorkForArc = false;
   private storkFailureCache: Map<string, number> = new Map();
+  private storkFailCount: number = 0;
+  private storkDisabledPermanently: boolean = false;
   private storkLoggedTokens: Set<string> = new Set();
 
   setUseStork(active: boolean): void {
     this.useStorkForArc = active;
+    this.storkDisabledPermanently = false;
+    this.storkFailCount = 0;
     if (active) console.log("[PairPriceFeed] Stork oracle ativado para Arc Testnet");
   }
 
@@ -89,6 +93,8 @@ class PairPriceFeed {
   }
 
   private async getStorkPrice(token: TokenSymbol): Promise<number | null> {
+    if (this.storkDisabledPermanently) return null;
+
     let feedKey: string | undefined;
     if (token === "EURC") {
       feedKey = STORK_FEED_IDS.EURC;
@@ -110,6 +116,12 @@ class PairPriceFeed {
       if (price > 0) return price;
     } catch (err) {
       this.storkFailureCache.set(token, Date.now());
+      this.storkFailCount++;
+      if (this.storkFailCount >= 10) {
+        this.storkDisabledPermanently = true;
+        this.useStorkForArc = false;
+        console.warn(`[Stork] Desativado permanentemente após ${this.storkFailCount} falhas consecutivas`);
+      }
       if (!this.storkLoggedTokens.has(token)) {
         this.storkLoggedTokens.add(token);
         console.warn(`[Stork] Fallback para ${token}: ${err instanceof Error ? err.message : err}`);

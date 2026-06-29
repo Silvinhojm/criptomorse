@@ -29,7 +29,8 @@ export const TOKEN_DECIMALS: Record<string, number> = {
 // Divisores de preço para tokens que compartilham COIN_IDS de outro ativo
 // Ex: mcirBTC usa currency_id do BTC mas tem onboard 18 decimals → divide por 10^10
 export const PRICE_DIVIDERS: Record<string, number> = {
-  mcirBTC: 10_000_000_000, // 10^10 = 2^10 decimais de diferença
+  cirBTC: 10_000_000_000, // 10^10 — preço raw do BTC (~$60k) dividido para ~$0.000006
+  mcirBTC: 10_000_000_000, // 10^10 — mesma correção
 }
 
 // ─── Redes suportadas ────────────────────────────────────────────────────────
@@ -321,6 +322,10 @@ class RealSwapExecutor {
       "https://1rpc.io/matic",
     ],
     base: [],
+    arc: [
+      "https://rpc.testnet.arc.network",
+      "https://testnet.arc.network/rpc",
+    ],
     ethereum: [
       "https://rpc.ankr.com/eth",
       "https://ethereum-rpc.publicnode.com",
@@ -491,7 +496,7 @@ class RealSwapExecutor {
   private async _refreshAllBalancesImpl(): Promise<Map<TokenSymbol, TokenBalance>> {
     const net = NETWORKS[this.networkKey];
     const previousBalances = new Map(this.tokenBalances)
-    this.tokenBalances.clear()
+    const newBalances = new Map<TokenSymbol, TokenBalance>()
 
     const rpcsParaTentar: string[] = ['__PROVIDER__']
     rpcsParaTentar.push(net.rpcUrl, ...(this.BACKUP_RPCS[this.networkKey] ?? []))
@@ -529,12 +534,13 @@ class RealSwapExecutor {
               contract.decimals(),
             ]);
             const balance = parseFloat(ethers.formatUnits(raw, decimals));
-            this.tokenBalances.set(symbol, { symbol, balance, address, decimals: Number(decimals) });
+            newBalances.set(symbol, { symbol, balance, address, decimals: Number(decimals) });
             if (balance > 0.0001) nonZero++
             tokenCount++
           } catch (e) {
-            if (!this.tokenBalances.has(symbol)) {
-              this.tokenBalances.set(symbol, { symbol, balance: 0, address, decimals: TOKEN_DECIMALS[symbol] ?? 6 });
+            if (!newBalances.has(symbol)) {
+              console.warn(`⚠️ Balance fetch failed for ${symbol} (${address}): ${(e as Error)?.message ?? e}`)
+              newBalances.set(symbol, { symbol, balance: 0, address, decimals: TOKEN_DECIMALS[symbol] ?? 6 });
             }
           }
         })
@@ -552,11 +558,12 @@ class RealSwapExecutor {
           try {
             const { raw, decimals } = await erc20BalanceOf(address, this.userAddress!, rpcUrl)
             const balance = parseFloat(ethers.formatUnits(raw, Number(decimals)))
-            this.tokenBalances.set(symbol, { symbol, balance, address, decimals: Number(decimals) })
+            newBalances.set(symbol, { symbol, balance, address, decimals: Number(decimals) })
             if (balance > 0.0001) ok++
-          } catch {
-            if (!this.tokenBalances.has(symbol)) {
-              this.tokenBalances.set(symbol, { symbol, balance: 0, address, decimals: TOKEN_DECIMALS[symbol] ?? 6 })
+          } catch (e) {
+            if (!newBalances.has(symbol)) {
+              console.warn(`⚠️ Balance fetch failed for ${symbol} (${address}) via proxy: ${(e as Error)?.message ?? e}`)
+              newBalances.set(symbol, { symbol, balance: 0, address, decimals: TOKEN_DECIMALS[symbol] ?? 6 })
             }
           }
         })
@@ -565,7 +572,7 @@ class RealSwapExecutor {
         anyProviderSucceeded = true
         console.log(`🔁 Balance via ${label}: ${ok} non-zero`)
       }
-      return this.tokenBalances.size > 0
+      return newBalances.size > 0
     }
 
     for (const rpc of rpcsParaTentar) {
@@ -573,11 +580,11 @@ class RealSwapExecutor {
         if (rpc === 'metamask') {
           const mmProvider = new ethers.BrowserProvider((window as any).ethereum)
           await fetchFrom(mmProvider, 'MetaMask')
-          if (this.tokenBalances.size > 0) break
+          if (newBalances.size > 0) break
         } else if (rpc === '__PROVIDER__') {
           if (!this.provider) throw new Error('no provider')
           await fetchFrom(this.provider, 'signer provider')
-          if (this.tokenBalances.size > 0) break
+          if (newBalances.size > 0) break
         } else {
           const ok = await fetchFromProxyRpc(rpc, rpc.replace(/https?:\/\//, ''))
           if (ok) break
@@ -588,9 +595,9 @@ class RealSwapExecutor {
       }
     }
 
+    // Atomic swap: replace tokenBalances only after all fetches complete
     if (!anyProviderSucceeded) {
       // All RPCs failed: try localStorage per-network
-      // Only restore previousBalances if we're still on the same network (avoids leaking Arc USDC into Polygon)
       const mesmaRede = this._lastNetworkRefresh === this.networkKey
       console.log(`↩️ All RPCs failed${mesmaRede ? ', trying previous balances' : ''} — loading localStorage`)
       this._loadBalancesFromStorage()
@@ -606,14 +613,14 @@ class RealSwapExecutor {
         }
       }
     } else {
-      // Partial success: restore individual tokens that failed (only if they exist in current network)
+      // Partial success: merge newBalances + restore failed tokens from previousBalances
       let restored = 0
       const currentTokenKeys = new Set(Object.keys(net.tokens))
       for (const [symbol, prev] of previousBalances) {
         if (prev.balance > 0 && currentTokenKeys.has(symbol)) {
-          const current = this.tokenBalances.get(symbol)
+          const current = newBalances.get(symbol)
           if (!current || current.balance === 0) {
-            this.tokenBalances.set(symbol, prev)
+            newBalances.set(symbol, prev)
             restored++
           }
         }
@@ -621,7 +628,8 @@ class RealSwapExecutor {
       if (restored > 0) {
         console.debug(`↩️ Restored ${restored} token(s) from previous balances (partial failure)`)
       }
-      // Save to localStorage for next crash recovery
+      // Atomic swap
+      this.tokenBalances = newBalances
       this._saveBalancesToStorage()
     }
 
@@ -748,7 +756,7 @@ class RealSwapExecutor {
         const fromTokenAmount = actualAmount / fromPrice;
         const fromAmountRaw   = toTokenUnits(fromTokenAmount, fromDecimals);
 
-        const quote = generateSyntheticQuote(fromTokenAddr, toTokenAddr, fromAmountRaw, this.userAddress, net.chainId);
+        const quote = await generateSyntheticQuote(fromTokenAddr, toTokenAddr, fromAmountRaw, this.userAddress, net.chainId);
         if (!quote) continue;
 
         let toAmount = 0;

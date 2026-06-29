@@ -247,7 +247,10 @@ class ModoGrao {
       CONFIG.minConfidence = CONFIG._vol24h > 0.02 ? 40 : CONFIG._vol24h > 0.008 ? 30 : isStablePair ? 15 : 20
 
       // ── minVolatility2h: gas/valor — só entra se mercado paga ──
-      CONFIG.minVolatility2h = Math.max(0.0003, CONFIG._gasRoundTrip / (CONFIG.baseTradeUSD * CONFIG.batchThreshold))
+      // Stable pairs (EURC/USDC) têm vol natural ~0.05%; usar floor 0.0003 pra viabilizar
+      CONFIG.minVolatility2h = isStablePair
+        ? 0.0003
+        : Math.max(0.0003, CONFIG._gasRoundTrip / (CONFIG.baseTradeUSD * CONFIG.batchThreshold))
 
       // ── minAmplitude: stablecoin precisa de muito menos movimento ──
       CONFIG.minAmplitude = isStablePair ? 0.0001 : Math.max(0.001, CONFIG._gasRoundTrip * 0.1)

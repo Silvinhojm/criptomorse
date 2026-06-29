@@ -124,6 +124,7 @@ class EscolaRobos {
     } else {
       const penalidade = Math.round(confianca * 0.8)
       robo.pontos -= Math.max(1, penalidade)
+      robo.pontos = Math.max(-500, robo.pontos)
       robo.erros++
     }
     robo.taxaAcerto = robo.palpitesTotal > 0

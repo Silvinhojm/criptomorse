@@ -1374,6 +1374,11 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       const minSizeForCheck = getMinTradeSize(pairNet)
 
       const isTestnetNet = NETWORKS[pairNet]?.isTestnet ?? false
+
+      // M_break: volatilidade mínima para cobrir taxa DEX (0.3% V2, conservativo)
+      const spreadDex = 0.003
+      const M_break = ((gasCost / Math.max(valorFinal, 0.01) + 1 + spreadDex) / (1 - spreadDex)) - 1
+
       if (isTestnetNet) {
         pregão.adicionarLog(`🧪 Testnet volatile ${agreedPair.pair}: ignorando threshold — executando`)
         pregão.adicionarLog(`🤖 ${uniqueAgents.size} agentes (${agentesStr}) → ${agreedPair.pair} em ${pairNet} (${agreedPair.fromToken}→${agreedPair.toToken})`)
@@ -1393,6 +1398,8 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
           })
         }
         vagasUsadas++
+      } else if (M_break > 0 && vol24h < M_break) {
+        pregão.adicionarLog(`⏳ Vol ${(vol24h * 100).toFixed(2)}% < M_break ${(M_break * 100).toFixed(2)}% (gas $${gasCost.toFixed(4)}, amount $${valorFinal.toFixed(2)}) — ${agreedPair.pair} não cobre taxa DEX`)
       } else if (valorFinal < minSizeForCheck) {
         pregão.adicionarLog(`⏳ Trade $${valorFinal.toFixed(2)} abaixo do mínimo $${minSizeForCheck.toFixed(2)} — pulando`)
       } else if (minViableTrade > 0 && valorFinal < minViableTrade) {

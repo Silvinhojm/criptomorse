@@ -53,7 +53,8 @@ export async function GET(request: NextRequest) {
     const prices: Record<string, number> = {};
     const change24h: Record<string, number> = {};
     for (const id of ids) {
-      prices[id] = result.prices[id] ?? FALLBACK_PRICES[id] ?? 1.0;
+      const raw = result.prices[id];
+      prices[id] = (raw !== undefined && raw > 0) ? raw : (FALLBACK_PRICES[id] ?? 1.0);
       change24h[id] = result.change24h[id] ?? FALLBACK_CHANGE[id] ?? 0;
     }
 
