@@ -410,21 +410,29 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       return
     }
     for (const pos of posicoes) {
-      positionManager.closePosition(pos.id, pos.currentPrice || pos.entryPrice)
-      addLog(`🔒 Posição ${pos.boughtToken} fechada manualmente`)
-      const par = `${pos.boughtToken}→USDC`
-      for (const nome of ["FechamentoManual", "ForcarVenda", "Cleanup"]) {
-        pregão.receberOK({
-          pregueiro: nome,
-          rede: pos.networkKey,
-          par,
-          confianca: 90,
-          timestamp: Date.now(),
-          fromToken: pos.boughtToken,
-          toToken: "USDC",
-        })
+      const profitPct = pos.currentProfitPercent ?? ((pos.currentPrice && pos.entryPrice) ? ((pos.currentPrice - pos.entryPrice) / pos.entryPrice) * 100 : -100)
+      const isDeadPosition = profitPct < -99
+      if (isDeadPosition) {
+        // Posição com entry price corrompido (PRICE_DIVIDER bug): fecha local sem tentar vender
+        positionManager.closePosition(pos.id, 0)
+        addLog(`🔒 Posição ${pos.boughtToken} fechada (dead position - entry corrompido, sem venda on-chain)`)
+      } else {
+        positionManager.closePosition(pos.id, pos.currentPrice || pos.entryPrice)
+        addLog(`🔒 Posição ${pos.boughtToken} fechada manualmente`)
+        const par = `${pos.boughtToken}→USDC`
+        for (const nome of ["FechamentoManual", "ForcarVenda", "Cleanup"]) {
+          pregão.receberOK({
+            pregueiro: nome,
+            rede: pos.networkKey,
+            par,
+            confianca: 90,
+            timestamp: Date.now(),
+            fromToken: pos.boughtToken,
+            toToken: "USDC",
+          })
+        }
+        addLog(`📢 3 OKs de venda injetados para ${par}`)
       }
-      addLog(`📢 3 OKs de venda injetados para ${par}`)
     }
     atualizarTudo()
   }

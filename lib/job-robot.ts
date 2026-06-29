@@ -9,6 +9,7 @@ import { AppKit, SwapChain } from '@circle-fin/app-kit'
 import { createViemAdapterFromPrivateKey } from '@circle-fin/adapter-viem-v2'
 import { defineChain, createWalletClient, createPublicClient, http } from 'viem'
 import { JOB_PROOF_BYTECODE, JOB_PROOF_ABI } from './contracts'
+import { NonceManager } from "./nonce-manager"
 
 const ARC_RPC = 'https://rpc.testnet.arc.network'
 const ARC_CHAIN_ID = 5042002
@@ -159,7 +160,8 @@ class JobRobot {
       const provider = new ethers.JsonRpcProvider(ARC_RPC)
       const wallet = new ethers.Wallet(this._privateKey, provider)
       const factory = new ethers.ContractFactory(JOB_PROOF_ABI, JOB_PROOF_BYTECODE, wallet)
-      const contract = await factory.deploy(robotName, jobNumber)
+      const nonce = await NonceManager.getInstance().getNonce(provider, ARC_CHAIN_ID, wallet.address)
+      const contract = await factory.deploy(robotName, jobNumber, { nonce })
       const tx = contract.deploymentTransaction()!
       const receipt = await tx.wait()
       const contractAddress = await contract.getAddress()
