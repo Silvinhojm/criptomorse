@@ -30,8 +30,14 @@ export function ArcTrainingPanel({ network }: { network: string }) {
     return unsub
   }, [])
 
-  const handleStart = () => { arcTraining.start() }
-  const handleStop = () => { arcTraining.stop() }
+  const handleStart = () => {
+    arcTraining.start()
+    setState(arcTraining.getState())
+  }
+  const handleStop = () => {
+    arcTraining.stop()
+    setState(arcTraining.getState())
+  }
 
   const lastAgents = state.agentSnapshots[state.agentSnapshots.length - 1]
   const lastParams = state.parameterSnapshots[state.parameterSnapshots.length - 1]

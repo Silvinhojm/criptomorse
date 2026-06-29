@@ -54,7 +54,7 @@ class ArcTraining {
   }
 
   private intervalId: ReturnType<typeof setInterval> | null = null
-  private onStateChange: ((state: ArcTrainingState) => void) | null = null
+  private listeners: Set<(state: ArcTrainingState) => void> = new Set()
 
   constructor() {
     this._load()
@@ -84,8 +84,9 @@ class ArcTraining {
   }
 
   private _notify() {
-    if (this.onStateChange) {
-      this.onStateChange({ ...this.state })
+    const snapshot = { ...this.state }
+    for (const cb of this.listeners) {
+      try { cb(snapshot) } catch { /* ignora erro no listener */ }
     }
   }
 
@@ -101,9 +102,9 @@ class ArcTraining {
   }
 
   subscribe(cb: (state: ArcTrainingState) => void) {
-    this.onStateChange = cb
+    this.listeners.add(cb)
     cb({ ...this.state })
-    return () => { this.onStateChange = null }
+    return () => { this.listeners.delete(cb) }
   }
 
   getState(): ArcTrainingState {
