@@ -118,8 +118,14 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     if (disabled) return
 
     const addr = realSwap.getAddress()
-    const pk = typeof window !== "undefined" ? localStorage.getItem("arcflow_private_key") : null
+    const pk = typeof window !== "undefined"
+      ? (localStorage.getItem("arcflow_private_key") || localStorage.getItem("arcflow_stress_test_key"))
+      : null
     const hasPrivateKey = !!pk && pk.length >= 64
+    if (hasPrivateKey && !realSwap.getSigner()) {
+      const ok = realSwap.setSignerFromPrivateKey(pk!)
+      if (ok) addLog(`🔑 Auto-sign ativado via private key — transações não precisam de MetaMask`)
+    }
     if (!addr && !hasPrivateKey) return
 
     const net = NETWORKS[rede as NetworkKey]
@@ -1155,32 +1161,21 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         </div>
       </div>
 
-      {/* 📚 Prova de Jobs — Contratante como avaliador prático */}
+      {/* 📋 Job Proof — candidatos da Escola de Robôs */}
       {NETWORKS[redeRef.current as NetworkKey]?.isTestnet && (
         <div style={{ marginBottom: 12, background: "rgba(59,130,246,0.05)", borderRadius: 12, padding: 12, border: "1px solid rgba(59,130,246,0.15)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
             <span style={{ fontSize: 20 }}>📋</span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, color: "#60a5fa", fontWeight: "bold" }}>Prova de Jobs — Contratante</div>
+              <div style={{ fontSize: 11, color: "#60a5fa", fontWeight: "bold" }}>Prova de Jobs — Escola de Robôs</div>
               <div style={{ fontSize: 9, color: "#94a3b8" }}>
-                {contratanteState.swapsExecutados > 0
-                  ? `${contratanteState.swapsSucesso} jobs concluídos · ${contratanteState.swapsFalha} falhas`
-                  : "Robôs precisam completar jobs como prova para serem verificados em mainnet"}
+                {contratanteAtivo ? "Contratante rodando — jobs sendo distribuídos" : "Robôs precisam completar jobs como prova para serem verificados"}
               </div>
             </div>
-            <button onClick={alternarContratante} style={{
-              padding: "6px 12px", fontSize: 10, fontWeight: "bold",
-              background: contratanteAtivo ? "#ef4444" : "#3b82f6", color: "#fff",
-              border: "none", borderRadius: 6, cursor: "pointer"
-            }}>
-              {contratanteAtivo ? "⏹️ Parar" : "▶️ Iniciar"}
-            </button>
+            <span style={{ fontSize: 9, color: contratanteAtivo ? "#22c55e" : "#6b7280", fontWeight: "bold" }}>
+              {contratanteAtivo ? "🟢 Ativo" : "⏸️ Parado"}
+            </span>
           </div>
-          {contratanteState.ultimoResultado && (
-            <div style={{ fontSize: 9, color: contratanteState.ultimoError ? "#ef4444" : "#94a3b8", padding: "4px 8px", background: "rgba(0,0,0,0.3)", borderRadius: 6 }}>
-              {contratanteState.ultimoResultado}
-            </div>
-          )}
           {escolaRobos.getCandidatosProva().length > 0 && (
             <div style={{ fontSize: 8, color: "#6b7280", marginTop: 4 }}>
               🎯 Candidatos: {escolaRobos.getCandidatosProva().map(r => `${r.nome} (${r.jobsCompletos}/${MIN_JOBS_PROVA} jobs)`).join(", ")}

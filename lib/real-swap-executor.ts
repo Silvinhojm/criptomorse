@@ -1291,6 +1291,30 @@ class RealSwapExecutor {
     return this.executeSwap(best.pair.from, best.pair.to, amountUsd, onUpdate);
   }
 
+  /** Injeta um signer a partir de private key depois da inicialização read-only */
+  setSignerFromPrivateKey(privateKey: string): boolean {
+    try {
+      const key = privateKey.startsWith("0x") ? privateKey : "0x" + privateKey
+      if (!/^0x[0-9a-fA-F]{64}$/.test(key)) {
+        console.error("❌ setSignerFromPrivateKey: chave inválida")
+        return false
+      }
+      if (!this.provider) {
+        const net = NETWORKS[this.networkKey]
+        this.provider = this._createProxyProvider(net.rpcUrl, this.networkKey)
+      }
+      this.signer = new ethers.Wallet(key, this.provider)
+      this.privateKey = key
+      this.userAddress = (this.signer as ethers.Wallet).address
+      console.log(`✅ Signer injetado via private key: ${this.userAddress.slice(0, 6)}...${this.userAddress.slice(-4)}`)
+      setTestnetMode(NETWORKS[this.networkKey].isTestnet)
+      return true
+    } catch (err) {
+      console.error("❌ setSignerFromPrivateKey:", err)
+      return false
+    }
+  }
+
   getAddress(): string { return this.userAddress; }
   getNetworkKey(): NetworkKey { return this.networkKey; }
   isTestnet(): boolean { return NETWORKS[this.networkKey].isTestnet; }
