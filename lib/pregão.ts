@@ -283,10 +283,13 @@ class Pregão {
 
     // 🎓 Verifica se o sinal vem de um robô em turno ativo E verificado (jobs como prova)
     // 🏆 Ou robô promovido pelo Professor (avaliação de pares consistente)
+    // 🤖 Ou robô autônomo (nível 3+) que pode executar solo sem consenso
     const nomeAgente = signal.pregueiro.startsWith("Agente:") ? signal.pregueiro.replace("Agente:", "") : ""
     const isVerified = nomeAgente !== "" && escolaRobos.isOnShift(nomeAgente) && escolaRobos.isVerified(nomeAgente)
     const isPromovido = nomeAgente !== "" && escolaRobos.isOnShift(nomeAgente) && escolaRobos.isPromovido(nomeAgente)
     const isOnShiftUnverified = nomeAgente !== "" && escolaRobos.isOnShift(nomeAgente) && !escolaRobos.isVerified(nomeAgente) && !escolaRobos.isPromovido(nomeAgente)
+    const nivelInfo = nomeAgente ? escolaRobos.getNivelInfo(nomeAgente) : null
+    const isAutonomo = nivelInfo?.podeExecutarSolo === true
 
     // 🔥 Consenso Híbrido: 1 agente + 1 pregueiro = ORDEM
     const TEM_LIMIAR_HIBRIDO = okAgentes.length >= 1 && okPregueiros.length >= 1
@@ -298,8 +301,8 @@ class Pregão {
     // StableMR: 1 OK direto (bypassa consenso de agentes)
     const TEM_STABLE_MR = okStableMR.length >= 1
 
-    // Verifica se tem consenso (robô verificado ou promovido em turno não precisa de consenso)
-    const temConsenso = isVerified || isPromovido || TEM_GRID || TEM_STABLE_MR || TEM_LIMIAR_HIBRIDO || okAgentes.length >= limiarAgentes || okPregueiros.length >= 3
+    // Verifica se tem consenso (robô verificado, promovido, ou autônomo não precisa)
+    const temConsenso = isVerified || isPromovido || isAutonomo || TEM_GRID || TEM_STABLE_MR || TEM_LIMIAR_HIBRIDO || okAgentes.length >= limiarAgentes || okPregueiros.length >= 3
 
     if (!temConsenso) {
       return
@@ -309,7 +312,11 @@ class Pregão {
     let participantes: { nome: string; sinal: OkSignal }[] = []
     let origem = "🏛️"
 
-    if (isPromovido) {
+    if (isAutonomo) {
+      participantes = [{ nome: signal.pregueiro, sinal: signal }]
+      origem = "🤖 Autônomo"
+      this.log(`🤖 Ordem autônoma: ${nomeAgente} (nível ${nivelInfo?.nivel}) → ${signal.par} em ${rede}`)
+    } else if (isPromovido) {
       participantes = [{ nome: signal.pregueiro, sinal: signal }]
       origem = "🏆 Promovido"
       this.log(`🏆 Ordem de robô promovido: ${nomeAgente} → ${signal.par} em ${rede}`)

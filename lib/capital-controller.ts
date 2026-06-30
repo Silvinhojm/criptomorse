@@ -9,6 +9,7 @@
 
 import { realSwap } from './real-swap-executor'
 import { positionManager } from './position-manager'
+import { escolaRobos } from './escola-robos'
 
 export interface CapitalRequest {
   id: string               // identificador único (ex: "oscillation:USDC/USDT:0.0025")
@@ -110,6 +111,53 @@ class CapitalController {
     if (availableUSDC < amountUSD) return false
     if (this.state.locked && this.state.lockedBy !== `${strategy}:${pair}`) return false
     return true
+  }
+
+  /** Rota autônoma para agentes nível 3+ — executam sem consenso */
+  requestAutonomo(
+    agentName: string,
+    pair: string,
+    network: string,
+    amountUSD: number,
+  ): { authorized: boolean; reason: string } {
+    const info = escolaRobos.getNivelInfo(agentName)
+    if (!info) {
+      return { authorized: false, reason: `Agente ${agentName} não encontrado` }
+    }
+    if (!info.podeExecutarSolo) {
+      return { authorized: false, reason: `${agentName} nível ${info.nivel} — não pode executar solo (mín: nível 3)` }
+    }
+    if (amountUSD > info.maxAmountUSD) {
+      return { authorized: false, reason: `${agentName} amount $${amountUSD} excede limite de $${info.maxAmountUSD}` }
+    }
+
+    const availableUSDC = realSwap.getBalance("USDC")
+    if (availableUSDC < amountUSD) {
+      return { authorized: false, reason: `Saldo insuficiente: $${availableUSDC.toFixed(2)} < $${amountUSD}` }
+    }
+
+    // Se capital ocupado, filtra
+    if (this.state.locked) {
+      this.state.requests.push({
+        id: `autonomo:${agentName}:${pair}:${Date.now()}`,
+        strategy: `autonomo-${agentName}`,
+        pair,
+        network,
+        amountUSD,
+        score: info.pontos / 100, // score baseado em pontos do agente
+        estimatedProfit: 0,
+        requestedAt: Date.now(),
+      })
+      return { authorized: false, reason: `Capital ocupado — ${agentName} na fila` }
+    }
+
+    // Autoriza direto
+    this.state.locked = true
+    this.state.lockedBy = `${pair.split('→')[1]}:${network}`
+    this.state.lockedAt = Date.now()
+    this.notify()
+    console.log(`[Capital] 🤖 ${agentName} (nível ${info.nivel}) autorizado autonomamente — ${pair} $${amountUSD}`)
+    return { authorized: true, reason: `Executando trade autônomo de ${agentName}` }
   }
 
   /** Força liberação de emergência (se posição sumiu sem fechar) */

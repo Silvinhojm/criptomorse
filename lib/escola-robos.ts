@@ -1,4 +1,5 @@
 import { narrador } from "./narrator"
+import { calcularNivel, type NivelAutonomia } from "./nivel-autonomia"
 
 const STORAGE_KEY = "arcflow_escola"
 const SHIFT_KEY = "arcflow_escola_shift"
@@ -28,6 +29,11 @@ export interface RoboEscolar {
   status: "aprendiz" | "promovido"
   promovidoEm?: number
   rebaixadoEm?: number
+  // Nível de autonomia progressiva
+  nivel: NivelAutonomia
+  lucroAcumulado: number     // $ lucro líquido gerado por este agente
+  orcamentoAtual: number     // $ capital que este agente pode usar
+  sharpeRatio: number
 }
 
 interface ShiftState {
@@ -93,6 +99,10 @@ class EscolaRobos {
         jobsFalha: 0,
         jobsTx: [],
         status: "aprendiz",
+        nivel: 0,
+        lucroAcumulado: 0,
+        orcamentoAtual: 0,
+        sharpeRatio: 0,
       }
       this.robos.set(nome, robo)
     }
@@ -191,6 +201,8 @@ class EscolaRobos {
     const robo = this.getRobo(nome)
     robo.status = "aprendiz"
     robo.rebaixadoEm = Date.now()
+    // Remove do turno ativo — não pode continuar gerando palpites
+    this.shift.robosAtivos = this.shift.robosAtivos.filter(n => n !== nome)
     const ultimas20 = this.ultimasAvaliacoes.get(nome) || []
     const taxa = ultimas20.length >= 20
       ? (ultimas20.filter(Boolean).length / 20) * 100
@@ -277,6 +289,66 @@ class EscolaRobos {
       return true
     }
     return false
+  }
+
+  // ─── Sistema de Nível de Autonomia ───
+
+  verificarNivel(nome: string): NivelAutonomia {
+    const robo = this.getRobo(nome)
+    const { nivel, rule, progressoProximo } = calcularNivel(robo)
+    const anterior = robo.nivel
+    robo.nivel = nivel
+    if (nivel > anterior) {
+      const msg = `🎓 ${nome} subiu para Nível ${nivel} (${rule.label}) — ${robo.pontos}pts, ${robo.taxaAcerto.toFixed(0)}% acerto, $${robo.lucroAcumulado} lucro | Próximo: ${progressoProximo}%`
+      robo.historicoFeedback.push(msg)
+      console.log(`📚 [NIVEL] ${msg}`)
+      narrador.manual(msg, "info")
+    }
+    this._salvar()
+    return nivel
+  }
+
+  getNivel(nome: string): { nivel: NivelAutonomia; progressoProximo: number } {
+    const robo = this.getRobo(nome)
+    const { nivel, progressoProximo } = calcularNivel(robo)
+    return { nivel, progressoProximo }
+  }
+
+  getNivelInfo(nome: string) {
+    const robo = this.getRobo(nome)
+    const { nivel, rule, progressoProximo } = calcularNivel(robo)
+    return {
+      nome: robo.nome,
+      nivel,
+      label: rule.label,
+      titulo: rule.titulo,
+      progressoProximo,
+      podeEscolherPar: rule.podeEscolherPar,
+      podeDefinirTamanho: rule.podeDefinirTamanho,
+      podeExecutarSolo: rule.podeExecutarSolo,
+      podeAumentarOrcamento: rule.podeAumentarOrcamento,
+      maxAmountUSD: rule.maxAmountUSD,
+      palpitesTotal: robo.palpitesTotal,
+      taxaAcerto: robo.taxaAcerto,
+      pontos: robo.pontos,
+      lucroAcumulado: robo.lucroAcumulado,
+    }
+  }
+
+  registrarLucro(nome: string, lucroUSD: number) {
+    const robo = this.getRobo(nome)
+    robo.lucroAcumulado += lucroUSD
+    if (lucroUSD > 0 && robo.nivel >= 4 && robo.orcamentoAtual > 0) {
+      // Nível 4: bônus de 10% do lucro adicionado ao orçamento
+      const bonus = Math.round(lucroUSD * 0.1 * 100) / 100
+      if (bonus > 0) {
+        robo.orcamentoAtual += bonus
+        const msg = `💰 ${nome} recebeu bônus de $${bonus.toFixed(2)} — orçamento agora $${robo.orcamentoAtual.toFixed(2)}`
+        robo.historicoFeedback.push(msg)
+        console.log(`📚 [NIVEL] ${msg}`)
+      }
+    }
+    this._salvar()
   }
 
   getHistoricoFeedback(nome: string): string[] {
