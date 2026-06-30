@@ -84,9 +84,14 @@ class Pregão {
     saldosPorRede: {},
     ultimaAtualizacao: Date.now()
   }
-  private get LIMIAR_OK(): number { return isArcStressMode() ? 1 : 2 }
-  private get JANELA_MS(): number { return isArcStressMode() ? 15_000 : 30_000 }
-  private get ORDEM_TIMEOUT_MS(): number { return isArcStressMode() ? 60_000 : 120_000 }
+  private _getLS(key: string, fallback: number): number {
+    if (typeof window === "undefined") return fallback
+    const v = localStorage.getItem(key)
+    return v ? parseInt(v, 10) : fallback
+  }
+  private get LIMIAR_OK(): number { return this._getLS("arcflow_limiar_ok", isArcStressMode() ? 1 : 2) }
+  private get JANELA_MS(): number { return this._getLS("arcflow_janela_ms", isArcStressMode() ? 15_000 : 30_000) }
+  private get ORDEM_TIMEOUT_MS(): number { return this._getLS("arcflow_ordem_timeout_ms", isArcStressMode() ? 60_000 : 120_000) }
   private onOrdemCallbacks: Array<(ordem: OrdemExecucao) => void> = []
   private onLogCallbacks: Array<(msg: string) => void> = []
   private onCashBoxChangeCallbacks: Array<(state: CashBoxState) => void> = []

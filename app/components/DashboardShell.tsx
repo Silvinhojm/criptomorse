@@ -12,6 +12,7 @@ import WelcomeScreen from "./WelcomeScreen"
 import QuantumWavePanel from "./QuantumWavePanel"
 import GridPerformancePanel from "./grid/GridPerformancePanel"
 import AMMPoolStatus from "./AMMPoolStatus"
+import ContractRegistryStatus from "./ContractRegistryStatus"
 import { DESIGN_SYSTEM as DS } from "@/constants/design-system"
 import type { NetworkKey } from "@/lib/real-swap-executor"
 import { SectionContext, type Section } from "./SectionContext"
@@ -99,6 +100,9 @@ export default function DashboardShell({ children, account, networkName, isTestn
                 <AMMPoolStatus />
               </div>
             )}
+            <div className="mb-6">
+              <ContractRegistryStatus network={currentNetworkKey} />
+            </div>
             <div className="mb-6">
               <AgentGrid />
             </div>
