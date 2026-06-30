@@ -296,7 +296,7 @@ Construído sobre o ecossistema Arc/Circle como participante ativo desde o lanç
 
 ## Repositório
 
-Desenvolvido em `versao-polygon` — deploys automáticos via Vercel.
+Branch principal: `versao-polygon` — deploys automáticos via Vercel.
 
 ```
 https://arcflow-steel.vercel.app
