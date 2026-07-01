@@ -295,6 +295,8 @@ class EscolaRobos {
 
   verificarNivel(nome: string): NivelAutonomia {
     const robo = this.getRobo(nome)
+    if (robo.lucroAcumulado === undefined) robo.lucroAcumulado = 0
+    if (robo.sharpeRatio === undefined) robo.sharpeRatio = 0
     const { nivel, rule, progressoProximo } = calcularNivel(robo)
     const anterior = robo.nivel
     robo.nivel = nivel
@@ -316,6 +318,11 @@ class EscolaRobos {
 
   getNivelInfo(nome: string) {
     const robo = this.getRobo(nome)
+    // Garantir campos novos com fallback (carga de localStorage antigo)
+    if (robo.nivel === undefined) robo.nivel = 0
+    if (robo.lucroAcumulado === undefined) robo.lucroAcumulado = 0
+    if (robo.orcamentoAtual === undefined) robo.orcamentoAtual = 0
+    if (robo.sharpeRatio === undefined) robo.sharpeRatio = 0
     const { nivel, rule, progressoProximo } = calcularNivel(robo)
     return {
       nome: robo.nome,
@@ -331,7 +338,7 @@ class EscolaRobos {
       palpitesTotal: robo.palpitesTotal,
       taxaAcerto: robo.taxaAcerto,
       pontos: robo.pontos,
-      lucroAcumulado: robo.lucroAcumulado,
+      lucroAcumulado: robo.lucroAcumulado ?? 0,
     }
   }
 

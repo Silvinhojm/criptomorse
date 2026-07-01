@@ -98,9 +98,9 @@ export default function NivelAutonomiaStatus() {
                 </div>
                 <div className="flex gap-3 mt-0.5 text-[10px]" style={{ color: DS.colors.text.muted }}>
                   <span>{r.pontos}pts</span>
-                  <span>{r.taxaAcerto.toFixed(0)}% acerto</span>
-                  <span>${r.lucroAcumulado.toFixed(2)} lucro</span>
-                  <span>max ${r.maxAmountUSD}</span>
+                  <span>{(r.taxaAcerto ?? 0).toFixed(0)}% acerto</span>
+                  <span>${(r.lucroAcumulado ?? 0).toFixed(2)} lucro</span>
+                  <span>max ${r.maxAmountUSD ?? 0}</span>
                 </div>
 
                 {/* Progress bar para próximo nível */}

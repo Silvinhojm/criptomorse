@@ -124,14 +124,16 @@ export function calcularNivel(robo: {
   sharpeRatio?: number
 }): { nivel: NivelAutonomia; rule: NivelRule; progressoProximo: number } {
   const lucro = robo.lucroAcumulado ?? 0
+  const taxa = robo.taxaAcerto ?? 0
+  const palpites = robo.palpitesTotal ?? 0
   const niveisOrdenados: NivelAutonomia[] = [4, 3, 2, 1, 0]
 
   for (const n of niveisOrdenados) {
     const rule = NIVEL_RULES[n]
     const passou =
-      robo.palpitesTotal >= rule.minPalpites &&
-      robo.taxaAcerto >= rule.minTaxaAcerto &&
-      robo.pontos >= rule.minPontos &&
+      palpites >= rule.minPalpites &&
+      taxa >= rule.minTaxaAcerto &&
+      (robo.pontos ?? 0) >= rule.minPontos &&
       lucro >= rule.minLucroAcumulado &&
       (!rule.minSharpe || (robo.sharpeRatio ?? 0) >= rule.minSharpe)
     if (passou) {
@@ -143,9 +145,9 @@ export function calcularNivel(robo: {
       }
       const proxRule = NIVEL_RULES[proximoNivel]
       const progresso = Math.min(100, Math.round(
-        ((robo.palpitesTotal / proxRule.minPalpites) * 0.25 +
-         (robo.taxaAcerto / proxRule.minTaxaAcerto) * 0.25 +
-         (robo.pontos / proxRule.minPontos) * 0.25 +
+        ((palpites / proxRule.minPalpites) * 0.25 +
+         (taxa / proxRule.minTaxaAcerto) * 0.25 +
+         ((robo.pontos ?? 0) / proxRule.minPontos) * 0.25 +
          (lucro / proxRule.minLucroAcumulado) * 0.25) * 100
       ))
       return { nivel: n, rule, progressoProximo: progresso }
