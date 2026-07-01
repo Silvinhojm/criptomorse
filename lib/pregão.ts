@@ -357,13 +357,13 @@ class Pregão {
 
     if (participantes.length === 0) return
 
-    // Calcula confiança média ponderada por winRate
+    // Calcula confiança média ponderada por points (points / TOTAL_POOL)
     const agentPoder = new Map<string, number>()
     for (const p of participantes) {
       const agentName = p.nome.replace("Agente:", "")
       const score = accountant.getAgentScore(agentName)
-      const winRate = score ? score.winRate / 100 : 0.5
-      agentPoder.set(p.nome, winRate)
+      const pointsRatio = score ? Math.min(1, score.points / 500) : 0.5
+      agentPoder.set(p.nome, pointsRatio)
     }
     const pesoTotal = participantes.reduce((s, p) => s + (agentPoder.get(p.nome) ?? 0.5), 0)
     let confiancaMedia = 0

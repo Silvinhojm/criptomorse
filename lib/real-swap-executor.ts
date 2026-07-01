@@ -705,6 +705,8 @@ class RealSwapExecutor {
     if (current) {
       const novo = Math.max(0, current.balance + delta)
       this.tokenBalances.set(token, { ...current, balance: novo })
+    } else if (delta > 0) {
+      this.tokenBalances.set(token, { symbol: token, balance: delta, address: "", decimals: 0 })
     }
   }
 
@@ -1164,10 +1166,18 @@ class RealSwapExecutor {
           const directResult = await executeDirectSwap(this.signer, fromTokenAddr, toTokenAddr, fromAmountRaw, this.userAddress, net.chainId, (m) => log(m));
           if (directResult.success) {
             const outputAmountRaw = parseFloat(directResult.amountReceived ?? "0");
-            const outputDecimals = TOKEN_DECIMALS[toToken] ?? 18;
-            const amountReceived = outputAmountRaw / Math.pow(10, outputDecimals);
+            const isSynthetic = directResult.amountReceived === fromAmountRaw;
+            let amountReceived: number;
+            if (isSynthetic) {
+              amountReceived = amountUsd / toPrice;
+            } else {
+              const outputDecimals = TOKEN_DECIMALS[toToken] ?? 18;
+              amountReceived = outputAmountRaw / Math.pow(10, outputDecimals);
+            }
             const toAmountUsd = amountReceived * toPrice;
             const preSwapBalance = this.getBalance(toToken);
+            this._updateCacheBalance(toToken, amountReceived);
+            this._updateCacheBalance(fromToken, -(amountUsd / fromPrice));
             const action: "BUY" | "SELL" | "HOLD" = !isStable(toToken) && isStable(fromToken) ? "BUY" : "SELL";
             log(`💵 Transação direta: ${amountReceived.toFixed(6)} ${toToken} ($${toAmountUsd.toFixed(2)}) | tx: ${directResult.txHash?.slice(0, 10)}`);
             return {

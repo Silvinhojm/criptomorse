@@ -352,27 +352,12 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     addLog(`🔄 Circuit breaker resetado — modo ${isTestnet ? 'testnet' : 'mainnet'}`)
     addLog(`🌐 Agentes: ${isTestnet ? 'single-network' : `single-network (${redeRef.current})`}`)
 
-    try {
-      const { executarCicloPregueiros } = await import("@/lib/pregueiro")
-      const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")
-      const { professor } = await import("@/lib/professor")
-      await executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`))
-      await executarCicloAgentes(agenteRede).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
-      if (!isTestnet) {
-        await professor.gerarPacotes().catch(e => addLog(`❌ Professor: ${e?.message ?? e}`))
-        await pregão.executarPacotes().catch(e => addLog(`❌ Pacote: ${e?.message ?? e}`))
-      }
-      if (isTestnet) {
-        const { executarCiclo } = await import("@/lib/pregao-arc")
-        await executarCiclo()
-      }
-    } catch (e) {
-      addLog(`❌ Ciclo inicial: ${e instanceof Error ? e.message : e}`)
-    }
     atualizarTudo()
 
+    let primeiroCiclo = true
     const runCycle = async () => {
-      if (document.hidden) return
+      if (document.hidden && !primeiroCiclo) return
+      primeiroCiclo = false
       resumeFromPanic()
       pregão.limparOrdensTravadas()
       try {
