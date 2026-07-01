@@ -5,20 +5,26 @@ const DATA_DIR = path.join(process.cwd(), ".data");
 const STATE_FILE = path.join(DATA_DIR, "trader-state.json");
 
 function ensureDir() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  } catch {}
 }
 
 function readState() {
-  ensureDir();
-  if (!fs.existsSync(STATE_FILE)) return null;
   try {
+    ensureDir();
+    if (!fs.existsSync(STATE_FILE)) return null;
     return JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
   } catch { return null; }
 }
 
 function writeState(state) {
-  ensureDir();
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), "utf-8");
+  try {
+    ensureDir();
+    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), "utf-8");
+  } catch (e) {
+    console.warn("[state] write failed:", e.message);
+  }
 }
 
 export async function GET() {

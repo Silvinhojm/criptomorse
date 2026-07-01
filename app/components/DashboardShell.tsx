@@ -14,6 +14,7 @@ import GridPerformancePanel from "./grid/GridPerformancePanel"
 import AMMPoolStatus from "./AMMPoolStatus"
 import ContractRegistryStatus from "./ContractRegistryStatus"
 import NivelAutonomiaStatus from "./NivelAutonomiaStatus"
+import TimingOptimizerStatus from "./TimingOptimizerStatus"
 import { DESIGN_SYSTEM as DS } from "@/constants/design-system"
 import type { NetworkKey } from "@/lib/real-swap-executor"
 import { SectionContext, type Section } from "./SectionContext"
@@ -109,6 +110,9 @@ export default function DashboardShell({ children, account, networkName, isTestn
             </div>
             <div className="mb-6">
               <NivelAutonomiaStatus />
+            </div>
+            <div className="mb-6">
+              <TimingOptimizerStatus />
             </div>
           </>
         )}

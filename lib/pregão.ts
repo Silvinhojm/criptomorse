@@ -489,6 +489,7 @@ class Pregão {
         this.log(`⏰ Ordem ${o.id} expirou (${Math.round((agora - o.timestamp) / 1000)}s em "${o.status}") — marcando como falha`)
         o.status = "falhou"
         this._saveOrdens()
+        capitalController.forceUnlock()
         for (const cb of this.onOrdemCallbacks) cb(o)
       }
     }

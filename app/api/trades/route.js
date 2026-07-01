@@ -5,20 +5,26 @@ const DATA_DIR = path.join(process.cwd(), ".data");
 const TRADES_FILE = path.join(DATA_DIR, "trades.json");
 
 function ensureDir() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  } catch {}
 }
 
 function readTrades() {
-  ensureDir();
-  if (!fs.existsSync(TRADES_FILE)) return [];
   try {
+    ensureDir();
+    if (!fs.existsSync(TRADES_FILE)) return [];
     return JSON.parse(fs.readFileSync(TRADES_FILE, "utf-8"));
   } catch { return []; }
 }
 
 function writeTrades(trades) {
-  ensureDir();
-  fs.writeFileSync(TRADES_FILE, JSON.stringify(trades, null, 2), "utf-8");
+  try {
+    ensureDir();
+    fs.writeFileSync(TRADES_FILE, JSON.stringify(trades, null, 2), "utf-8");
+  } catch (e) {
+    console.warn("[trades] write failed:", e.message);
+  }
 }
 
 export async function GET() {

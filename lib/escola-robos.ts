@@ -130,6 +130,7 @@ class EscolaRobos {
     if (acertou) {
       const bonus = Math.round(confianca * 0.5)
       robo.pontos += Math.max(1, bonus)
+      robo.pontos = Math.min(1000, robo.pontos)
       robo.acertos++
     } else {
       const penalidade = Math.round(confianca * 0.8)

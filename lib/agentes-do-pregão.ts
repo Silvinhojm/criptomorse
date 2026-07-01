@@ -16,6 +16,7 @@ import { pairSector } from "./pair-sector"
 import { COIN_IDS, TOKENS_WITH_FEED } from "./coin-ids"
 import { stablePairScanner } from "./stable-pair-scanner"
 import { stableMR } from "./stable-mr"
+import { timingOptimizer } from "./timing-optimizer"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 
@@ -1248,6 +1249,16 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       v.confidence = Math.min(90, Math.round(v.confidence * mult))
       if (v.confidence !== original) {
         pregão.adicionarLog(`🧠 ${v.agentName}: vol ajustou confiança ${original}% → ${v.confidence}% (mult ${mult.toFixed(2)}x em ${volToken})`)
+      }
+    }
+
+    // ⏰ Timing-aware: ajusta confiança pelo horário do dia
+    const timing = timingOptimizer.getRecomendacao(v.agentName)
+    if (timing.samples >= 3 && timing.confidenceMultiplier !== 1.0) {
+      const original = v.confidence
+      v.confidence = Math.min(90, Math.round(v.confidence * timing.confidenceMultiplier))
+      if (v.confidence !== original) {
+        pregão.adicionarLog(`⏰ ${v.agentName}: timing ajustou confiança ${original}% → ${v.confidence}% (mult ${timing.confidenceMultiplier}x, hora ${timing.currentHour}h, winRate ${timing.currentHourWinRate.toFixed(0)}%)`)
       }
     }
   }

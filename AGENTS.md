@@ -566,3 +566,32 @@ Overhead: 500-1500ms adicionais. Aceitável para trades de 30-120s.
 - **Polygon**: M_break filtrando pares inviáveis, MarketMaker com fallback de confiança, timeout de batch 2min
 - **Professor**: treinando na Arc com snapshots, parâmetros calibrados visíveis no dashboard
 - **Pendente**: BUGs #1/#2/#3 requerem monitoramento dos novos logs para confirmar resolução completa
+
+## Session Summary (01/07/2026) — 6 Fixes: forceUnlock, pontos cap, recovery, gangorra
+
+### What's Changed
+
+1. **Fix getOrdensAtivas — forceUnlock()** — `lib/pregão.ts:492`: adicionado `capitalController.forceUnlock()` quando ordem expira em `getOrdensAtivas()`. Antes, ordens travadas em "executando" marcavam como falha mas não liberavam o lock do CapitalController, travando todas as ordens subsequentes (BUG #2 da auditoria original).
+
+2. **Fix pontos cap 1000** — `lib/escola-robos.ts:133`: adicionado `robo.pontos = Math.min(1000, robo.pontos)` após bonus de acerto. Antes não havia teto — Synthesis acumulou 127k+ pontos, tornando o sistema de pontos inútil para comparação.
+
+3. **Fix Quantum recovery path** — `lib/professor.ts:287-307`: adicionado recovery check em `_aplicarAjustes()`: se robô está no teto (conf.min≥55, entrada≥0.015) com streak >20 erros e pontos ≤ -400, reseta parâmetros via `parametrosRobos.reset()`. Cooldown de 24h via localStorage (`arcflow_recovery_*`) pra evitar loops.
+
+4. **Fix canExecute() format** — `lib/capital-controller.ts:109-114`: mudado de `strategy:pair` para `boughtToken:network` — consistente com o formato usado em `request()` e `unlock()`. Método é dead code (sem chamadores) mas agora está correto.
+
+5. **Fix gangorra do Professor** — `lib/professor.ts:245-260`: novo método `_extrairBasePar()` que extrai os tokens ordenados alfabeticamente (ex: `USDC→cirBTC` e `cirBTC→USDC` viram `USDC→cirBTC`). Streak agora usa base pair em vez do raw `palpite.par`. Fim da gangorra: erros em USDC→cirBTC e acertos em cirBTC→USDC não resetam mais o streak, mantendo parâmetros estáveis em vez de oscilar entre 20% e 60%.
+
+6. **Fix Grão Vmin > saldo** — `lib/modo-grão.ts:222-226`: quando VminCalculado > usdcBal, em vez de abortar (e travar o Modo Grão permanentemente), ajusta batchThreshold=1 e baseTradeUSD para caber no saldo disponível. Ex: com $12, faz 1×$4 trade em vez de abortar.
+
+### Impacto Esperado
+- **forceUnlock()**: ordens travadas não bloqueiam mais o CapitalController permanentemente
+- **Pontos cap**: agentes não acumulam 100k+ pontos irrelevantes — máximo 1000, comparável
+- **Recovery path**: robôs presos no teto por >24h ganham reset automático em vez de prisão perpétua
+- **Gangorra**: parâmetros dos agentes oscilam em range estreito (~±5%) em vez de 20-60%, porque streaks de direções opostas no mesmo par agora se cancelam em vez de amplificar
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Polygon**: $48.22 USDC, $15.72 POL. Modo Grão ajustado pra caber em $12 (1×$4 trade em vez de abortar).
+- **Arc Testnet**: sistema rodando ao vivo, CapitalController liberando locks corretamente, pontos cap 1000 funcionando (Technical/MarketMaker/Quantum no teto)
+- **Professor**: gangorra resolvida para pares com direção alternada (ex: cirBTC/USDC)
+- **Pendente**: monitorar recovery path em robôs no floor, validar Grão na Polygon com saldo parcial

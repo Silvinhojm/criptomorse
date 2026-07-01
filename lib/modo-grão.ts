@@ -220,12 +220,12 @@ class ModoGrao {
       const V_min = Math.min(VminCalculado, usdcBal * 0.5)
 
       if (VminCalculado > usdcBal) {
-        console.log(`[Grão⚙️] ⚠️ Par inviável: Vmin=$${VminCalculado} > saldo=$${usdcBal.toFixed(0)} — pulando`)
-        return
-      }
-
-      // Batch mínimo: $15 (3 sinais × $5) para diluir custo fixo do gas
-      if (V_min < 5) {
+        // Saldo insuficiente pro batch ideal — escala pra caber
+        const batchAjustado = Math.max(1, Math.floor(usdcBal / 3))
+        CONFIG.baseTradeUSD = Math.max(3, batchAjustado)
+        CONFIG.batchThreshold = 1
+        console.log(`[Grão⚙️] ⚠️ Vmin=$${VminCalculado} > saldo=$${usdcBal.toFixed(0)} — ajustando batch p/ 1×$${CONFIG.baseTradeUSD}`)
+      } else if (V_min < 5) {
         CONFIG.baseTradeUSD = 5
         CONFIG.batchThreshold = 3
       } else if (V_min <= 10) {

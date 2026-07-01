@@ -8,6 +8,7 @@ import { setorPacotes, type TradeIntent } from "./setor-pacotes"
 import { pregão } from "./pregão"
 import { TRADING_PAIRS, NETWORKS, realSwap, type TokenSymbol, type NetworkKey } from "./real-swap-executor"
 import { COIN_IDS } from "./coin-ids"
+import { timingOptimizer } from "./timing-optimizer"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC", "USDC.e"])
 
@@ -220,6 +221,9 @@ class Professor {
       `${palpite.par} em ${palpite.rede}: ${feedback}`
     )
 
+    // Registra no TimingOptimizer para aprendizado de horários
+    timingOptimizer.registrarResultado(palpite.roboNome, palpite.par, acertou, palpite.confianca)
+
     // Aplica ajustes automáticos do Professor
     const feedbackAjuste = this._aplicarAjustes(palpite, acertou)
 
@@ -238,21 +242,29 @@ class Professor {
   private _ultimoParAjuste = new Map<string, string>()
   private _ajusteCount = new Map<string, number>()
 
+  private _extrairBasePar(par: string): string {
+    const tokens = par.split('→')
+    if (tokens.length !== 2) return par
+    tokens.sort()
+    return tokens.join('→')
+  }
+
   private _aplicarAjustes(palpite: PalpiteRobo, acertou: boolean): boolean {
     const nome = palpite.roboNome
     const params = parametrosRobos.get(nome)
     let ajustou = false
     let motivo = ""
 
-    // Reseta streak se o par mudou — erro em USDC→mcirBTC não deve contaminar cirBTC→EURC
-    const parAtual = palpite.par
+    // Usa base pair (tokens sorted) pra streak — USDC→cirBTC e cirBTC→USDC
+    // compartilham o mesmo streak, evitando gangorra de parâmetros
+    const basePar = this._extrairBasePar(palpite.par)
     const ultimoPar = this._ultimoParAjuste.get(nome)
-    if (ultimoPar && ultimoPar !== parAtual) {
+    if (ultimoPar && ultimoPar !== basePar) {
       this.streakErro.set(nome, 0)
       this.streakAcerto.set(nome, 0)
       this._ajusteCount.set(nome, 0)
     }
-    this._ultimoParAjuste.set(nome, parAtual)
+    this._ultimoParAjuste.set(nome, basePar)
 
     if (acertou) {
       this.streakAcerto.set(nome, (this.streakAcerto.get(nome) || 0) + 1)
@@ -276,6 +288,33 @@ class Professor {
       const foiConfiante = palpite.confianca > 70
       const ajusteCount = this._ajusteCount.get(nome) || 0
 
+      // Timing-aware: se robô tem histórico ruim neste horário, acelera o ajuste
+      const timing = timingOptimizer.getRecomendacao(nome)
+      const timingAgression = timing.samples >= 5 && timing.timingScore < -30 ? 1.5 : 1.0
+
+      // Recovery: robô preso no teto com streak longo e pontos no floor — reseta pra dar chance
+      const COOLDOWN_RECOVERY_KEY = `arcflow_recovery_${nome}`
+      const lastRecovery = typeof window !== 'undefined'
+        ? parseInt(localStorage.getItem(COOLDOWN_RECOVERY_KEY) || "0", 10)
+        : 0
+      if (
+        streak > 20 &&
+        params.confiancaMinima >= 55 &&
+        params.thresholdEntrada >= 0.015 &&
+        Date.now() - lastRecovery > 86_400_000 // 24h de cooldown
+      ) {
+        const robo = escolaRobos.getRobo(nome)
+        if (robo.pontos <= -400) {
+          console.log(`🔄 [PROFESSOR] ${nome} preso no teto com ${streak} erros e ${robo.pontos}pts — resetando parâmetros`)
+          parametrosRobos.reset(nome)
+          this.streakErro.set(nome, 0)
+          this._ajusteCount.set(nome, 0)
+          this.streakAcerto.set(nome, 0)
+          if (typeof window !== 'undefined') localStorage.setItem(COOLDOWN_RECOVERY_KEY, String(Date.now()))
+          return true
+        }
+      }
+
       // Se params já estão no teto, não ajusta nem loga
       if (params.confiancaMinima >= 55 && params.thresholdEntrada >= 0.015) {
         return false
@@ -288,30 +327,38 @@ class Professor {
 
       if (foiConfiante && streak >= 2) {
         // Erro confiante + streak: aumenta thresholdEntrada drasticamente
+        const confBoost = Math.round(8 * timingAgression)
+        const entradaMult = timingAgression > 1.0 ? 2.5 : 2.0
         const novos = parametrosRobos.ajustar(nome, {
-          thresholdEntrada: Math.min(0.02, params.thresholdEntrada * 2),
-          confiancaMinima: Math.min(60, params.confiancaMinima + 8),
+          thresholdEntrada: Math.min(0.02, params.thresholdEntrada * entradaMult),
+          confiancaMinima: Math.min(60, params.confiancaMinima + confBoost),
         }, `erro confiante em sequência — endurecendo entrada`)
         ajustou = true
         this._ajusteCount.set(nome, ajusteCount + 1)
-        motivo = gerarFeedbackAjuste(nome, `erro confiante #${streak}, endurecendo entrada`, novos)
+        const timingSuffix = timingAgression > 1.0 ? ` (timing: horário ruim #${timing.timingScore})` : ""
+        motivo = gerarFeedbackAjuste(nome, `erro confiante #${streak}, endurecendo entrada${timingSuffix}`, novos)
       } else if (streak >= 3) {
         // Streak de erros: aumenta confiancaMinima gradualmente
+        const confBoost = Math.round(5 * timingAgression)
+        const entradaBoost = Math.round(0.002 * timingAgression * 1000) / 1000
         const novos = parametrosRobos.ajustar(nome, {
-          confiancaMinima: Math.min(55, params.confiancaMinima + 5),
-          thresholdEntrada: Math.min(0.015, params.thresholdEntrada + 0.002),
+          confiancaMinima: Math.min(55, params.confiancaMinima + confBoost),
+          thresholdEntrada: Math.min(0.015, params.thresholdEntrada + entradaBoost),
         }, `${streak} erros consecutivos — aumentando seletividade`)
         ajustou = true
         this._ajusteCount.set(nome, ajusteCount + 1)
-        motivo = gerarFeedbackAjuste(nome, `${streak} erros consecutivos, aumentando seletividade`, novos)
+        const timingSuffix = timingAgression > 1.0 ? ` (timing: horário ruim)` : ""
+        motivo = gerarFeedbackAjuste(nome, `${streak} erros consecutivos, aumentando seletividade${timingSuffix}`, novos)
       } else if (foiConfiante) {
         // Erro isolado confiante: sobe confiancaMinima
+        const confBoost = Math.round(5 * timingAgression)
         const novos = parametrosRobos.ajustar(nome, {
-          confiancaMinima: Math.min(50, params.confiancaMinima + 5),
+          confiancaMinima: Math.min(50, params.confiancaMinima + confBoost),
         }, `erro confiante — precisa de mais convicção para entrar`)
         ajustou = true
         this._ajusteCount.set(nome, ajusteCount + 1)
-        motivo = gerarFeedbackAjuste(nome, `erro confiante, elevando exigência`, novos)
+        const timingSuffix = timingAgression > 1.0 ? ` (timing: horário ruim)` : ""
+        motivo = gerarFeedbackAjuste(nome, `erro confiante, elevando exigência${timingSuffix}`, novos)
       }
     }
 
@@ -464,7 +511,17 @@ class Professor {
 
         const winRateBase = Math.max(agente.winRate, 30)
         const taxaAcertoBase = Math.max(par.taxaAcerto, 30)
-        const confiancaAjustada = Math.round(Math.min(95, winRateBase * 0.4 + taxaAcertoBase * 0.6))
+        let confiancaAjustada = Math.round(Math.min(95, winRateBase * 0.4 + taxaAcertoBase * 0.6))
+
+        // Timing-aware: ajusta confiança pelo horário
+        const timing = timingOptimizer.getRecomendacao(agenteNome)
+        if (timing.samples >= 3 && timing.confidenceMultiplier !== 1.0) {
+          const antes = confiancaAjustada
+          confiancaAjustada = Math.round(Math.min(95, confiancaAjustada * timing.confidenceMultiplier))
+          if (confiancaAjustada !== antes) {
+            console.log(`⏰ [TIMING] ${agenteNome}: confiança ajustada ${antes}% → ${confiancaAjustada}% (mult ${timing.confidenceMultiplier}x, hora ${timing.currentHour}h, winRate ${timing.currentHourWinRate.toFixed(0)}%)`)
+          }
+        }
 
         totalAmount += amount
 

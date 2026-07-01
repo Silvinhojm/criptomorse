@@ -106,10 +106,11 @@ class CapitalController {
   }
 
   /** Todos os métodos chamam isso antes de executar swap */
-  canExecute(strategy: string, amountUSD: number, pair: string): boolean {
+  canExecute(amountUSD: number, pair: string, network: string): boolean {
     const availableUSDC = realSwap.getBalance("USDC")
     if (availableUSDC < amountUSD) return false
-    if (this.state.locked && this.state.lockedBy !== `${strategy}:${pair}`) return false
+    const boughtToken = pair.split('→')[1]
+    if (this.state.locked && this.state.lockedBy !== `${boughtToken}:${network}`) return false
     return true
   }
 
