@@ -172,6 +172,14 @@ class Contratante {
       }
       return { ok: false, msg: `❌ Swap falhou: ${result.error?.slice(0, 100)}` }
     }
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : e?.toString() ?? 'Erro desconhecido no tryExecuteCycle'
+      console.error('[Contratante] ERRO NÃO TRATADO em tryExecuteCycle:', errMsg)
+      if (e instanceof Error && e.stack) console.error('[Contratante] Stack:', e.stack)
+      this._ultimoError = errMsg
+      this._ultimoResultado = `❌ Erro interno: ${errMsg.slice(0, 100)}`
+      this.notify()
+      return { ok: false, msg: `❌ Erro interno: ${errMsg.slice(0, 100)}` }
     } finally {
       this._executando = false
     }
