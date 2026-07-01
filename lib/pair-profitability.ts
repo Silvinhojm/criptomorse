@@ -11,9 +11,10 @@ interface PairStats {
 export class PairProfitability {
   private ranking: Map<string, PairStats> = new Map()
   private readonly STORAGE_KEY = 'arcflow_pair_profitability'
+  private _loaded = false
   
   constructor() {
-    this.load()
+    if (typeof window !== "undefined") this.load()
   }
 
   recordTrade(pair: string, profit: number, win: boolean) {
@@ -54,6 +55,7 @@ export class PairProfitability {
   }
 
   private save() {
+    if (typeof window === "undefined") return
     try {
       localStorage.setItem(this.STORAGE_KEY, JSON.stringify(Object.fromEntries(this.ranking)))
     } catch (e) {
@@ -62,11 +64,14 @@ export class PairProfitability {
   }
 
   private load() {
+    if (typeof window === "undefined") return
+    if (this._loaded) return
     try {
       const data = localStorage.getItem(this.STORAGE_KEY)
       if (data) {
         this.ranking = new Map(Object.entries(JSON.parse(data)))
       }
+      this._loaded = true
     } catch (e) {
       console.warn('Failed to load pair profitability:', e)
     }
