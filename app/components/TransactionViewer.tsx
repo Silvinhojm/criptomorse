@@ -26,7 +26,7 @@ export function TransactionViewer({ account }: { account: string }) {
 
   useEffect(() => {
     loadTransactions();
-    const interval = setInterval(loadTransactions, 5000);
+    const interval = setInterval(loadTransactions, 15000);
     return () => clearInterval(interval);
   }, []);
 

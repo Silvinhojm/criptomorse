@@ -32,7 +32,7 @@ export default function ContractRegistryStatus({ network }: { network?: NetworkK
     }
 
     fetchAMMs()
-    const t = setInterval(fetchAMMs, 30000)
+    const t = setInterval(fetchAMMs, 60000)
     return () => clearInterval(t)
   }, [network])
 

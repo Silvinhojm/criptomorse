@@ -21,7 +21,7 @@ export default function QuantumWavePanel() {
   useEffect(() => {
     const t = setInterval(() => {
       setWave(quantumWaveTrader.getLatestWave())
-    }, 3000)
+    }, 10000)
     return () => clearInterval(t)
   }, [])
 

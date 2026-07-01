@@ -49,7 +49,7 @@ export default function NivelAutonomiaStatus() {
     }
 
     refresh()
-    const t = setInterval(refresh, 5000)
+    const t = setInterval(refresh, 15000)
     return () => clearInterval(t)
   }, [])
 

@@ -270,11 +270,11 @@ function gerarParLabel(from: string, to: string): string {
 }
 
 export async function executarCicloPregueiros(rede?: string) {
-  // Ativa oracle Stork na Arc Testnet para preços on-chain
+  // Ativa Chainlink Data Feeds na Arc Testnet (via Chainlink Scale)
   if (rede === "arc") {
-    pairPriceFeed.setUseStork(true)
+    pairPriceFeed.setUseChainlink(true)
   } else {
-    pairPriceFeed.setUseStork(false)
+    pairPriceFeed.setUseChainlink(false)
   }
 
   await Promise.all([

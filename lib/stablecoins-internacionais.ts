@@ -51,7 +51,7 @@ export const FOREIGN_STABLES: ForeignStable[] = [
     forexRate: FOREX_RATES.EUR.rate, forexPrecision: FOREX_RATES.EUR.precision,
     risco: 'baixo', riscoMotivo: 'Circle, lastreada 1:1, regulada (MiCA)',
     networks: [
-      { chain: 'polygon', address: '0xc52d20D70d2B1E27C2cb85AA0E3a9F5b4AEBf7e7', decimals: 6, verified: true },
+      { chain: 'polygon', address: '0xC52D20D70D2b1E27c2cb85aA0e3a9f5b4AeBF7E7', decimals: 6, verified: true },
       { chain: 'base',    address: '0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42', decimals: 6, verified: true },
       { chain: 'ethereum',address: '0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c', decimals: 6, verified: true },
       { chain: 'arc',     address: '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a', decimals: 6, verified: true },

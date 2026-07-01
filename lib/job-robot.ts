@@ -156,11 +156,12 @@ class JobRobot {
 
   /** Deploy do contrato JobProof na Arc testnet como prova on-chain */
   async deployJobProof(robotName: string, jobNumber: number): Promise<SwapResult> {
+    const provider = new ethers.JsonRpcProvider(ARC_RPC)
+    const wallet = new ethers.Wallet(this._privateKey, provider)
+    const address = wallet.address
     try {
-      const provider = new ethers.JsonRpcProvider(ARC_RPC)
-      const wallet = new ethers.Wallet(this._privateKey, provider)
       const factory = new ethers.ContractFactory(JOB_PROOF_ABI, JOB_PROOF_BYTECODE, wallet)
-      const nonce = await NonceManager.getInstance().getNonce(provider, ARC_CHAIN_ID, wallet.address)
+      const nonce = await NonceManager.getInstance().getNonce(provider, ARC_CHAIN_ID, address)
       const contract = await factory.deploy(robotName, jobNumber, { nonce })
       const tx = contract.deploymentTransaction()!
       const receipt = await tx.wait()
@@ -176,6 +177,10 @@ class JobRobot {
         contractAddress,
       }
     } catch (err: any) {
+      const errMsg = err?.message?.toLowerCase() ?? ''
+      if (errMsg.includes('nonce') || errMsg.includes('already been used')) {
+        NonceManager.getInstance().resetNonce(ARC_CHAIN_ID, address)
+      }
       return {
         success: false,
         stage: 'deploy-error',
@@ -220,7 +225,12 @@ class JobRobot {
     }
 
     // Fallback: deploy do JobProof como transação de stress na rede
-    const deployResult = await this.deployJobProof(robotName, this.cycleCount)
+    let deployResult = await this.deployJobProof(robotName, this.cycleCount)
+    // Se falhou por nonce, nonce foi resetado — tenta mais uma vez
+    const deployErrMsg = deployResult.error?.toLowerCase() ?? ''
+    if (!deployResult.success && (deployErrMsg.includes('nonce') || deployErrMsg.includes('already been used'))) {
+      deployResult = await this.deployJobProof(robotName, this.cycleCount)
+    }
     if (deployResult.success) {
       // Deploy bem-sucedido conta como atividade útil na rede — não incrementa falhas
       return deployResult

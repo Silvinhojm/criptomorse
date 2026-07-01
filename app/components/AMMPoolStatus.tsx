@@ -52,7 +52,7 @@ export default function AMMPoolStatus() {
       }
     }
     fetchPool()
-    const t = setInterval(fetchPool, 15000)
+    const t = setInterval(fetchPool, 30000)
     return () => { cancelled = true; clearInterval(t) }
   }, [])
 

@@ -29,7 +29,7 @@ export function NanopaymentDashboard({ agentScores, network, privateKey }: { age
 
   useEffect(() => {
     refreshData();
-    const interval = setInterval(refreshData, 10000);
+    const interval = setInterval(refreshData, 30000);
     return () => clearInterval(interval);
   }, []);
 

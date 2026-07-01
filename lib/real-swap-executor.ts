@@ -303,7 +303,7 @@ const UB_CHAIN: Record<string, string> = {
 class RealSwapExecutor {
   private provider: ethers.JsonRpcProvider | null = null;
   private signer: ethers.Signer | null = null;
-  private networkKey: NetworkKey = "arc";
+  private networkKey: NetworkKey = (process.env.NEXT_PUBLIC_DEFAULT_NETWORK as NetworkKey) || "polygon";
   private _lastNetworkRefresh: NetworkKey | "" = "";
   private userAddress: string = "";
   private privateKey: string = "";
@@ -343,6 +343,7 @@ class RealSwapExecutor {
   private quoteCache: Map<string, { quote: QuoteResult | null; timestamp: number }> = new Map();
   private _refuelingGas = false;
   private _memoContext: { ref: string; extra: Record<string, string> } | null = null;
+  private _balanceFetchErrors: Map<string, number> = new Map();
 
   private _getCachedQuote(key: string): QuoteResult | null | undefined {
     const cached = this.quoteCache.get(key);
@@ -382,7 +383,7 @@ class RealSwapExecutor {
   // Inicializar com chave privada OU somente endereço (read-only)
   async initialize(
     privateKeyOrAddress: string,
-    networkKey: NetworkKey = "arc",
+    networkKey: NetworkKey = (process.env.NEXT_PUBLIC_DEFAULT_NETWORK as NetworkKey) || "polygon",
     readOnly = false
   ): Promise<boolean> {
     try {
@@ -548,7 +549,9 @@ class RealSwapExecutor {
             tokenCount++
           } catch (e) {
             if (!newBalances.has(symbol)) {
-              console.warn(`⚠️ Balance fetch failed for ${symbol} (${address}): ${(e as Error)?.message ?? e}`)
+              const errCount = (this._balanceFetchErrors.get(symbol) ?? 0) + 1
+              this._balanceFetchErrors.set(symbol, errCount)
+              if (errCount <= 3) console.warn(`⚠️ Balance fetch failed for ${symbol} (${address}): ${(e as Error)?.message ?? e}`)
               newBalances.set(symbol, { symbol, balance: 0, address, decimals: TOKEN_DECIMALS[symbol] ?? 6 });
             }
           }
