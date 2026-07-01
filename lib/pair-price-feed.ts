@@ -10,24 +10,8 @@
 
 import { ethers } from "ethers";
 import type { TokenSymbol } from "./real-swap-executor";
-
-const ARC_RPC_URL = "https://rpc.testnet.arc.network";
-
-// ─── Chainlink Data Feeds ──────────────────────────────────────────────
-// Adicione aquí os endereços dos proxies Chainlink conforme forem deployados
-// na Arc testnet via Chainlink Scale.
-// Formato: AgregatorV3Interface (latestRoundData + decimals)
-const CHAINLINK_FEEDS: Partial<Record<TokenSymbol, string>> = {
-  // Exemplo quando deployado:
-  // USDC: "0x...",
-  // EURC: "0x...",
-  // BTC:  "0x...",
-};
-
-const AGGREGATOR_V3_ABI = [
-  "function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)",
-  "function decimals() view returns (uint8)",
-];
+import { realSwap, NETWORKS } from "./real-swap-executor";
+import { queryChainlinkPrice, hasChainlinkFeed } from "./chainlink-feeds";
 
 import { COIN_IDS } from "./coin-ids";
 
@@ -58,61 +42,18 @@ class PairPriceFeed {
   private usdPriceCache: Map<string, PricePoint> = new Map();
   private consecutiveFetchFailures: Map<string, number> = new Map();
   private pairHistory: Map<string, number[]> = new Map();
-  private arcProvider: ethers.JsonRpcProvider | null = null;
-  private chainlinkContracts: Map<string, ethers.Contract> = new Map();
-  private useChainlinkForArc = false;
+  private chainlinkProvider: ethers.JsonRpcProvider | null = null;
 
-  setUseChainlink(active: boolean): void {
-    if (active && Object.keys(CHAINLINK_FEEDS).length === 0) {
-      if (!this._warnedNoFeeds) {
-        this._warnedNoFeeds = true;
-        console.warn("[PairPriceFeed] Chainlink feeds não configurados para Arc — adicione endereços em CHAINLINK_FEEDS");
-      }
-      return;
-    }
-    this.useChainlinkForArc = active;
-    if (active) console.log("[PairPriceFeed] Chainlink Data Feeds ativado para Arc Testnet");
-  }
-  private _warnedNoFeeds = false;
-
-  getUseChainlink(): boolean {
-    return this.useChainlinkForArc;
+  private getRpcUrl(network: string): string | null {
+    const net = NETWORKS[network as keyof typeof NETWORKS]
+    if (!net) return null
+    return net.rpcUrl ?? null
   }
 
-  /** Retorna endereços configurados (útil para debug) */
-  getConfiguredFeeds(): Record<string, string> {
-    return Object.fromEntries(
-      Object.entries(CHAINLINK_FEEDS).map(([t, addr]) => [t, addr!])
-    );
-  }
-
-  private ensureArcProvider(): ethers.JsonRpcProvider {
-    if (!this.arcProvider) {
-      this.arcProvider = new ethers.JsonRpcProvider(ARC_RPC_URL);
-    }
-    return this.arcProvider;
-  }
-
-  /** Tenta ler preço de um feed Chainlink na Arc testnet */
-  private async getChainlinkPrice(token: TokenSymbol): Promise<number | null> {
-    const feedAddress = CHAINLINK_FEEDS[token];
-    if (!feedAddress) return null;
-
-    const provider = this.ensureArcProvider();
-    let contract = this.chainlinkContracts.get(token);
-    if (!contract) {
-      contract = new ethers.Contract(feedAddress, AGGREGATOR_V3_ABI, provider);
-      this.chainlinkContracts.set(token, contract);
-    }
-
-    try {
-      const [, answer] = await contract.latestRoundData();
-      if (answer <= 0) return null;
-      const dec = await contract.decimals().catch(() => 8);
-      return parseFloat(ethers.formatUnits(answer, Number(dec)));
-    } catch {
-      return null;
-    }
+  private async getChainlinkPrice(token: TokenSymbol, network: string): Promise<number | null> {
+    const rpcUrl = this.getRpcUrl(network)
+    if (!rpcUrl) return null
+    return queryChainlinkPrice(token, network, rpcUrl)
   }
 
   private async fetchBatch(coinIds: string[]): Promise<Map<string, number>> {
@@ -153,9 +94,10 @@ class PairPriceFeed {
       return cached.price;
     }
 
-    // Tenta Chainlink primeiro (apenas na Arc testnet)
-    if (preferOnchain && this.useChainlinkForArc) {
-      const clPrice = await this.getChainlinkPrice(token);
+    // Tenta Chainlink primeiro (qualquer rede com feed configurado)
+    const network = realSwap.getNetworkKey();
+    if (hasChainlinkFeed(token, network)) {
+      const clPrice = await this.getChainlinkPrice(token, network);
       if (clPrice !== null && clPrice > 0) {
         this.usdPriceCache.set(cacheKey, { price: clPrice, timestamp: Date.now() });
         return clPrice;
@@ -224,8 +166,8 @@ class PairPriceFeed {
 
   async getPairStats(from: TokenSymbol, to: TokenSymbol, isStableFn: (t: TokenSymbol) => boolean): Promise<PairStats> {
     const [fromUsd, toUsd] = await Promise.all([
-      this.getUsdPrice(from, this.useChainlinkForArc),
-      this.getUsdPrice(to, this.useChainlinkForArc),
+      this.getUsdPrice(from, true),
+      this.getUsdPrice(to, true),
     ]);
 
     const relativePrice = fromUsd > 0 ? toUsd / fromUsd : 1.0;
@@ -280,9 +222,7 @@ class PairPriceFeed {
     this.usdPriceCache.clear();
     this.pairHistory.clear();
     this.consecutiveFetchFailures.clear();
-    this.arcProvider = null;
-    this.chainlinkContracts.clear();
-    this.useChainlinkForArc = false;
+    this.chainlinkProvider = null;
   }
 }
 

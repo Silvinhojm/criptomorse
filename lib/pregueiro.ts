@@ -270,13 +270,6 @@ function gerarParLabel(from: string, to: string): string {
 }
 
 export async function executarCicloPregueiros(rede?: string) {
-  // Ativa Chainlink Data Feeds na Arc Testnet (via Chainlink Scale)
-  if (rede === "arc") {
-    pairPriceFeed.setUseChainlink(true)
-  } else {
-    pairPriceFeed.setUseChainlink(false)
-  }
-
   await Promise.all([
     volumePregueiro.atualizarMercado(),
     sentimentoPregueiro.atualizarSentimento()

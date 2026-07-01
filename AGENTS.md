@@ -595,3 +595,26 @@ Overhead: 500-1500ms adicionais. Aceitável para trades de 30-120s.
 - **Arc Testnet**: sistema rodando ao vivo, CapitalController liberando locks corretamente, pontos cap 1000 funcionando (Technical/MarketMaker/Quantum no teto)
 - **Professor**: gangorra resolvida para pares com direção alternada (ex: cirBTC/USDC)
 - **Pendente**: monitorar recovery path em robôs no floor, validar Grão na Polygon com saldo parcial
+
+## Session Summary (01/07/2026 noite) — Chainlink Data Feeds na Polygon
+
+### What's Changed
+
+1. **`lib/chainlink-feeds.ts`** (novo) — mapa de endereços Chainlink Data Feed AggregatorV3Interface para 9 tokens na Polygon (USDC, USDT, DAI, WETH, WBTC, WMATIC, MATIC, LINK, ETH). `queryChainlinkPrice()` consulta via RPC, fallback silencioso para `null` se RPC falhar ou feed não configurado.
+
+2. **`lib/pair-price-feed.ts`** — `getUsdPrice()` agora sempre tenta Chainlink primeiro para qualquer rede com feed configurado (não mais restrito à Arc testnet). Se Chainlink retorna preço válido, usa-o direto (sem cache SoSoValue). Se falha ou token não tem feed, cai no SoSoValue API como antes. Removido código legado `useChainlinkForArc`/`setUseChainlink`/`arcProvider`/`chainlinkContracts`.
+
+3. **`lib/pregueiro.ts`** — removida chamada `pairPriceFeed.setUseChainlink()` (método não existe mais — Chainlink é ativado automaticamente em `getUsdPrice`).
+
+### Impacto Esperado
+
+- **Polygon**: preços de USDC, USDT, DAI, WETH, WBTC, WMATIC, MATIC, LINK vêm do Chainlink Data Feed (oráculo descentralizado, sem rate limit, sem latência de API HTTP).
+- **Tokens sem feed** (EURC, cirBTC, mcirBTC, ARC): continuam usando SoSoValue API como fallback.
+- **Arc testnet**: sem feeds Chainlink ainda — SoSoValue mantido como fonte única.
+- **SoSoValue API calls reduzidos**: em vez de bater `/api/price` para cada token a cada 15s, tokens com feed Chainlink são servidos via RPC local (Polygon RPC, sem rate limiting).
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Polygon**: 9 tokens com Chainlink Data Feed (USDC, USDT, DAI, WETH, ETH, WBTC, BTC, WMATIC, MATIC, LINK). EURC permanece via SoSoValue.
+- **Arc Testnet**: sem feeds Chainlink — SoSoValue mantido.
+- **Dual model**: Chainlink (RPC) → SoSoValue (API) fallback, transparente para consumidores de preço.
