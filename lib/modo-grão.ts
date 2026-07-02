@@ -33,6 +33,7 @@ interface PendingSignal {
 
 interface GranPosition {
   id: string
+  networkKey: string
   boughtToken: string
   paidToken: string
   amountBought: number
@@ -374,11 +375,13 @@ class ModoGrao {
 
     try {
       const p = this.getPair()
+      const currentNetwork = realSwap.getNetworkKey()
       if (this._testMode) {
         const simulatedPrice = p.toToken === 'EURC' ? 0.995 + Math.random() * 0.01 : 1
         const simulatedAmount = batchAmountUSD / simulatedPrice
         this._openPositions.push({
           id: `grão-${Date.now()}`,
+          networkKey: currentNetwork,
           boughtToken: p.toToken,
           paidToken: p.fromToken,
           amountBought: simulatedAmount,
@@ -398,12 +401,12 @@ class ModoGrao {
       const approval = capitalController.request({
         id: requestId, strategy: 'grao',
         pair: `${p.fromToken}→${p.toToken}`,
-        network: realSwap.getNetworkKey() as string,
+        network: currentNetwork,
         amountUSD: batchAmountUSD, score: 50,
         estimatedProfit: CONFIG.targetUSD, requestedAt: Date.now(),
       })
       if (!approval.authorized) {
-        this._pendingSignals.push(...signals) // devolve sinais
+        this._pendingSignals.push(...signals)
         this._lastSignal = `⏳ Capital ocupado: ${approval.reason}`
         return
       }
@@ -422,6 +425,7 @@ class ModoGrao {
 
         this._openPositions.push({
           id: requestId,
+          networkKey: currentNetwork,
           boughtToken: p.toToken,
           paidToken: p.fromToken,
           amountBought: wethBought,
@@ -433,10 +437,12 @@ class ModoGrao {
           status: 'open',
         })
         this._totalTrades++
-        this._lastSignal = `Batch ${batchSize}sinais $${batchAmountUSD} ${p.toToken} @ entry $${entryPrice.toFixed(2)}`
+        this._lastError = ''
+        this._lastSignal = `🧪 Batch ${batchSize}sinais $${batchAmountUSD} ${p.toToken} @ entry $${entryPrice.toFixed(2)}`
+        capitalController.unlock(currentNetwork)
       } else {
-        capitalController.unlock()
-        this._pendingSignals.push(...signals) // devolve sinais se falhou
+        capitalController.unlock(currentNetwork)
+        this._pendingSignals.push(...signals)
         this._lastError = `Falha batch: ${result.message}`
       }
     } catch (err: any) {
@@ -477,7 +483,7 @@ class ModoGrao {
     if (pos.profitUSD >= 0) this._wins++
     else this._losses++
     this._totalProfitUSD += pos.profitUSD
-    capitalController.unlock()
+    capitalController.unlock(pos.networkKey)
     this._lastSignal = `${reason === 'target' ? '🎯' : '🛑'} #${pos.id}: $${pos.profitUSD.toFixed(2)}`
   }
 }

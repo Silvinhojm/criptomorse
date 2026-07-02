@@ -872,7 +872,7 @@ class Pregão {
     const approval = capitalController.request({
       id: ccId, strategy: 'professor',
       pair: pairs, network: pacote.rede,
-      amountUSD: pkgResult.totalInvested, score: Math.min(100, Math.round(pacote.expectedProfitTotal / Math.max(1, pkgResult.totalInvested) * 1000)),
+      amountUSD: pkgResult.totalInvested, score: Math.min(100, Math.round(pacote.expectedProfitTotal / Math.max(1, pkgResult.totalInvested) * 5000)),
       estimatedProfit: pacote.expectedProfitTotal, requestedAt: Date.now(),
     })
     if (!approval.authorized) {
@@ -971,7 +971,7 @@ class Pregão {
         if (trade.ordemId) this.atualizarOrdem(trade.ordemId, { status: "falhou" })
       }
     } finally {
-      capitalController.unlock()
+      capitalController.unlock(pacote.rede)
     }
   }
 

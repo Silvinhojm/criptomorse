@@ -1,5 +1,3 @@
-const STORAGE_KEY = "arcflow_parametros_robos"
-
 export interface ParametrosRobo {
   confiancaMinima: number
   thresholdEntrada: number
@@ -25,15 +23,17 @@ const DEFAULTS: ParametrosRobo = {
 }
 
 class ParametrosRobos {
+  private storageKey: string
   private params: Map<string, ParametrosRobo> = new Map()
 
-  constructor() {
+  constructor(key: string = "arcflow_parametros_robos") {
+    this.storageKey = key
     this._carregar()
   }
 
   private _carregar() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY)
+      const raw = localStorage.getItem(this.storageKey)
       if (raw) {
         const data = JSON.parse(raw) as Record<string, ParametrosRobo>
         this.params = new Map(Object.entries(data))
@@ -47,7 +47,7 @@ class ParametrosRobos {
     try {
       const obj: Record<string, ParametrosRobo> = {}
       this.params.forEach((v, k) => { obj[k] = v })
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(obj))
+      localStorage.setItem(this.storageKey, JSON.stringify(obj))
     } catch {
       // silencioso
     }
@@ -93,4 +93,5 @@ class ParametrosRobos {
   }
 }
 
-export const parametrosRobos = new ParametrosRobos()
+export const parametrosRobos = new ParametrosRobos("arcflow_parametros_robos")
+export const parametrosRobosBackpack = new ParametrosRobos("arcflow_parametros_robos_backpack")

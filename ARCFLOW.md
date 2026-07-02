@@ -100,7 +100,11 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
            ├── news-agent.ts
            ├── market-agent.ts
            ├── volume-agent.ts
-           └── sosovalue-agent.ts
+           ├── sosovalue-agent.ts
+           └── marketData/ (Backpack Exchange)
+                ├── MarketDataCollector.ts  ← API client (klines, ticker, trades, markets)
+                ├── labelPriceMovement.ts   ← Rotulagem alta/baixa/neutro
+                └── BackpackScanner.ts      ← Scan multi-símbolo + ranking do Professor
 ```
 
 ---
@@ -3501,3 +3505,161 @@ Fluxo de unlock():
 | `contracts/GenericAMMPair.sol` | AMM Uniswap V2-style |
 | `scripts/deployAMMArc.js` | Deploy do AMM |
 | `scripts/addLiquidityAMM.js` | Add liquidez ao AMM |
+
+## 48. CHANGELOG — 02/07/2026: MarketData Collector + Backpack Exchange
+
+### 48.1 O que foi criado
+
+**MarketData Collector** (`lib/marketData/`): novo módulo de fonte de dados externa via API pública da Backpack Exchange (`api.backpack.exchange`). Usado exclusivamente para treino do Professor — sem qualquer integração com execução de trades.
+
+### 48.2 Arquivos Criados
+
+| Arquivo | Descrição |
+|---------|-----------|
+| `lib/marketData/MarketDataCollector.ts` | Cliente HTTP Backpack (5 endpoints públicos), cache 60s, rate limit 10 req/s, retry 2x |
+| `lib/marketData/labelPriceMovement.ts` | Rotula movimento real como alta/baixa/neutro (threshold 0.3%) |
+| `lib/marketData/BackpackScanner.ts` | Scan de 5 símbolos (BTC, ETH, SOL, SPCX.US, MU.US), ranqueia por score dos agentes |
+| `app/components/BackpackSignalsPanel.tsx` | Painel UI "🎒 Sinais" no dashboard |
+| `scripts/test-market-data-collector.ts` | Teste standalone (24 candles BTC, stocks OK) |
+
+### 48.3 Arquivos Modificados
+
+| Arquivo | Mudança |
+|---------|---------|
+| `lib/professor.ts` | Adicionado `trainOnHistoricalData()`, `_syntheticPredictions()`, parse de intervalo |
+| `app/components/SectionContext.tsx` | Type Section inclui `"signals"` |
+| `app/components/DashboardShell.tsx` | Nav inclui aba "🎒 Sinais" |
+| `app/page.tsx` | Renderiza `<BackpackSignalsPanel />` na seção signals |
+
+### 48.4 Símbolos Confirmados na Backpack
+
+- Crypto: `BTC_USDC`, `ETH_USDC`, `SOL_USDC`
+- Stocks: `SPCX.US_USDC` (S&P 500), `MU.US_USDC` (Micron)
+- Sem AAPL.US listado
+- Formato: `BASE_QUOTE` com underscore; stocks usam `.US` antes do underscore
+
+### 48.5 Restrições
+
+- Dados da Backpack são **somente para treino/avaliação** de agentes
+- Nenhuma ordem é executada na Backpack Exchange
+- Rede identificada como `"backpack"` para distinguir de dados ao vivo on-chain
+
+---
+
+## 49. TRÊS SISTEMAS DE SCORING — Fonte da Verdade
+
+O sistema tem 3 mecanismos de scoring que **não competem** — cada um tem função distinta:
+
+| Sistema | Arquivo | O que pontua | Quem usa | Fonte da verdade para |
+|---------|---------|-------------|----------|----------------------|
+| **Accountant** | `lib/accountant.ts` | Top N agentes por ranking composto (winRate, lucro, streak) | `agentes-do-pregão.ts` decide quais OKs injetar no Pregão | **Decisão de trade** — quem vota |
+| **EscolaRobos** | `lib/escola-robos.ts` | Pontos acumulados por agente (nível 1-5, -500 a 1000) | `capital-controller.ts` (nível autônomo), `professor.ts` (ajuste params) | **Nível de autonomia** — quem pode executar solo |
+| **Professor Score** | `lib/pregão.ts:875` | Score 0-100 = `min(100, round(profit/invested * 5000))` | `capitalController.request()` decide prioridade entre pacotes | **Prioridade de execução** — qual pacote roda primeiro |
+
+### 49.1 Accountant (quem vota)
+
+- Ranking composto: `winRate * 0.5 + min(avgProfit,1) * 20 + profitBonus + max(0,streak) * 0.5`
+- Só agentes que votaram **neste ciclo** são considerados
+- Top N = `min(numberOfActiveAgents, maxAgents)` injetam OKs no Pregão
+- Accountant decide **quais agentes participam**, não o valor do trade
+
+### 49.2 EscolaRobos (quem pode executar solo)
+
+- Pontos: -500 (floor) a 1000 (cap)
+- Nível 1: < 200pts (só vota)
+- Nível 3+: pode executar trades autônomos via `capitalController.requestAutonomo()`
+- Pontos atualizados por `registrarResultado()` — chamado tanto por live quanto por treino Backpack
+- **Compartilhado** entre live e treino — agente que treina bem na Backpack ganha nível mais rápido
+
+### 49.3 Professor Score (prioridade)
+
+- `score = Math.min(100, Math.round(pacote.expectedProfitTotal / Math.max(1, pkgResult.totalInvested) * 5000))`
+- Incluído na `CapitalRequest` ao chamar `capitalController.request()`
+- CapitalController ordena fila por score decrescente
+- **Fix aplicado**: multiplicador mudou de *1000 para *5000 nesta sessão (score mínimo mais granular)
+
+### 49.4 Regra de Ouro
+
+- **Accountant** → decide **quem** vota (agentes)
+- **EscolaRobos** → decide **quem** pode executar (níveis)
+- **Professor** → decide **qual** pacote executar (score)
+- Nenhum sobrescreve o outro — são gates sequenciais
+
+---
+
+## 50. SESSION SUMMARY (02/07/2026) — 5 Fixes Estruturais
+
+### What's Changed
+
+1. **CapitalController: lock por rede** (`lib/capital-controller.ts`): lock global `boolean` substituído por `Record<string, NetworkLock>`. Trades em Polygon e Arc agora usam locks independentes. `unlock(networkKey)` aceita parâmetro de rede; todos os 8 callers atualizados. `forceUnlock(networkKey?)` opcional para limpeza cirúrgica.
+
+2. **Professor score *1000 → *5000** (`lib/pregão.ts:875`): multiplicador do score de prioridade subido de 1000 para 5000. Score mínimo agora granular: trade de $12 com $0.01 lucro → score 41 (antes 8). Pacotes com lucro marginal competem melhor na fila.
+
+3. **parametrosRobos separado por origem** (`lib/parametros-robos.ts`): classe `ParametrosRobos` aceita `storageKey` no construtor. Nova instância `parametrosRobosBackpack` com chave `arcflow_parametros_robos_backpack`. `professor.ts:trainOnHistoricalData()` usa instância backpack em vez da live. Fim da contaminação: ajustes do treino Backpack não afetam parâmetros de mainnet.
+
+4. **visibilitychange removido** (`app/components/PregãoDashboard.tsx`): 3 guards `if (document.hidden) return` removidos do ciclo principal, contratante, e stress test. Listener `visibilitychange` que limpava `setInterval` removido. Ciclo roda 24/7 independente da aba. Balance timer pause mantido (só para refresh de saldo).
+
+5. **GranPosition.networkKey** (`lib/modo-grão.ts`): interface `GranPosition` ganhou campo `networkKey`. Preenchido em test mode e execução real. Usado por `fecharPosicao()` para chamar `capitalController.unlock(networkKey)`.
+
+### Impacto Esperado
+
+- Polygon e Arc podem operar simultaneamente sem conflito de capital
+- Score do Professor mais granular — pacotes de $12 com lucro $0.01 não ficam no fundo da fila
+- Treino Backpack não contamina parâmetros de mainnet
+- Ciclo não para quando aba perde foco — sistema roda 24/7
+- forceUnlock() pode liberar rede específica sem afetar outras
+
+### Current State
+
+- **Build**: limpo (zero erros TS)
+- **Polygon**: $48.22 USDC, $15.72 POL
+- **CapitalController**: 4 funções (request, unlock, forceUnlock, requestAutonomo), lock per-network
+- **ParametrosRobos**: 2 instâncias isoladas (live + backpack)
+- **Ciclo**: não pausa mais em background — 24/7 ativo
+- **Professor score**: *5000 aplicado, mais granular que antes
+
+---
+
+## 51. SESSION SUMMARY (02/07/2026 noite) — Descoberta dinâmica + Market Hours + Threshold por classe
+
+### What's Changed
+
+1. **getTopStocksByVolume()** (`lib/marketData/MarketDataCollector.ts`): novo método que descobre top ações tokenizadas na Backpack por `quoteVolume`. Filtra `.US_` symbols (confirmado: só SPCX.US e MU.US na Backpack hoje), chama ticker pra cada uma, ordena por volume. Cache de 1h.
+
+2. **liquidityFilter.ts** (novo): filtra ativos com `quoteVolume24h < $50K` ou amplitude high-low > 50%. Aplicado no scanner antes de agentes analisarem.
+
+3. **marketHours.ts** (novo): `isUSStockMarketOpen()` detecta horário NYSE/NASDAQ (9:30-16:00 ET, seg-sex, feriados não cobertos — documentado). Usa `Intl.DateTimeFormat` com timeZone — sem lib extra.
+
+4. **labelPriceMovement.ts**: `getThresholdForSymbol()` retorna 0.3% cripto majors, 1.5% ações, 0.5% default. Função principal agora aceita `symbol?` opcional — compatível com callers antigos.
+
+5. **BackpackScanner.ts**: lista de símbolos deixou de ser hardcoded — top stocks descobertos dinamicamente a cada hora. Símbolos de ação pulados quando mercado fechado (log `⏸️`). Ranking inclui `mercadoAberto` no sinal.
+
+6. **professor.ts:trainOnHistoricalData()**: passa `symbol` pra `labelPriceMovement()`. Para ações, descarta janelas que caem fora do horário de mercado.
+
+7. **BackpackSignalsPanel.tsx**: duas seções (cripto/ações), indicador NYSE 🟢/🔴 no header, indicador 🟢/🔴 por linha de ação, preço adaptativo (6 decimais para micro-tokens).
+
+### Arquivos Criados | Modificados
+
+| Arquivo | Tipo | Descrição |
+|---------|------|-----------|
+| `lib/marketData/liquidityFilter.ts` | ✨ Novo | Filtro de liquidez ($50K vol, 50% range) |
+| `lib/marketData/marketHours.ts` | ✨ Novo | isUSStockMarketOpen() + helper stock detection |
+| `lib/marketData/MarketDataCollector.ts` | 🔧 Mod | +getTopStocksByVolume(), +quoteVolume24h no Ticker |
+| `lib/marketData/labelPriceMovement.ts` | 🔧 Mod | +getThresholdForSymbol(), symbol param opcional |
+| `lib/marketData/BackpackScanner.ts` | 🔧 Mod | Descoberta dinâmica, filtro, market hours, mercadoAberto |
+| `lib/professor.ts` | 🔧 Mod | Import marketHours, filtra janelas fora de horário |
+| `app/components/BackpackSignalsPanel.tsx` | 🔧 Mod | Seções crypto/stock, indicador NYSE, preço adaptativo |
+| `scripts/test-market-data-collector.ts` | 🔧 Mod | Testes das 4 mudanças |
+
+### Resultado do Teste
+
+- **Top stocks descobertos**: MU.US_USDC ($61.4B vol), SPCX.US_USDC ($9.7B vol) — ambos ✅ liquidez
+- **Market hours**: 19:49 ET 🔴 fechado (fora 9:30-16:00)
+- **Thresholds**: BTC 0.3%, SPCX.US 1.5%, default 0.5%
+- **Backward compat**: labelPriceMovement sem symbol funciona (threshold 0.5%)
+
+### Notas Técnicas
+
+- `.US_` regex confirmada: 2 stocks na Backpack, 0 falsos positivos em 84 markets
+- Stock markets retornam `visible: false` — filtro `m.visible` removido propositalmente
+- Só 2 ações tokenizadas na Backpack hoje — descoberta dinâmica escala se mais forem listadas

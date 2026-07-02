@@ -618,3 +618,131 @@ Overhead: 500-1500ms adicionais. Aceitável para trades de 30-120s.
 - **Polygon**: 9 tokens com Chainlink Data Feed (USDC, USDT, DAI, WETH, ETH, WBTC, BTC, WMATIC, MATIC, LINK). EURC permanece via SoSoValue.
 - **Arc Testnet**: sem feeds Chainlink — SoSoValue mantido.
 - **Dual model**: Chainlink (RPC) → SoSoValue (API) fallback, transparente para consumidores de preço.
+
+## Session Summary (02/07/2026) — MarketData Collector + Backpack Exchange + Sinais UI
+
+### What's Changed
+
+1. **MarketDataCollector** (`lib/marketData/MarketDataCollector.ts`): novo módulo cliente HTTP para 5 endpoints públicos da Backpack Exchange — `klines` (candles históricos), `markets`, `trades`, `trades/history`, `ticker`. Cache 60s em memória, rate limit 10 req/s, retry exponencial 2x. Parse automático do formato de data `"2026-07-01 22:00:00"` retornado pela API.
+
+2. **labelPriceMovement** (`lib/marketData/labelPriceMovement.ts`): função que dado um array de KLines e uma janela em minutos, calcula a variação percentual e rotula como `alta`, `baixa` ou `neutro` (threshold configurável, default ±0.3%).
+
+3. **BackpackScanner** (`lib/marketData/BackpackScanner.ts`): escaneia 5 símbolos (`BTC_USDC`, `ETH_USDC`, `SOL_USDC`, `SPCX.US_USDC`, `MU.US_USDC`) a cada 60s, simula predições de todos os agentes registrados contra cada candle window, e ranqueia os símbolos por score (winRate × confiança).
+
+4. **trainOnHistoricalData()** (`lib/professor.ts:385-443`): novo método público que busca klines da Backpack, rotula movimentos reais, compara contra predições dos agentes e alimenta o sistema de scoring existente (`escolaRobos.registrarResultado` + `_aplicarAjustes`). Rede usada: `"backpack"` para distinguir de dados ao vivo.
+
+5. **BackpackSignalsPanel** (`app/components/BackpackSignalsPanel.tsx`): novo componente React que exibe o melhor sinal do Professor em destaque + tabela com todos os símbolos escaneados. Acessível pela nova aba "🎒 Sinais" no dashboard.
+
+6. **Nova aba "🎒 Sinais"**: adicionada ao `SectionContext` e `DashboardShell` entre "Bot Bank" e "Bridge".
+
+### Símbolos Confirmados via API Backpack Exchange
+
+- Crypto: `BTC_USDC`, `ETH_USDC`, `SOL_USDC`
+- Stocks: `SPCX.US_USDC` (S&P 500), `MU.US_USDC` (Micron Technology)
+- **Sem AAPL.US** listado na Backpack
+- Formato dos pares: `BASE_QUOTE` com underscore. Stocks usam `.US` antes do underscore (ex: `SPCX.US_USDC`)
+
+### Arquivos Criados
+
+| Arquivo | Descrição |
+|---------|-----------|
+| `lib/marketData/MarketDataCollector.ts` | API client Backpack (168 linhas) |
+| `lib/marketData/labelPriceMovement.ts` | Rotulagem de movimento (52 linhas) |
+| `lib/marketData/BackpackScanner.ts` | Scanner multi-símbolo + ranking (128 linhas) |
+| `app/components/BackpackSignalsPanel.tsx` | Painel UI sinais (120 linhas) |
+| `scripts/test-market-data-collector.ts` | Teste isolado (80 linhas) |
+
+### Arquivos Modificados
+
+| Arquivo | Mudança |
+|---------|---------|
+| `lib/professor.ts` | + `trainOnHistoricalData()`, + `_syntheticPredictions()`, + `_intervalToMinutes()` |
+| `app/components/SectionContext.tsx` | + `"signals"` no type Section |
+| `app/components/DashboardShell.tsx` | + aba "🎒 Sinais" no nav |
+| `app/page.tsx` | + `<BackpackSignalsPanel />` no SectionMatch signals |
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Teste**: `npx tsx scripts/test-market-data-collector.ts` — 24 candles BTC, 23 windows rotuladas (15 alta, 1 baixa, 7 neutro), ticker funcionando, stocks OK
+- **Dashboard**: nova aba sinais com scan automático a cada 60s
+- **Backpack Exchange**: endpoints públicos, sem API key necessária
+
+## Session Summary (02/07/2026 tarde) — 5 Fixes Estruturais
+
+### What's Changed
+
+1. **CapitalController lock por rede**: `lib/capital-controller.ts` — lock global `boolean` → `Record<string, NetworkLock>`. Polygon e Arc operam simultaneamente. `unlock(networkKey)` exige rede.
+
+2. **Professor score *5000**: `lib/pregão.ts:875` — multiplicador do score 1000 → 5000. Trade $12 com $0.01 lucro: score 41 (antes 8).
+
+3. **parametrosRobos separado**: `lib/parametros-robos.ts` — duas instâncias (`parametrosRobos` live, `parametrosRobosBackpack` treino). `trainOnHistoricalData()` usa backpack. Fim da contaminação.
+
+4. **visibilitychange removido**: `PregãoDashboard.tsx` — 3 guards `document.hidden` + listener removidos. Ciclo 24/7 independente de aba.
+
+5. **GranPosition.networkKey**: `lib/modo-grão.ts` — posições agora têm `networkKey`, usado no unlock por rede.
+
+### Arquivos Modificados
+
+| Arquivo | Mudança |
+|---------|---------|
+| `lib/capital-controller.ts` | Lock per-network, unlock(networkKey), forceUnlock(networkKey?) |
+| `lib/corretor.ts` | 3 unlock() → unlock(redeKey) |
+| `lib/modo-grão.ts` | GranPosition.networkKey, unlock(currentNetwork) |
+| `lib/oscillation-hunter.ts` | unlock() → unlock(pos.pool.network) |
+| `lib/pregão.ts` | unlock() → unlock(pacote.rede), score *1000→*5000 |
+| `lib/parametros-robos.ts` | Constructor com storageKey, 2 instâncias |
+| `lib/professor.ts` | _aplicarAjustes() aceita paramsRobos opcional, trainOnHistoricalData() usa parametrosRobosBackpack |
+| `app/components/PregãoDashboard.tsx` | 3 document.hidden removidos, listener visibilitychange removido |
+| `ARCFLOW.md` | Nova seção 49 (scoring truth) + 50 (session summary) |
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Polygon**: $48.22 USDC, $15.72 POL
+- **CapitalController**: 4 funções, lock per-network
+- **ParametrosRobos**: 2 instâncias isoladas (live + backpack)
+- **Ciclo**: não pausa mais em background — 24/7 ativo
+- **Professor score**: *5000 aplicado, mais granular que antes
+
+## Session Summary (02/07/2026 noite) — Descoberta dinâmica + Market Hours + Threshold por classe
+
+### What's Changed
+
+1. **getTopStocksByVolume()** (`lib/marketData/MarketDataCollector.ts`): novo método que descobre top ações tokenizadas na Backpack por `quoteVolume`. Filtra `.US_` symbols (confirmado: só SPCX.US e MU.US na Backpack hoje), chama ticker pra cada uma, ordena por volume. Cache de 1h.
+
+2. **liquidityFilter.ts** (novo): filtra ativos com `quoteVolume24h < $50K` ou amplitude high-low > 50%. Aplicado no scanner antes de agentes analisarem.
+
+3. **marketHours.ts** (novo): `isUSStockMarketOpen()` detecta horário NYSE/NASDAQ (9:30-16:00 ET, seg-sex, feriados não cobertos — documentado). Usa `Intl.DateTimeFormat` com timeZone — sem lib extra.
+
+4. **labelPriceMovement.ts**: `getThresholdForSymbol()` retorna 0.3% cripto majors, 1.5% ações, 0.5% default. Função principal agora aceita `symbol?` opcional — compatível com callers antigos.
+
+5. **BackpackScanner.ts**: lista de símbolos deixou de ser hardcoded — top stocks descobertos dinamicamente a cada hora. Símbolos de ação pulados quando mercado fechado (log `⏸️`). Ranking inclui `mercadoAberto` no sinal.
+
+6. **professor.ts:trainOnHistoricalData()**: passa `symbol` pra `labelPriceMovement()`. Para ações, descarta janelas que caem fora do horário de mercado.
+
+7. **BackpackSignalsPanel.tsx**: duas seções (cripto/ações), indicador NYSE 🟢/🔴 no header, indicador 🟢/🔴 por linha de ação, preço adaptativo (6 decimais para micro-tokens).
+
+### Arquivos Criados | Modificados
+
+| Arquivo | Tipo | Descrição |
+|---------|------|-----------|
+| `lib/marketData/liquidityFilter.ts` | ✨ Novo | Filtro de liquidez ($50K vol, 50% range) |
+| `lib/marketData/marketHours.ts` | ✨ Novo | isUSStockMarketOpen() + helper stock detection |
+| `lib/marketData/MarketDataCollector.ts` | 🔧 Mod | +getTopStocksByVolume(), +quoteVolume24h no Ticker |
+| `lib/marketData/labelPriceMovement.ts` | 🔧 Mod | +getThresholdForSymbol(), symbol param opcional |
+| `lib/marketData/BackpackScanner.ts` | 🔧 Mod | Descoberta dinâmica, filtro, market hours, mercadoAberto |
+| `lib/professor.ts` | 🔧 Mod | Import marketHours, filtra janelas fora de horário |
+| `app/components/BackpackSignalsPanel.tsx` | 🔧 Mod | Seções crypto/stock, indicador NYSE, preço adaptativo |
+| `scripts/test-market-data-collector.ts` | 🔧 Mod | Testes das 4 mudanças |
+
+### Resultado do Teste
+
+- **Top stocks descobertos**: MU.US_USDC ($61.4B vol), SPCX.US_USDC ($9.7B vol) — ambos ✅ liquidez
+- **Market hours**: 19:49 ET 🔴 fechado (fora 9:30-16:00)
+- **Thresholds**: BTC 0.3%, SPCX.US 1.5%, default 0.5%
+- **Backward compat**: labelPriceMovement sem symbol funciona (threshold 0.5%)
+
+### Notas Técnicas
+
+- `.US_` regex confirmada: 2 stocks na Backpack, 0 falsos positivos em 84 markets
+- Stock markets retornam `visible: false` — filtro `m.visible` removido propositalmente
+- Só 2 ações tokenizadas na Backpack hoje — descoberta dinâmica escala se mais forem listadas

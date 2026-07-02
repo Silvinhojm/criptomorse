@@ -36,6 +36,7 @@ const SECTIONS: { key: Section; icon: string; label: string }[] = [
   { key: "overview", icon: "📊", label: "Visão Geral" },
   { key: "trading", icon: "🤖", label: "Auto Trader" },
   { key: "bot", icon: "🏦", label: "Bot Bank" },
+  { key: "signals", icon: "🎒", label: "Sinais" },
   { key: "bridge", icon: "🌉", label: "Bridge" },
   { key: "payments", icon: "🏅", label: "Recompensas" },
   { key: "classroom", icon: "📚", label: "Sala de Aula" },

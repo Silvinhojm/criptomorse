@@ -353,7 +353,7 @@ class OscillationHunter {
     if (profit > 0) this._wins++
     else this._losses++
 
-    capitalController.unlock()
+    capitalController.unlock(pos.pool.network)
     this._lastSignal = `${isWin ? '🎯' : '🛑'} ${pos.pool.toToken}: $${profit.toFixed(3)} (${this._wins}W/${this._losses}L)`
   }
 

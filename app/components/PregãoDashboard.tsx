@@ -354,10 +354,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
 
     atualizarTudo()
 
-    let primeiroCiclo = true
     const runCycle = async () => {
-      if (document.hidden && !primeiroCiclo) return
-      primeiroCiclo = false
       resumeFromPanic()
       pregão.limparOrdensTravadas()
       try {
@@ -381,16 +378,6 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     }
 
     cicloRef.current = setInterval(runCycle, cicloIntervalo * 1000)
-    const onVisChange = () => {
-      if (document.hidden && cicloRef.current) {
-        clearInterval(cicloRef.current)
-        cicloRef.current = null
-      } else if (!document.hidden && !cicloRef.current && cicloAtivo) {
-        cicloRef.current = setInterval(runCycle, cicloIntervalo * 1000)
-      }
-    }
-    document.addEventListener("visibilitychange", onVisChange)
-    cicloVisRef.current = () => document.removeEventListener("visibilitychange", onVisChange)
   }
 
   const fecharPosicao = async () => {
@@ -522,9 +509,8 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
 
     // Configura o intervalo
     stressTestIntervalRef.current = setInterval(async () => {
-      if (document.hidden) return
       await runStressTestWithKey()
-    }, 30000) // 30 segundos entre ciclos
+    }, 30000)
   }
 
   const stopStressTestLoop = () => {
@@ -575,23 +561,12 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       return
     }
     const run = async () => {
-      if (document.hidden) return
       const { ok, msg } = await contratante.tryExecuteCycle()
       addLog(msg)
     }
     run()
     contratanteTimerRef.current = setInterval(run, 15000)
-    const onVis = () => {
-      if (document.hidden && contratanteTimerRef.current) {
-        clearInterval(contratanteTimerRef.current)
-        contratanteTimerRef.current = null
-      } else if (!document.hidden && !contratanteTimerRef.current) {
-        contratanteTimerRef.current = setInterval(run, 15000)
-      }
-    }
-    document.addEventListener("visibilitychange", onVis)
     return () => {
-      document.removeEventListener("visibilitychange", onVis)
       if (contratanteTimerRef.current) clearInterval(contratanteTimerRef.current)
     }
   }, [contratanteAtivo, rede])

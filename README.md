@@ -47,6 +47,9 @@ Agentes (13) → Pregão → Escriturário → Capital Controller → Corretor �
 | **Circuit Breaker** | Proteção contra perdas consecutivas (3 strikes) |
 | **Gas Price Oracle** | Custo de gas em USD com fallback multi-RPC |
 | **Pair Price Feed** | Preços em tempo real via SoSoValue + Stork Oracle on-chain |
+| **MarketData Collector** | Cliente Backpack Exchange API (klines, markets, ticker, trades) — dados históricos reais para treino do Professor |
+| **BackpackScanner** | Escaneia 5 símbolos (BTC, ETH, SOL, SPCX.US, MU.US) e ranqueia sinais de compra/venda com score dos agentes |
+| **BackpackSignalsPanel** | Painel UI na aba "🎒 Sinais" — mostra o top pick do Professor com direção, score e preço |
 
 ### Agentes de Trading
 
