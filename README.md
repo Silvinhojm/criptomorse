@@ -46,7 +46,7 @@ Agentes (13) → Pregão → Escriturário → Capital Controller → Corretor �
 | **Arc Training** | Treinamento autônomo dos agentes na Arc Testnet com snapshots |
 | **Circuit Breaker** | Proteção contra perdas consecutivas (3 strikes) |
 | **Gas Price Oracle** | Custo de gas em USD com fallback multi-RPC |
-| **Pair Price Feed** | Preços em tempo real via SoSoValue + Stork Oracle on-chain |
+| **Pair Price Feed** | Preços em tempo real via Chainlink (Polygon) + Pyth (Arc) + SoSoValue |
 | **MarketData Collector** | Cliente Backpack Exchange API (klines, markets, ticker, trades, trades/history) — dados históricos reais para treino do Professor |
 | **liquidityFilter** | Filtro de liquidez ($50K vol 24h, 50% range high-low) para evitar sinais em ativos com baixa atividade |
 | **marketHours** | Runtime-aware: detecta horário NYSE/NASDAQ (9:30–16:00 ET, seg–sex) para só escanear ações em mercado aberto |
@@ -108,7 +108,7 @@ Cada agente tem parâmetros individuais (confiança mínima, threshold de entrad
 | **ERC-8183** | Escrow de jobs para economia agentic | ✅ Deployado (Arc, Base, Polygon, Ethereum) |
 | **EIP-7702 / ERC-4337** | Account abstraction nativa da Arc (gasless) | Suportado pela rede |
 | **CCTP v2** | Bridge USDC entre chains via Circle | ✅ Integrado |
-| **Stork Oracle** | Preços on-chain via pull oracle | ✅ Integrado (Arc) |
+| **Pyth Oracle** | Preços first-party via Hermes API | ✅ Integrado (Arc) |
 | **x402** | Protocolo de micropagamentos para agentes | 🔄 Planejado |
 
 ---
@@ -187,7 +187,7 @@ O Professor tem trava de segurança: streak por par (não contamina outros pares
 | Linguagem | TypeScript (strict mode) |
 | Blockchain | ethers.js v6 + viem + wagmi |
 | Swaps | LI.FI REST API + DEX direto (SushiSwap V2, Uniswap V3) |
-| Preços | SoSoValue API + Stork Oracle on-chain |
+| Preços | Chainlink Data Feeds (Polygon) + Pyth Hermes API (Arc) + SoSoValue API |
 | Bridge | Circle CCTP v2 (5 chains) |
 | Identidade | ERC-8004 AgentIdentity (próprio) + IdentityRegistry oficial da Arc |
 | Jobs | ERC-8183 Job Marketplace (próprio) + AgenticCommerce oficial da Arc |

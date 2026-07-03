@@ -1,17 +1,16 @@
 // lib/pair-price-feed.ts
 // Feed de preço real por par, compartilhado entre quantum-wave.ts e pregueiro.ts.
 //
-// Fontes de preço (em ordem de prioridade):
-//   1. Chainlink Data Feeds (on-chain, Arc testnet via Chainlink Scale)
-//   2. SoSoValue API (off-chain, fallback universal)
-//
-// Chainlink foi anunciado para Arc em 30/06/2026 via Chainlink Scale.
-// Quando os feeds forem deployados na Arc, adicionar endereços em CHAINLINK_FEEDS.
+// Fontes de preço (em ordem de prioridade por rede):
+//   Polygon: 1. Chainlink Data Feeds → 2. SoSoValue API
+//   Arc:     1. Pyth Oracle (Hermes API) → 2. SoSoValue API
+//   Outras:  1. SoSoValue API
 
 import { ethers } from "ethers";
 import type { TokenSymbol } from "./real-swap-executor";
 import { realSwap, NETWORKS } from "./real-swap-executor";
 import { queryChainlinkPrice, hasChainlinkFeed } from "./chainlink-feeds";
+import { queryPythPrice, hasPythFeed } from "./pyth-price-feed";
 
 import { COIN_IDS } from "./coin-ids";
 
@@ -101,6 +100,15 @@ class PairPriceFeed {
       if (clPrice !== null && clPrice > 0) {
         this.usdPriceCache.set(cacheKey, { price: clPrice, timestamp: Date.now() });
         return clPrice;
+      }
+    }
+
+    // Tenta Pyth na Arc testnet (Arc não tem Chainlink Data Feeds clássicos)
+    if (network === "arc" && hasPythFeed(token)) {
+      const pythPrice = await queryPythPrice(token);
+      if (pythPrice !== null && pythPrice > 0) {
+        this.usdPriceCache.set(cacheKey, { price: pythPrice, timestamp: Date.now() });
+        return pythPrice;
       }
     }
 

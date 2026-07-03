@@ -19,7 +19,8 @@ const CHAINLINK_FEEDS: Record<string, Record<string, FeedConfig>> = {
     LINK:  { address: "0xb77fa460f0d9bd216d94a8a61f483ff0e15d48d3" },
 
   },
-  // Arc testnet — feeds serão adicionados via Chainlink Scale
+  // Arc testnet — Chainlink Data Streams (não Data Feeds clássicos).
+  // Na Arc, usar Pyth Oracle (Hermes API) como primário, via lib/pyth-price-feed.ts.
   arc: {},
 }
 

@@ -12,6 +12,7 @@ import { gasPriceOracle } from "./gas-price-oracle"
 import { stableMR } from "./stable-mr"
 import { capitalController } from "./capital-controller"
 import { positionManager } from "./position-manager"
+import { arqueiro } from "./arqueiro"
 
 export interface PackageResult {
   id: string
@@ -136,6 +137,7 @@ class Pregão {
     this._loadOrdens()
     this._loadStats()
     this._loadPackageResults()
+    if (typeof setInterval !== "undefined") arqueiro.start()
   }
 
   private _loadPackageResults(): void {
@@ -383,6 +385,16 @@ class Pregão {
         this.log(`⛔ Confiança inválida (${confiancaMedia}%) — participantes: ${participantes.map(p => `${p.nome}=${p.sinal.confianca}%`).join(', ')}`)
         return
       }
+    }
+
+    // 🏹 Arqueiro: alimenta preço e modula confiança por tensão
+    arqueiro.feedPrice(par, rede).catch(() => {})
+    const arqScore = arqueiro.getScore(par, rede)
+    if (arqScore > 0) {
+      const cf = 1 + 0.3 * (arqScore / 100)
+      const antes = confiancaMedia
+      confiancaMedia = Math.min(100, Math.round(confiancaMedia * cf))
+      this.log(`[PREGÃO] 🏹 Arqueiro: tensão ${arqScore} → confiança ${antes}% → ${confiancaMedia}% (fator ${cf.toFixed(2)})`)
     }
 
     // Grid e StableMR bypass confidence minimum (entrada com fee baixo, lucro na reversão)
@@ -869,10 +881,16 @@ class Pregão {
     // 🔒 CapitalController: verifica capital para o batch
     const ccId = `professor:batch:${pacote.rede}:${Date.now()}`
     const pairs = pacote.trades.map(t => `${t.fromToken}→${t.toToken}`).join("+")
+    const baseScore = Math.min(100, Math.round(pacote.expectedProfitTotal / Math.max(1, pkgResult.totalInvested) * 5000))
+    const arqScores = pacote.trades.map(t => arqueiro.getScore(`${t.fromToken}→${t.toToken}`, pacote.rede))
+    const avgTension = arqScores.reduce((s, v) => s + v, 0) / Math.max(1, arqScores.length)
+    const tensionFactor = 1 + 0.2 * (avgTension / 100)
+    const score = Math.min(100, Math.round(baseScore * tensionFactor))
+    if (avgTension > 0) this.log(`[PREGÃO] 🏹 Arqueiro: tensão média ${avgTension.toFixed(0)} → score ${baseScore} → ${score} (fator ${tensionFactor.toFixed(2)})`)
     const approval = capitalController.request({
       id: ccId, strategy: 'professor',
       pair: pairs, network: pacote.rede,
-      amountUSD: pkgResult.totalInvested, score: Math.min(100, Math.round(pacote.expectedProfitTotal / Math.max(1, pkgResult.totalInvested) * 5000)),
+      amountUSD: pkgResult.totalInvested, score,
       estimatedProfit: pacote.expectedProfitTotal, requestedAt: Date.now(),
     })
     if (!approval.authorized) {

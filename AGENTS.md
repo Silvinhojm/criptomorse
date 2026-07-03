@@ -773,3 +773,45 @@ Overhead: 500-1500ms adicionais. Aceitável para trades de 30-120s.
 - **Stock volume**: `quoteVolume24h = 0` — documentado como NASDAQ reference data, não exchange volume
 - **Market hours**: stocks só escaneados 9:30-16:00 ET
 - **Thresholds**: crypto 0.3%, stocks 1.5%, default 0.5%
+
+## Session Summary (03/07/2026) — Arqueiro: Modulador de Tensão/Timing
+
+### What's Changed
+
+1. **`lib/arqueiro.ts`** (novo, 294 linhas) — módulo de modulação de tensão/timing que não executa trades nem gera OKs. Observa compressão de volatilidade via pseudo-ATR (média de returns absolutos em 20 períodos curto, 100 longo) com filtro squeeze Bollinger/Keltner binário.
+
+2. **Máquina de estados por token+rede**: OCIOSO → TENSIONANDO (2 períodos compressão) → ARMADO (4+ períodos) → DISPARO (breakout confirmado) → DESARMADO (cooldown). TensionScore por estado: 0 → 20-50 → 40-70 (decay após 20 períodos) → 50-100 (decay após 5 períodos) → 0.
+
+3. **Integração em `pregão.ts:verificarOrdem()`** (linhas 390-398): `arqueiro.feedPrice(par, rede)` fire-and-forget + `getScore()` multiplica `confiancaMedia` por `1 + 0.3 * (score/100)`. Log `🏹 Arqueiro: tensão X → confiança Y% → Z%`.
+
+4. **Integração em `pregão.ts:executarPacotes()`** (linhas 884-889): média dos tensionScores de todos os trades do pacote modula o score do CapitalController: `baseScore * (1 + 0.2 * avgTension/100)`.
+
+5. **Calibração com reset automático**: baseline do ATR médio estabelecida após 100 períodos. Se ATR médio mudar > 50%, reset completo (volta ao OCIOSO).
+
+6. **Limite de 3 pares ARMADO/DISPARO simultâneos**: previne correlação entre pares correlacionados (ex: WMATIC/WETH comprimindo juntos).
+
+7. **Auto-start no Pregão constructor** com guard SSR: `if (typeof setInterval !== "undefined") arqueiro.start()`.
+
+### Shadow Mode (Fase 1 — Atual)
+- `_shadowMode = true` por padrão. TensionScore não influencia scores ainda.
+- Logs: `[ARQUEIRO] 🏹 <token>@<rede> | <estado> | ATR=<X>% | pctl=<Y> | squeeze=<Z> | tensão=<W> (SHADOW)`
+- Ciclo de monitoramento: 60s. Apenas pares com estado não-OCIOSO são monitorados.
+
+### Fases de Rollout
+| Fase | Status | Comportamento |
+|------|--------|---------------|
+| 1 — Shadow | ✅ Ativo | Apenas logs. `setShadowMode(false)` para ativar. |
+| 2 — Validação | Pendente | TensionScore ativo. Monitorar acertos. |
+| 3 — Ativo | Pendente | Operação normal. |
+
+### Impacto Esperado
+- Compressão de volatilidade (atrPercentile < 0.6) identifica setups que tipicamente precedem expansão
+- TensionScore modula confiança para cima (fator 1.3× no máximo) — não substitui o gate do CapitalController
+- Decay em ARMADO/DISPARO evita que setups envelhecidos tenham peso excessivo
+- Calibração com reset de 50% previne operação com baseline defasada
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Arqueiro**: shadow mode ativo, ciclo 60s, pseudo-ATR 20/100, squeeze Bollinger/Keltner, MAX_ARMED_PAIRS=3
+- **Integração**: feedPrice em verificarOrdem, tensionScore modula confiança (shadow), modula score CapitalController (shadow)
+- **ARCFLOW.md**: atualizado com seção 22 (Arqueiro) + seção 23 (Visão Arquitetural) + módulo adicionado no mapa

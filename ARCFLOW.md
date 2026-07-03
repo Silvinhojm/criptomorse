@@ -65,9 +65,16 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
        │   ├── caixa.ts                  ← Gestão de saldo
        │   └── pregao-arc.ts             ← Multi-armed bandit p/ Arc (autônomo)
        │
-       ├── INTELIGÊNCIA (aprendizado)
-       │   ├── pair-price-feed.ts        ← Preço real por par (compartilhado)
-       │   ├── volatility-tracker.ts     ← Aprende volatilidade de cada token
+        ├── TIMING/TENSÃO
+        │   ├── arqueiro.ts              ← Modulador de tensão/timing (ATR, squeeze, máq. estados)
+        │   │                              Integrado em pregão.ts (modula confiança e score)
+        │   │                              Shadow mode → validation → active (3 fases)
+        │   │                              MAX_ARMED_PAIRS=3, Bollinger/Keltner squeeze filter
+        │   └── stable-mr.ts             ← Mean reversion em stable pairs (SMA 12 períodos)
+        │
+        ├── INTELIGÊNCIA (aprendizado)
+        │   ├── pair-price-feed.ts        ← Preço real por par (compartilhado)
+        │   ├── volatility-tracker.ts     ← Aprende volatilidade de cada token
        │   ├── position-manager.ts       ← Gerencia posições + staircase
        │   ├── narrator.ts               ← Sistema de eventos e notificações
        │   ├── pair-sector.ts            ← Setor de moedas avaliadas (performance por par)
@@ -999,47 +1006,44 @@ Zona 3 (baixo): ActiveTrades + AgentGrid — posições ativas e ranking
 
 ---
 
-## 19. ORACLE STORK (Arc Testnet)
+## 19. ORACLE PYTH (Arc Testnet)
 
-### 19.1 Arquitetura (Pull Oracle)
-Stork é um **pull oracle** (diferente de Chainlink push):
-1. Dados chegam off-chain via WebSocket (assinatura signed)
-2. Subscriber envia tx `updateTemporalNumericValuesV1()` ao contrato Arc
-3. Contrato armazena o preço assinado — lido via `getTemporalNumericValueUnsafeV1(bytes32 id)`
+### 19.1 Arquitetura
+Pyth fornece preços first-party via **Hermes API** (off-chain HTTP) + contrato on-chain em `0x2880aB155794e7179c9eE2e38200202908C17B43` na Arc testnet.
+No CriptoMorse, usamos a Hermes API para leitura off-chain de preços (sem custo de gas), com fallback para SoSoValue.
 
-### 19.2 WebSocket (Off-chain)
-| Item | Detalhe |
-|------|---------|
-| Endpoint | `wss://api.jp.stork-oracle.network` |
-| Path | `/evm/subscribe` |
-| Auth | `Authorization: Basic <token>` (requer contato com Stork Labs — sales@stork.network) |
-| Frequência | A cada 500ms ou 0.1% de variação |
-| Payload | `oracle_prices` com `asset_id`, `price`, `timestamp`, `stork_signed_price` |
+### 19.2 Fontes de Preço por Rede
+| Rede | Primário | Fallback |
+|------|----------|----------|
+| Polygon | Chainlink Data Feeds (on-chain) | SoSoValue API |
+| Arc | Pyth (Hermes API) | SoSoValue API |
+| Outras | SoSoValue API | — |
 
-### 19.3 Contrato On-chain (Arc Testnet)
-| Item | Detalhe |
-|------|---------|
-| Endereço | `0xacC0a0cF13571d30B4b8637996F5D6D774d4fd62` |
-| Explorer | `https://testnet.arcscan.app/address/0xacC0a0cF13571d30B4b8637996F5D6D774d4fd62` |
-| Função | `getTemporalNumericValueUnsafeV1(bytes32 id)` → preço com 18 decimais |
-| Feeds | `EURCUSD`, `BTCUSD` (usado para cirBTC/mcirBTC) |
+### 19.3 Feed IDs (Pyth)
+| Token | Feed ID |
+|-------|---------|
+| BTC/WBTC | `e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43` |
+| ETH/WETH | `ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace` |
+| SOL | `ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d` |
+| USDC | `eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a` |
+| USDT | `2b89b9dc8fdf9f34709a5b106b472f0f39bb6ca9ce04b0fd7f2e971688e2e53b` |
+| DAI | `b0948a5e5313200c632b51bb5ca32f6de0d36e9950a942d19751e833f70dabfd` |
+| EURC | `76fa85158bf14ede77087fe3ae472f66213f6ea2f5b411cb2de472794990fa5c` |
+| POL/WMATIC | `ffd11c5a1cfd42f80afb2df4d9f264c15f956d68153335374ec10722edd70472` |
 
 ### 19.4 Integração no Código
-- `pair-price-feed.ts`: suporte ao oracle Stork on-chain na Arc Testnet
-- Ativado automaticamente quando a rede é `arc` (via `executarCicloPregueiros`)
-- Stork como fonte primária → SoSoValue (fallback)
-- `pairPriceFeed.setUseStork(true/false)` para controle programático
+- `lib/pyth-price-feed.ts`: cliente Hermes API + feed IDs
+- `lib/pair-price-feed.ts`: ativado automaticamente quando `network === "arc"`
+- Chainlink continua como primário na Polygon
+- SoSoValue como fallback universal
 
-### 19.5 Status Atual
-| Aspecto | Status |
-|---------|--------|
-| Contrato on-chain verificado | ✅ Deployado em `0xacC0a0cF13571d30B4b8637996F5D6D774d4fd62` |
-| WebSocket subscriber | ⏳ Não implementado (requer token Stork Labs) |
-| Prioridade | **Baixa** — já temos preços reais via SoSoValue |
-
-### 19.6 Adapters (Pyth / Chainlink)
-Stork pode ser consumido via interfaces Pyth e Chainlink (adapters). Documentação: `https://docs.stork.network/resources/adapters.md`
-SDK npm: `@storknetwork/stork-evm-sdk`
+### 19.5 Contrato On-chain (Arc Testnet)
+| Item | Detalhe |
+|------|---------|
+| Endereço | `0x2880aB155794e7179c9eE2e38200202908C17B43` |
+| Explorer | `https://testnet.arcscan.app/address/0x2880aB155794e7179c9eE2e38200202908C17B43` |
+| Modelo | Pull oracle (requer `updatePriceFeeds()` antes de ler) |
+| Hermes API | `https://hermes.pyth.network/v2/updates/price/latest` |
 
 ## 19. PRIVACIDADE (Roadmap)
 
@@ -1182,7 +1186,182 @@ A SalaDeAula agora tem 3 abas:
 
 ---
 
-## NOTAS DE SESSÃO — 28/06/2026 (noite): Diagnóstico + StableMR V2 fallback + Modo Grão + PiEngineMonitor
+## 22. ARQUEIRO — MODULADOR DE TENSÃO/TIMING
+
+### 22.1 Propósito
+
+O Arqueiro (`lib/arqueiro.ts`) é um **modulador de tensão e timing** que não executa trades nem gera OKs. Ele observa a compressão de volatilidade de cada token volátil e alimenta o Pregão com um `tensionScore` (0-100) que modula a confiança das ordens e o score no CapitalController.
+
+### 22.2 Métrica Principal
+
+Como o sistema não possui OHLC (High/Low), o ATR verdadeiro não pode ser calculado. O Arqueiro usa **pseudo-ATR por returns absolutos**:
+
+```
+absReturn = |price_i - price_{i-1}| / price_{i-1}
+pseudoATRShort = mean(absReturns[-SHORT_WINDOW:])
+pseudoATRLong  = mean(absReturns[-LONG_WINDOW:])
+atrPercentile  = pseudoATRShort / pseudoATRLong
+```
+
+- `SHORT_WINDOW = 20` períodos (~100min a 5min/coleta)
+- `LONG_WINDOW = 100` períodos (~500min)
+- `atrPercentile < 0.6` = compressão detectada (quanto menor, mais comprimido)
+- `atrPercentile ≈ 1.0` = volatilidade normal
+- `atrPercentile > 1.0` = expansão de volatilidade
+
+### 22.3 Filtro Squeeze (Bollinger / Keltner)
+
+Refinamento binário: squeeze só é considerado ativo quando as Bandas de Bollinger estão **dentro** do Canal de Keltner.
+
+```
+Bollinger Width  = 2 × K × stddev(prices, SQUEEZE_WINDOW) / mean
+Keltner Width    = 2 × ATR_mult × pseudoATRLong / mean
+Squeeze          = Bollinger Width < Keltner Width
+```
+
+- `SQUEEZE_WINDOW = 20`, `K = 2`, `ATR_mult = 1.5`
+
+### 22.4 Máquina de Estados
+
+```
+OCIOSO → TENSIONANDO → ARMADO → DISPARO → (volta ao OCIOSO)
+  └────── DESARMADO (cooldown) ──────┘
+```
+
+| Estado | Entrada | Saída | TensionScore |
+|--------|---------|-------|-------------|
+| OCIOSO | Padrão | compression ≥ 2 períodos → TENSIONANDO | 0 |
+| TENSIONANDO | Compressão sustentada | 4+ períodos → ARMADO; timeout 30 → DESARMADO; quebra → OCIOSO | 20-50 |
+| ARMADO | Setup confirmado | fireCondition → DISPARO; timeout 50 → DESARMADO; quebra → OCIOSO | 40-70 (c/ decay após 20 períodos) |
+| DISPARO | Preço rompe squeeze | timeout 20 → OCIOSO; quebra → OCIOSO | 50-100 (decay após 5 períodos) |
+| DESARMADO | Cooldown | 20 períodos → OCIOSO | 0 |
+
+**fireCondition**: 2 candles consecutivos na mesma direção com magnitude > 0.5× pseudoATRLong (sinal de breakout da compressão).
+
+### 22.5 Integração no Pregão
+
+**Em `verificarOrdem()`** (após `confiancaMedia`, antes do guard de 40%):
+```typescript
+const tensionFactor = 1 + 0.3 * (arqScore / 100)
+confiancaMedia = Math.min(100, Math.round(confiancaMedia * tensionFactor))
+```
+
+**Em `executarPacotes()`** (score do CapitalController):
+```typescript
+const tensionFactor = 1 + 0.2 * (avgTension / 100)
+const score = Math.min(100, Math.round(baseScore * tensionFactor))
+```
+
+### 22.6 Parâmetros
+
+| Parâmetro | Valor | Descrição |
+|-----------|-------|-----------|
+| `SHORT_WINDOW` | 20 | Períodos para pseudo-ATR curto |
+| `LONG_WINDOW` | 100 | Períodos para pseudo-ATR longo |
+| `COMPRESSION_THRESHOLD` | 0.6 | Percentil ATR abaixo do qual é compressão |
+| `BOLLINGER_STDDEV` | 2 | Desvios padrão para Bollinger Bands |
+| `KELTNER_ATR_MULT` | 1.5 | Multiplicador ATR para Keltner Channel |
+| `DECAY_START` | 20 | Períodos em ARMADO antes do decay do score |
+| `DECAY_FULL` | 40 | Períodos para decay completo |
+| `TENSIONANDO_TIMEOUT` | 30 | Timeout no estado TENSIONANDO |
+| `ARMADO_TIMEOUT` | 50 | Timeout no estado ARMADO |
+| `DISPARO_TIMEOUT` | 20 | Timeout no estado DISPARO |
+| `DESARMADO_COOLDOWN` | 20 | Períodos de cooldown |
+| `CALIBRATION_WINDOW` | 100 | Janela para recalibrar baseline |
+| `RESET_THRESHOLD` | 0.5 (50%) | Mudança no ATR médio que dispara reset |
+| `MAX_ARMED_PAIRS` | 3 | Limite de pares simultâneos ARMADO/DISPARO |
+| `CYCLE_MS` | 60.000 | Intervalo de tick periódico (1min) |
+
+### 22.7 Calibração e Reset
+
+- Baseline do ATR médio é estabelecida após 100 períodos de dados
+- Se o ATR médio mudar > **50%** da baseline, todas as variáveis de estado daquele par são resetadas (volta ao OCIOSO, reinicia contadores)
+- Previne que o Arqueiro opere com calibração defasada após mudança de regime de mercado
+
+### 22.8 Limite de Pares Simultâneos
+
+- Máximo **3** pares podem estar em estado `ARMADO` ou `DISPARO` simultaneamente
+- Se o limite for atingido, novas transições para ARMADO/DISPARO são bloqueadas
+- Evita correlação entre pares (ex: WMATIC e WETH comprimindo juntos)
+
+### 22.9 Rollout (3 Fases)
+
+| Fase | Status | Comportamento |
+|------|--------|---------------|
+| 1 — Shadow | **Atual** (default) | Apenas logs `[ARQUEIRO] 🏹 ... (SHADOW)`. GetScore retorna 0. Sem influência. |
+| 2 — Validação | Futuro | `setShadowMode(false)`. TensionScore ativo. Monitorar logs para validar acertos. |
+| 3 — Ativo | Futuro | Operação normal. TensionScore integrado em tempo real. |
+
+### 22.10 Persistência
+
+O Arqueiro **não persiste estado em localStorage** intencionalmente:
+- Preço histórico é volátil — recomeçar não causa dano
+- Calibração se restabelece em 100 períodos (~500min)
+- Shadow mode coleta dados desde o início
+
+---
+
+## 23. VISÃO ARQUITETURAL — O QUE ESTE SISTEMA REALMENTE É
+
+### 23.1 O Padrão Central
+
+Olhando de fora, o padrão que se repete em cada peça não é "bot de trading". É:
+
+```
+Múltiplos agentes independentes opinam
+       → uma camada arbitra o consenso entre eles
+       → uma camada separada decide se isso pode mexer em capital real
+       → um sistema mede, ao longo do tempo, quem estava certo
+       → quem prova que acerta ganha mais autonomia, quem erra perde
+```
+
+Isso não é um "robô que compra e vende". É um **framework de confiança e arbitragem** entre agentes autônomos que tomam decisões com recursos reais. O trading é o domínio onde isso é provado — porque lucro e prejuízo são métricas que ninguém consegue inflar.
+
+### 23.2 Separação de Poderes
+
+| Poder | Módulo | Responsabilidade |
+|-------|--------|-----------------|
+| Opinar | `agentes-do-pregão.ts`, `pregueiro.ts` | Gerar OKs com confiança |
+| Arbitrar consenso | `pregão.ts:verificarOrdem()` | Coletar OKs, calcular confiança, decidir se vira ordem |
+| Liberar capital | `capital-controller.ts` | Gate binário: tem saldo? Tem vaga? Score suficiente? |
+| Avaliar timing | `arqueiro.ts` | Modula confiança por tensão de compressão |
+| Avaliar performance | `professor.ts`, `accountant.ts` | Quem acertou? Quem errou? Ajustar parâmetros. |
+| Executar | `corretor.ts`, `pregão.ts:executarPacotes()` | Swap real na blockchain |
+| Fechar | `position-manager.ts` (Staircase) | Vender no lucro, proteger o capital |
+
+### 23.3 Por Que Isso Não é Só um Bot
+
+Cada peça é **independente** e **testável por si só**:
+- **Professor + Escola de Robôs** — sistema de meritocracia verificável. Funcionaria idêntico se os "agentes" fossem analistas de crédito, moderadores de conteúdo ou avaliadores de sinistro.
+- **CapitalController separado do Pregão** — "ter uma opinião" e "ter permissão de gastar recursos" são poderes diferentes. Mesmo princípio que separa analista de trader em qualquer banco.
+- **Arc testnet + bandit como ambiente de simulação** — aprendizado sem custo de capital real. Erro comum de bots é aprender em cima de dinheiro verdadeiro.
+- **ERC-8004 (identidade) + ERC-8183 (marketplace)** — infraestrutura para agentes de **terceiros** serem contratados, verificados e pagos fora do seu próprio app. Isso vira plataforma.
+
+### 23.4 Onde Esta Estrutura se Aplica
+
+Qualquer domínio onde:
+1. Múltiplos opinadores imperfeitos emitem sinais
+2. É preciso arbitrar consenso entre eles
+3. Gastar recursos exige autorização separada de opinar
+4. Acerto histórico determina autonomia futura
+
+| Domínio | Opinadores | Consenso | Gate de Recursos |
+|---------|-----------|----------|-----------------|
+| Trading | Agentes de análise | Pregão | CapitalController |
+| Análise de crédito | Modelos de score | Comitê de crédito | Tesouraria |
+| Moderação conteúdo | Filtros automáticos | Revisão colegiada | Publicar ou bloquear |
+| Curadoria | Algoritmos de recomendação | Curadoria humana | Orçamento de aquisição |
+| Avaliação de sinistro | Modelos de risco | Perito | Liberação de pagamento |
+
+### 23.5 Pitch Correto (Hackathon)
+
+Não "bot de trading". A descrição que comunica o que foi construído:
+
+> **Infraestrutura de coordenação entre agentes autônomos com confiança verificável — e trading como campo de prova.**
+
+---
+
+
 
 ### Diagnóstico Operacional
 - **StableMR não emitia `🌾 PiEngine`** — `poolProfiler.getPools()` falhava (QuickSwap V3 sem pools EURC), `pools.length === 0` dava `continue` pulando o par inteiro sem tentar V2
@@ -1628,7 +1807,7 @@ Com capital médio de $50 e 1 trade por vez (CapitalController):
 - 15s cache de preços → preço pode estar 15s atrasado
 - Em mercados voláteis (1%+/min): preço cacheado vs preço real pode diferir em 0.25%+
 - Isso anula a margem de lucro de 0.1% (Polygon)
-- **Recomendação**: Atualizar para plano pago ou implementar fallback com WebSocket (Stork)
+- **Recomendação**: Atualizar para plano pago ou usar Pyth Hermes API como fallback (já integrado na Arc)
 
 #### D.2 Slippage vs Profit Margin (Criticidade: MÉDIA)
 - O sistema aceita slippage de até 5% (real-swap-executor.ts:1223)
