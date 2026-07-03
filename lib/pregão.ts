@@ -134,9 +134,11 @@ class Pregão {
   getRedeAtiva(): string { return this._redeAtiva }
 
   constructor() {
-    this._loadOrdens()
-    this._loadStats()
-    this._loadPackageResults()
+    if (typeof window !== 'undefined') {
+      this._loadOrdens()
+      this._loadStats()
+      this._loadPackageResults()
+    }
     if (typeof setInterval !== "undefined") arqueiro.start()
   }
 

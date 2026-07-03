@@ -88,7 +88,7 @@ class ProvaoRanking {
   private _onUpdate?: () => void;
 
   constructor() {
-    this.state = this._load();
+    this.state = typeof window !== 'undefined' ? this._load() : this._freshState();
   }
 
   onUpdate(cb: () => void) {

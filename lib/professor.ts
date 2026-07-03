@@ -113,7 +113,7 @@ class Professor {
   }
 
   constructor() {
-    this._carregar()
+    if (typeof window !== 'undefined') this._carregar()
     this.init().catch(() => {})
   }
 

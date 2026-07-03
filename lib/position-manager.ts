@@ -72,7 +72,7 @@ class PositionManager {
   private onStaircaseCloseCallbacks: Array<(position: OpenPosition) => void> = [];
 
   constructor() {
-    this.loadPositions();
+    if (typeof window !== 'undefined') this.loadPositions();
   }
 
   onClose(cb: (position: OpenPosition) => void) {

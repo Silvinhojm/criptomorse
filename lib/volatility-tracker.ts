@@ -81,7 +81,7 @@ class VolatilityTracker {
   private dirty = false
 
   constructor() {
-    this.load()
+    if (typeof window !== 'undefined') this.load()
   }
 
   // Coleta preço atual de um token e armazena no histórico

@@ -54,7 +54,7 @@ class TimingOptimizer {
   private profiles: Map<string, TimingProfile> = new Map()
 
   constructor() {
-    this._carregar()
+    if (typeof window !== 'undefined') this._carregar()
   }
 
   private _carregar(): void {

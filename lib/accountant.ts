@@ -106,7 +106,7 @@ class Accountant {
   ];
 
   constructor() {
-    this._load();
+    if (typeof window !== 'undefined') this._load();
     for (const nome of this.AGENTES_INICIAIS) {
       if (!this.agentScores.has(nome)) {
         this.agentScores.set(nome, {

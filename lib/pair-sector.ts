@@ -30,7 +30,7 @@ class PairSector {
   private avaliacoes: AvaliacaoPar[] = []
 
   constructor() {
-    this._carregar()
+    if (typeof window !== 'undefined') this._carregar()
   }
 
   private _carregar() {

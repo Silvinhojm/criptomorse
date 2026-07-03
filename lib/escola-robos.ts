@@ -49,7 +49,7 @@ class EscolaRobos {
   private shift: ShiftState = { robosAtivos: [], inicio: 0, expira: 0, turno: 0 }
 
   constructor() {
-    this._carregar()
+    if (typeof window !== 'undefined') this._carregar()
   }
 
   private _carregar() {
