@@ -304,5 +304,5 @@ Construído sobre o ecossistema Arc/Circle como participante ativo desde o lanç
 Branch principal: `versao-polygon` — deploys automáticos via Vercel.
 
 ```
-https://arcflow-5f8ym8n1s-criptomorse-s-projects.vercel.app
+https://criptomorse.vercel.app
 ```
