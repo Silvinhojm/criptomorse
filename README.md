@@ -47,9 +47,11 @@ Agentes (13) → Pregão → Escriturário → Capital Controller → Corretor �
 | **Circuit Breaker** | Proteção contra perdas consecutivas (3 strikes) |
 | **Gas Price Oracle** | Custo de gas em USD com fallback multi-RPC |
 | **Pair Price Feed** | Preços em tempo real via SoSoValue + Stork Oracle on-chain |
-| **MarketData Collector** | Cliente Backpack Exchange API (klines, markets, ticker, trades) — dados históricos reais para treino do Professor |
-| **BackpackScanner** | Escaneia 5 símbolos (BTC, ETH, SOL, SPCX.US, MU.US) e ranqueia sinais de compra/venda com score dos agentes |
-| **BackpackSignalsPanel** | Painel UI na aba "🎒 Sinais" — mostra o top pick do Professor com direção, score e preço |
+| **MarketData Collector** | Cliente Backpack Exchange API (klines, markets, ticker, trades, trades/history) — dados históricos reais para treino do Professor |
+| **liquidityFilter** | Filtro de liquidez ($50K vol 24h, 50% range high-low) para evitar sinais em ativos com baixa atividade |
+| **marketHours** | Runtime-aware: detecta horário NYSE/NASDAQ (9:30–16:00 ET, seg–sex) para só escanear ações em mercado aberto |
+| **BackpackScanner** | Descoberta dinâmica de símbolos: 3 crypto (BTC, ETH, SOL) + top stocks via `getTopStocksByVolume()`. Escaneia a cada 60s, respeita market hours, ranqueia por score dos agentes. Stock tokens ignoram filtro de liquidez (volume é NASDAQ reference data, não exchange) |
+| **BackpackSignalsPanel** | Painel UI na aba "🎒 Sinais" — seções crypto/stock, indicador NYSE 🟢/🔴, preço adaptativo (6 decimais para micro-tokens) |
 
 ### Agentes de Trading
 

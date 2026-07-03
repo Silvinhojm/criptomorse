@@ -101,10 +101,12 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
            ├── market-agent.ts
            ├── volume-agent.ts
            ├── sosovalue-agent.ts
-           └── marketData/ (Backpack Exchange)
-                ├── MarketDataCollector.ts  ← API client (klines, ticker, trades, markets)
-                ├── labelPriceMovement.ts   ← Rotulagem alta/baixa/neutro
-                └── BackpackScanner.ts      ← Scan multi-símbolo + ranking do Professor
+            └── marketData/ (Backpack Exchange)
+                 ├── MarketDataCollector.ts  ← API client (klines, ticker, trades, markets, trades/history)
+                 ├── labelPriceMovement.ts   ← Rotulagem alta/baixa/neutro com threshold por classe (crypto 0.3%, stock 1.5%)
+                 ├── liquidityFilter.ts      ← Filtro de liquidez ($50K vol 24h, 50% range)
+                 ├── marketHours.ts          ← isUSStockMarketOpen() + helpers (NYSE/NASDAQ 9:30-16:00 ET)
+                 └── BackpackScanner.ts      ← Descoberta dinâmica de símbolos + market hours + ranking do Professor
 ```
 
 ---
@@ -468,7 +470,8 @@ MIN_BALANCE_THRESHOLD = 0.50  // $0.50 — saldos abaixo disso são ignorados no
 | `arcflow_escola_shift` | Turno atual (robôs ativos, expiração, número) | escola-robos.ts |
 | `arcflow_escola_ultimas` | Últimas 20 avaliações por robô | escola-robos.ts |
 | `arcflow_professor_palpites` | Palpites pendentes e avaliados | professor.ts |
-| `arcflow_parametros_robos` | Parâmetros ajustados por robô | parametros-robos.ts |
+| `arcflow_parametros_robos` | Parâmetros ajustados por robô (live mainnet) | parametros-robos.ts |
+| `arcflow_parametros_robos_backpack` | Parâmetros ajustados por robô (treino Backpack) | parametros-robos.ts |
 | `arcflow_pair_sector` | Avaliações de pares por rede | pair-sector.ts |
 | `arcflow_paper_mode` | Modo Papel (simulação sem gas) ativado/desativado | agentes-do-pregão.ts |
 
@@ -3518,7 +3521,9 @@ Fluxo de unlock():
 |---------|-----------|
 | `lib/marketData/MarketDataCollector.ts` | Cliente HTTP Backpack (5 endpoints públicos), cache 60s, rate limit 10 req/s, retry 2x |
 | `lib/marketData/labelPriceMovement.ts` | Rotula movimento real como alta/baixa/neutro (threshold 0.3%) |
-| `lib/marketData/BackpackScanner.ts` | Scan de 5 símbolos (BTC, ETH, SOL, SPCX.US, MU.US), ranqueia por score dos agentes |
+| `lib/marketData/liquidityFilter.ts` | Filtro de liquidez ($50K vol 24h, 50% range) |
+| `lib/marketData/marketHours.ts` | isUSStockMarketOpen() + helpers (NYSE 9:30-16:00 ET) |
+| `lib/marketData/BackpackScanner.ts` | Descoberta dinâmica de símbolos, filtro + market hours, ranking por score dos agentes |
 | `app/components/BackpackSignalsPanel.tsx` | Painel UI "🎒 Sinais" no dashboard |
 | `scripts/test-market-data-collector.ts` | Teste standalone (24 candles BTC, stocks OK) |
 
@@ -3663,3 +3668,32 @@ O sistema tem 3 mecanismos de scoring que **não competem** — cada um tem fun�
 - `.US_` regex confirmada: 2 stocks na Backpack, 0 falsos positivos em 84 markets
 - Stock markets retornam `visible: false` — filtro `m.visible` removido propositalmente
 - Só 2 ações tokenizadas na Backpack hoje — descoberta dinâmica escala se mais forem listadas
+
+---
+
+## 52. SESSION SUMMARY (02/07/2026 noite) — quoteVolume fix: NASDAQ reference data sem magic numbers
+
+### What's Changed
+
+1. **Removido divisor 1M para stock tokens** — `lib/marketData/MarketDataCollector.ts:229-235`: stock tokens agora retornam `quoteVolume24h = 0` em vez de tentar estimar volume real via `volume / 1_000_000 * lastPrice`. Fundamento: todos os campos (`volume`, `quoteVolume`, `trades`) da ticker de RWA/stocks são **NASDAQ reference data**, não volume da Backpack — qualquer divisor é chute sem fundamento na especificação da API.
+
+2. **StockCandidate agora inclui `trades`** — `lib/marketData/MarketDataCollector.ts:67-72`: campo `trades` adicionado (mesmo sendo referência NASDAQ, é um proxy útil para "esse stock tem atividade").
+
+3. **getTopStocksByVolume ordenado por `trades`** — `lib/marketData/MarketDataCollector.ts:273-280`: stocks ordenados por `trades` (descendente) em vez de `quoteVolume24h`. Filtro `.filter(c => c.trades > 0)` substitui `.filter(c => c.quoteVolume24h > 0)`.
+
+4. **Scanner skipa liquidity filter para stocks** — `lib/marketData/BackpackScanner.ts:47-62`: stocks são incluídos sem filtro de volume (só 2 existem, ambos legítimos). `passesLiquidityFilter` import removido.
+
+5. **Ticker.trades exposto** — `lib/marketData/MarketDataCollector.ts:56-65`: interface `Ticker` ganha campo `trades: number`. Populado em `getTicker()`.
+
+### Impacto
+- Fim do divisor mágico 1.000.000 — sem curve-fitting, sem chute
+- Stock tokens aparecem no scanner independentemente de volume (hoje: MU.US e SPCX.US)
+- Scanner usa `getTopStocksByVolume` apenas para descoberta de símbolos, não para ranking por volume
+- Liquidity filter continua válido para crypto (BTC $4.5M/dia passa, shitcoins com <$50K são filtrados)
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Scanner**: 3 crypto (BTC, ETH, SOL) + 2 stocks (MU.US, SPCX.US) descobertos dinamicamente a cada hora
+- **Stock volume**: `quoteVolume24h = 0` — documentado como NASDAQ reference data, não exchange volume
+- **Market hours**: stocks só escaneados 9:30-16:00 ET
+- **Thresholds**: crypto 0.3%, stocks 1.5%, default 0.5%

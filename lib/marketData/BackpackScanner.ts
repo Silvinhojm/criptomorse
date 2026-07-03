@@ -1,6 +1,5 @@
 import { marketDataCollector, type Kline, type StockCandidate } from './MarketDataCollector'
 import { labelPriceMovement } from './labelPriceMovement'
-import { passesLiquidityFilter } from './liquidityFilter'
 import { isUSStockMarketOpen, isStockSymbol } from './marketHours'
 import { escolaRobos } from '../escola-robos'
 import { parametrosRobos } from '../parametros-robos'
@@ -47,19 +46,11 @@ export class BackpackScanner {
   private async refreshStockCandidates(): Promise<void> {
     if (Date.now() - this.lastStockRefresh < this.stockRefreshIntervalMs) return
     this.lastStockRefresh = Date.now()
+    // Stock tokens return NASDAQ reference volume data in the ticker API — quoteVolume24h
+    // is always 0 (unreliable). Skip liquidity filter (which checks volume) and include
+    // all discovered stock candidates. Only 2 exist today (MU.US, SPCX.US) — both legit.
     const candidates = await marketDataCollector.getTopStocksByVolume(15)
-    const filtered: StockCandidate[] = []
-    for (const c of candidates) {
-      try {
-        const ticker = await marketDataCollector.getTicker(c.symbol)
-        if (passesLiquidityFilter(ticker)) {
-          filtered.push(c)
-        }
-      } catch {
-        continue
-      }
-    }
-    this.stockCandidates = filtered
+    this.stockCandidates = candidates
   }
 
   async scan(force = false): Promise<BackpackSignal[]> {

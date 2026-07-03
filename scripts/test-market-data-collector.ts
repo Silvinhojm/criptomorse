@@ -19,23 +19,24 @@ async function main() {
   console.log(`Stock tokens: ${stockMarkets.length} —`, stockMarkets.map(m => m.symbol).join(', ') || '(none)')
 
   // 2. getTopStocksByVolume
-  console.log('\n📊 getTopStocksByVolume(15)...')
+  console.log('\n📊 getTopStocksByVolume(15) — sorted by trades (volume unreliable for stocks)...')
   const topStocks = await marketDataCollector.getTopStocksByVolume(15)
   console.log(`Discovered ${topStocks.length} stock candidates:`)
   for (const s of topStocks) {
-    console.log(`  ${s.symbol} | quoteVolume24h: $${s.quoteVolume24h.toLocaleString()}`)
+    console.log(`  ${s.symbol} | quoteVolume24h: unreliable (set to 0) | trades: ${s.trades.toLocaleString()} (ref data)`)
   }
 
-  // 3. Liquidity filter
+  // 3. Liquidity filter (stocks always fail since quoteVolume24h=0 — expected)
   console.log('\n🔍 passesLiquidityFilter — testing discovered stocks:')
   let passed = 0
   for (const s of topStocks) {
     const ticker = await marketDataCollector.getTicker(s.symbol)
     const ok = passesLiquidityFilter(ticker)
     if (ok) passed++
-    console.log(`  ${s.symbol}: ${ok ? '✅' : '❌'} (vol $${ticker.quoteVolume24h.toLocaleString()}, range ${ticker.high24h > 0 ? (((ticker.high24h - ticker.low24h) / ticker.low24h) * 100).toFixed(1) : '?'}%)`)
+    console.log(`  ${s.symbol}: ${ok ? '✅' : '❌'} (vol unreliable=0, range ${ticker.high24h > 0 ? (((ticker.high24h - ticker.low24h) / ticker.low24h) * 100).toFixed(1) : '?'}%)`)
   }
-  console.log(`  → ${passed}/${topStocks.length} passed`)
+  console.log(`  → ${passed}/${topStocks.length} passed (stocks always fail: quoteVolume24h=0 by design)`)
+  console.log(`  (Scanner skips liquidity filter for stocks — includes all discovered stock markets)`) 
 
   // 4. Market hours
   console.log('\n🕐 isUSStockMarketOpen():')

@@ -60,6 +60,7 @@ export interface Ticker {
   priceChangePercent24h: number
   volume24h: number
   quoteVolume24h: number
+  trades: number
   high24h: number
   low24h: number
 }
@@ -68,6 +69,7 @@ export interface StockCandidate {
   symbol: string
   baseSymbol: string
   quoteVolume24h: number
+  trades: number
 }
 
 type KlineInterval = '1s' | '1m' | '3m' | '5m' | '15m' | '30m' | '1h' | '2h' | '4h' | '6h' | '8h' | '12h' | '1d' | '3d' | '1w' | '1month'
@@ -223,24 +225,23 @@ export class MarketDataCollector {
 
     const raw = await this.fetchWithRetry<BackpackTickerRaw>(`${BACKPACK_BASE}/api/v1/ticker?symbol=${symbol}`)
     const lastPrice = parseFloat(raw.lastPrice)
-    const volumeBase = parseFloat(raw.volume)
-    const quoteVolumeRaw = parseFloat(raw.quoteVolume || '0')
-
-    // Stock tokens (RWA) return reference volume from the underlying market (NASDAQ),
-    // not the exchange's actual trading volume. The raw values are ~1M× too large.
-    // Estimate real volume: base units / 1M × lastPrice.
+    const volume = parseFloat(raw.volume)
+    const quoteVolume = parseFloat(raw.quoteVolume || '0')
+    const trades = parseInt(raw.trades, 10)
     const isStock = symbol.includes('.US_')
-    const quoteVolume24h = isStock
-      ? (volumeBase / 1_000_000) * lastPrice
-      : quoteVolumeRaw
 
+    // Stock tokens (RWA) return NASDAQ reference data in volume/quoteVolume/trades,
+    // not the exchange's actual trading volume. Set to 0 — cannot determine real
+    // Backpack volume from ticker endpoint. Use trades count as a rough proxy
+    // of "this stock has activity" (even if reference data, correlated with popularity).
     const data: Ticker = {
       symbol: raw.symbol,
       lastPrice,
       priceChange24h: parseFloat(raw.priceChange),
       priceChangePercent24h: parseFloat(raw.priceChangePercent) * 100,
-      volume24h: volumeBase,
-      quoteVolume24h,
+      volume24h: volume,
+      quoteVolume24h: isStock ? 0 : quoteVolume,
+      trades,
       high24h: parseFloat(raw.high),
       low24h: parseFloat(raw.low),
     }
@@ -265,16 +266,21 @@ export class MarketDataCollector {
             symbol: m.symbol,
             baseSymbol: m.baseSymbol,
             quoteVolume24h: ticker.quoteVolume24h,
+            trades: ticker.trades,
           }
         } catch {
-          return { symbol: m.symbol, baseSymbol: m.baseSymbol, quoteVolume24h: 0 }
+          return { symbol: m.symbol, baseSymbol: m.baseSymbol, quoteVolume24h: 0, trades: 0 }
         }
       })
     )
 
+    // Stock tokens have quoteVolume24h = 0 (NASDAQ ref data). Sort by trades count
+    // as a proxy for "this stock has market activity" (even trades are NASDAQ ref data,
+    // correlated with popularity). Crypto candidates won't appear here since stockMarkets
+    // only includes .US_ symbols.
     const sorted = candidates
-      .filter(c => c.quoteVolume24h > 0)
-      .sort((a, b) => b.quoteVolume24h - a.quoteVolume24h)
+      .filter(c => c.trades > 0)
+      .sort((a, b) => b.trades - a.trades)
       .slice(0, limit)
 
     this.setCache(cacheKey, sorted)
