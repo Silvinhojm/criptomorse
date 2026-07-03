@@ -154,43 +154,40 @@ class JobRobot {
     ])
   }
 
-  /** Deploy do contrato JobProof na Arc testnet como prova on-chain */
-  async deployJobProof(robotName: string, jobNumber: number): Promise<SwapResult> {
+  /** Envia uma tx simples (0 ARC) como stress test na Arc — evita fragilidade de deploy de contrato */
+  async sendStressTx(robotName: string, jobNumber: number): Promise<SwapResult> {
     const provider = new ethers.JsonRpcProvider(ARC_RPC)
     const wallet = new ethers.Wallet(this._privateKey, provider)
     const address = wallet.address
-    const maxAttempts = 3
+    const maxAttempts = 2
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         if (attempt > 0) {
-          // Espera tx anterior propagar antes de tentar de novo
-          await new Promise(r => setTimeout(r, 2000 * attempt))
+          await new Promise(r => setTimeout(r, 2000))
         }
-        const factory = new ethers.ContractFactory(JOB_PROOF_ABI, JOB_PROOF_BYTECODE, wallet)
         const nonce = await NonceManager.getInstance().getNonce(provider, ARC_CHAIN_ID, address)
         const gasPrice = await provider.getFeeData()
         const maxFeePerGas = gasPrice.maxFeePerGas
-          ? gasPrice.maxFeePerGas * (1n + BigInt(attempt * 20)) / 100n  // +20% por tentativa
+          ? gasPrice.maxFeePerGas * (1n + BigInt(attempt * 20)) / 100n
           : undefined
-        const contract = await factory.deploy(robotName, jobNumber, {
+        const tx = await wallet.sendTransaction({
+          to: address,
+          value: 0n,
           nonce,
           maxFeePerGas,
           maxPriorityFeePerGas: gasPrice.maxPriorityFeePerGas
             ? gasPrice.maxPriorityFeePerGas * (1n + BigInt(attempt * 20)) / 100n
             : undefined,
         })
-        const tx = contract.deploymentTransaction()!
         const receipt = await tx.wait()
-        const contractAddress = await contract.getAddress()
         return {
           success: true,
           txHash: receipt?.hash ?? tx.hash,
-          pair: `JobProof:${robotName}#${jobNumber}`,
+          pair: `Stress:${robotName}#${jobNumber}`,
           amountIn: "0",
           amountOut: "0",
-          stage: 'deployed',
+          stage: 'stress-tx',
           retryCount: attempt,
-          contractAddress,
         }
       } catch (err: any) {
         const errMsg = err?.message?.toLowerCase() ?? ''
@@ -199,21 +196,20 @@ class JobRobot {
           || errMsg.includes('replacement fee')
         if (isNonceConflict) {
           NonceManager.getInstance().resetNonce(ARC_CHAIN_ID, address)
-          if (attempt < maxAttempts - 1) continue // tenta de novo com gas bump
+          if (attempt < maxAttempts - 1) continue
         }
         return {
           success: false,
-          stage: 'deploy-error',
-          error: err?.message?.slice(0, 200) ?? 'Falha no deploy',
+          stage: 'stress-error',
+          error: err?.message?.slice(0, 200) ?? 'Falha na stress tx',
           retryCount: attempt,
         }
       }
     }
-    // Todas as tentativas esgotadas
     return {
       success: false,
-      stage: 'deploy-error',
-      error: `Falha no deploy após ${maxAttempts} tentativas`,
+      stage: 'stress-error',
+      error: `Falha na stress tx após ${maxAttempts} tentativas`,
       retryCount: maxAttempts - 1,
     }
   }
@@ -252,22 +248,16 @@ class JobRobot {
       }
     }
 
-    // Fallback: deploy do JobProof como transação de stress na rede
-    let deployResult = await this.deployJobProof(robotName, this.cycleCount)
-    // Se falhou por nonce, nonce foi resetado — tenta mais uma vez
-    const deployErrMsg = deployResult.error?.toLowerCase() ?? ''
-    if (!deployResult.success && (deployErrMsg.includes('nonce') || deployErrMsg.includes('already been used'))) {
-      deployResult = await this.deployJobProof(robotName, this.cycleCount)
-    }
-    if (deployResult.success) {
-      // Deploy bem-sucedido conta como atividade útil na rede — não incrementa falhas
-      return deployResult
+    // Fallback: envia tx simples (0 ARC) como stress na rede — mais confiável que deploy de contrato
+    const stressResult = await this.sendStressTx(robotName, this.cycleCount)
+    if (stressResult.success) {
+      return stressResult
     }
     this.consecutiveFails++
     return {
       success: false,
       stage: 'stress-failed',
-      error: `Swap+deploy falharam: ${deployResult.error ?? 'erro desconhecido'}`,
+      error: `Swap+stress falharam: ${stressResult.error ?? 'erro desconhecido'}`,
       retryCount: 0,
     }
   }
