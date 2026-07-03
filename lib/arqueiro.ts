@@ -7,6 +7,13 @@ interface PricePoint {
   timestamp: number
 }
 
+interface HistoryEntry {
+  timestamp: number
+  tensionScore: number
+  state: StateName
+  atrPercentile: number
+}
+
 interface PairState {
   state: StateName
   enteredStateAt: number
@@ -20,6 +27,7 @@ interface PairState {
   tensionScore: number
   atrBaseline: number
   baselineDataPoints: number
+  history: HistoryEntry[]
 }
 
 const SHORT_WINDOW = 20
@@ -74,6 +82,7 @@ class Arqueiro {
       pseudoATRShort: 0, pseudoATRLong: 0, atrPercentile: 1,
       squeezeActive: false, tensionScore: 0,
       atrBaseline: 0, baselineDataPoints: 0,
+      history: [],
     }
   }
 
@@ -115,7 +124,7 @@ class Arqueiro {
     const v = recent.reduce((s, v) => s + (v - m) ** 2, 0) / recent.length
     const std = Math.sqrt(v)
     const bw = 2 * BOLLINGER_STDDEV * std / m
-    const kw = 2 * KELTNER_ATR_MULT * ps.pseudoATRLong / m
+    const kw = 2 * KELTNER_ATR_MULT * ps.pseudoATRShort / m
     return bw < kw
   }
 
@@ -241,6 +250,9 @@ class Arqueiro {
 
     ps.tensionScore = this.computeScore(ps, ps.state)
 
+    ps.history.push({ timestamp: Date.now(), tensionScore: ps.tensionScore, state: ps.state, atrPercentile: ps.atrPercentile })
+    if (ps.history.length > 500) ps.history.splice(0, ps.history.length - 500)
+
     if (this._shadowMode && ps.tensionScore > 0) {
       console.log(`[ARQUEIRO] 🏹 ${token}@${network} | ${ps.state} | ATR=${(ps.pseudoATRShort*100).toFixed(3)}% | pctl=${ps.atrPercentile.toFixed(3)} | squeeze=${ps.squeezeActive} | tensão=${ps.tensionScore} (SHADOW)`)
     }
@@ -266,6 +278,15 @@ class Arqueiro {
 
   allSnapshots(): { key: string; state: StateName; tensionScore: number }[] {
     return Array.from(this.pairs.entries()).map(([k, ps]) => ({ key: k, state: ps.state, tensionScore: ps.tensionScore }))
+  }
+
+  getHistory(pair: string, network: string): HistoryEntry[] {
+    const ps = this.pairs.get(this.resolveKey(pair, network))
+    return ps?.history ?? []
+  }
+
+  getAllHistory(): { key: string; history: HistoryEntry[] }[] {
+    return Array.from(this.pairs.entries()).map(([k, ps]) => ({ key: k, history: ps.history }))
   }
 
   async feedPrice(pair: string, network: string): Promise<void> {

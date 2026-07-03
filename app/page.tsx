@@ -581,7 +581,7 @@ function ReceiveModal({ account, onClose, network }: { account: string; onClose:
 
 function SectionMatch({ section, children }: { section: string; children: React.ReactNode }) {
   const ctx = useSection()
-  if (ctx.section !== section) return null
+  if (ctx.section !== section) return <div style={{ display: "none" }}>{children}</div>
   return <>{children}</>
 }
 
