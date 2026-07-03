@@ -4,6 +4,17 @@ import { useState, useEffect } from "react"
 import { arcTraining, type ArcTrainingState, type TrainingAgentSnapshot, type TrainingParamSnapshot } from "@/lib/arc-training"
 import { DESIGN_SYSTEM as DS } from "@/constants/design-system"
 
+const STATE_INICIAL: ArcTrainingState = {
+  active: false,
+  cyclesCompleted: 0,
+  cyclesTarget: 100,
+  startedAt: 0,
+  lastCycleAt: 0,
+  agentSnapshots: [],
+  parameterSnapshots: [],
+  logs: [],
+}
+
 const card: React.CSSProperties = {
   marginBottom: 12,
   background: "rgba(139,92,246,0.05)",
@@ -22,10 +33,11 @@ const btnBase: React.CSSProperties = {
 }
 
 export function ArcTrainingPanel({ network }: { network: string }) {
-  const [state, setState] = useState<ArcTrainingState>(arcTraining.getState())
+  const [state, setState] = useState<ArcTrainingState>(STATE_INICIAL)
   const isArc = network === "arc"
 
   useEffect(() => {
+    setState(arcTraining.getState())
     const unsub = arcTraining.subscribe(setState)
     return unsub
   }, [])

@@ -57,7 +57,9 @@ class ArcTraining {
   private listeners: Set<(state: ArcTrainingState) => void> = new Set()
 
   constructor() {
-    this._load()
+    if (typeof window !== 'undefined') {
+      this._load()
+    }
   }
 
   private _load() {
@@ -77,6 +79,7 @@ class ArcTraining {
 
   private _save() {
     try {
+      if (typeof window === 'undefined') return
       localStorage.setItem(TRAINING_KEY, JSON.stringify(this.state))
     } catch {
       // silencioso

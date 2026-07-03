@@ -81,7 +81,9 @@ interface CacheEntry {
   timestamp: number
 }
 
-const BACKPACK_BASE = 'https://api.backpack.exchange'
+const BACKPACK_BASE = typeof window !== 'undefined'
+  ? '/api/backpack'
+  : 'https://api.backpack.exchange'
 const CACHE_TTL_MS = 60_000
 const CACHE_TTL_STOCKS_MS = ONE_HOUR_MS
 const MAX_RPS = 10
