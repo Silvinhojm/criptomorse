@@ -25,7 +25,7 @@ export class NonceManager {
     await prev
     try {
       const key = `${chainId}:${address.toLowerCase()}`
-      const onChain = await provider.getTransactionCount(address, "pending")
+      const onChain = await provider.getTransactionCount(address, "latest")
       const tracked = this.nonces.get(key) ?? 0
       const nonce = Math.max(onChain, tracked)
       this.nonces.set(key, nonce + 1)

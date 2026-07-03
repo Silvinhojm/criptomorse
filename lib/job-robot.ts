@@ -159,34 +159,62 @@ class JobRobot {
     const provider = new ethers.JsonRpcProvider(ARC_RPC)
     const wallet = new ethers.Wallet(this._privateKey, provider)
     const address = wallet.address
-    try {
-      const factory = new ethers.ContractFactory(JOB_PROOF_ABI, JOB_PROOF_BYTECODE, wallet)
-      const nonce = await NonceManager.getInstance().getNonce(provider, ARC_CHAIN_ID, address)
-      const contract = await factory.deploy(robotName, jobNumber, { nonce })
-      const tx = contract.deploymentTransaction()!
-      const receipt = await tx.wait()
-      const contractAddress = await contract.getAddress()
-      return {
-        success: true,
-        txHash: receipt?.hash ?? tx.hash,
-        pair: `JobProof:${robotName}#${jobNumber}`,
-        amountIn: "0",
-        amountOut: "0",
-        stage: 'deployed',
-        retryCount: 0,
-        contractAddress,
+    const maxAttempts = 3
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        if (attempt > 0) {
+          // Espera tx anterior propagar antes de tentar de novo
+          await new Promise(r => setTimeout(r, 2000 * attempt))
+        }
+        const factory = new ethers.ContractFactory(JOB_PROOF_ABI, JOB_PROOF_BYTECODE, wallet)
+        const nonce = await NonceManager.getInstance().getNonce(provider, ARC_CHAIN_ID, address)
+        const gasPrice = await provider.getFeeData()
+        const maxFeePerGas = gasPrice.maxFeePerGas
+          ? gasPrice.maxFeePerGas * (1n + BigInt(attempt * 20)) / 100n  // +20% por tentativa
+          : undefined
+        const contract = await factory.deploy(robotName, jobNumber, {
+          nonce,
+          maxFeePerGas,
+          maxPriorityFeePerGas: gasPrice.maxPriorityFeePerGas
+            ? gasPrice.maxPriorityFeePerGas * (1n + BigInt(attempt * 20)) / 100n
+            : undefined,
+        })
+        const tx = contract.deploymentTransaction()!
+        const receipt = await tx.wait()
+        const contractAddress = await contract.getAddress()
+        return {
+          success: true,
+          txHash: receipt?.hash ?? tx.hash,
+          pair: `JobProof:${robotName}#${jobNumber}`,
+          amountIn: "0",
+          amountOut: "0",
+          stage: 'deployed',
+          retryCount: attempt,
+          contractAddress,
+        }
+      } catch (err: any) {
+        const errMsg = err?.message?.toLowerCase() ?? ''
+        const isNonceConflict = errMsg.includes('nonce')
+          || errMsg.includes('already been used')
+          || errMsg.includes('replacement fee')
+        if (isNonceConflict) {
+          NonceManager.getInstance().resetNonce(ARC_CHAIN_ID, address)
+          if (attempt < maxAttempts - 1) continue // tenta de novo com gas bump
+        }
+        return {
+          success: false,
+          stage: 'deploy-error',
+          error: err?.message?.slice(0, 200) ?? 'Falha no deploy',
+          retryCount: attempt,
+        }
       }
-    } catch (err: any) {
-      const errMsg = err?.message?.toLowerCase() ?? ''
-      if (errMsg.includes('nonce') || errMsg.includes('already been used')) {
-        NonceManager.getInstance().resetNonce(ARC_CHAIN_ID, address)
-      }
-      return {
-        success: false,
-        stage: 'deploy-error',
-        error: err?.message?.slice(0, 200) ?? 'Falha no deploy',
-        retryCount: 0,
-      }
+    }
+    // Todas as tentativas esgotadas
+    return {
+      success: false,
+      stage: 'deploy-error',
+      error: `Falha no deploy após ${maxAttempts} tentativas`,
+      retryCount: maxAttempts - 1,
     }
   }
 
