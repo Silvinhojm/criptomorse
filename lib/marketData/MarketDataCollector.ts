@@ -222,13 +222,25 @@ export class MarketDataCollector {
     if (cached) return cached
 
     const raw = await this.fetchWithRetry<BackpackTickerRaw>(`${BACKPACK_BASE}/api/v1/ticker?symbol=${symbol}`)
+    const lastPrice = parseFloat(raw.lastPrice)
+    const volumeBase = parseFloat(raw.volume)
+    const quoteVolumeRaw = parseFloat(raw.quoteVolume || '0')
+
+    // Stock tokens (RWA) return reference volume from the underlying market (NASDAQ),
+    // not the exchange's actual trading volume. The raw values are ~1M× too large.
+    // Estimate real volume: base units / 1M × lastPrice.
+    const isStock = symbol.includes('.US_')
+    const quoteVolume24h = isStock
+      ? (volumeBase / 1_000_000) * lastPrice
+      : quoteVolumeRaw
+
     const data: Ticker = {
       symbol: raw.symbol,
-      lastPrice: parseFloat(raw.lastPrice),
+      lastPrice,
       priceChange24h: parseFloat(raw.priceChange),
       priceChangePercent24h: parseFloat(raw.priceChangePercent) * 100,
-      volume24h: parseFloat(raw.volume),
-      quoteVolume24h: parseFloat(raw.quoteVolume || '0'),
+      volume24h: volumeBase,
+      quoteVolume24h,
       high24h: parseFloat(raw.high),
       low24h: parseFloat(raw.low),
     }
