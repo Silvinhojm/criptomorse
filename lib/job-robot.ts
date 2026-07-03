@@ -154,11 +154,12 @@ class JobRobot {
     ])
   }
 
-  /** Envia uma tx simples (0 ARC) como stress test na Arc — evita fragilidade de deploy de contrato */
+  /** Envia uma tx de 1 wei para burn address como stress test na Arc */
   async sendStressTx(robotName: string, jobNumber: number): Promise<SwapResult> {
     const provider = new ethers.JsonRpcProvider(ARC_RPC)
     const wallet = new ethers.Wallet(this._privateKey, provider)
     const address = wallet.address
+    const BURN = '0x0000000000000000000000000000000000000001'
     const maxAttempts = 2
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
@@ -167,16 +168,17 @@ class JobRobot {
         }
         const nonce = await NonceManager.getInstance().getNonce(provider, ARC_CHAIN_ID, address)
         const gasPrice = await provider.getFeeData()
+        const multiplier = 100n + BigInt(attempt * 20)
         const maxFeePerGas = gasPrice.maxFeePerGas
-          ? gasPrice.maxFeePerGas * (1n + BigInt(attempt * 20)) / 100n
+          ? gasPrice.maxFeePerGas * multiplier / 100n
           : undefined
         const tx = await wallet.sendTransaction({
-          to: address,
-          value: 0n,
+          to: BURN,
+          value: 1n,
           nonce,
           maxFeePerGas,
           maxPriorityFeePerGas: gasPrice.maxPriorityFeePerGas
-            ? gasPrice.maxPriorityFeePerGas * (1n + BigInt(attempt * 20)) / 100n
+            ? gasPrice.maxPriorityFeePerGas * multiplier / 100n
             : undefined,
         })
         const receipt = await tx.wait()

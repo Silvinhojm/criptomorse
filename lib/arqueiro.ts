@@ -252,6 +252,7 @@ class Arqueiro {
   setShadowMode(v: boolean): void { this._shadowMode = v }
 
   getScore(pair: string, network: string): number {
+    if (this._shadowMode) return 0
     if (isStableStable(pair)) return 0
     const ps = this.pairs.get(this.resolveKey(pair, network))
     return ps?.tensionScore ?? 0
