@@ -118,15 +118,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     if (disabled) return
 
     const addr = realSwap.getAddress()
-    const pk = typeof window !== "undefined"
-      ? (localStorage.getItem("arcflow_private_key") || localStorage.getItem("arcflow_stress_test_key"))
-      : null
-    const hasPrivateKey = !!pk && pk.length >= 64
-    if (hasPrivateKey && !realSwap.getSigner()) {
-      const ok = realSwap.setSignerFromPrivateKey(pk!)
-      if (ok) addLog(`🔑 Auto-sign ativado via private key — transações não precisam de MetaMask`)
-    }
-    if (!addr && !hasPrivateKey) return
+    if (!addr) return
 
     const net = NETWORKS[rede as NetworkKey]
     const isArc = net?.name?.includes("Arc") && net?.isTestnet
@@ -265,15 +257,26 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         }
       } else {
         startBalanceTimer()
+        const pk = localStorage.getItem("arcflow_private_key") || localStorage.getItem("arcflow_stress_test_key")
+        if (!realSwap.getAddress() && pk && pk.length >= 64) {
+          const ok = realSwap.setSignerFromPrivateKey(pk)
+          if (ok) addLog(`🔑 Reconectado via private key ao voltar para a aba`)
+        }
       }
+    }
+
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) startBalanceTimer()
     }
 
     startBalanceTimer()
     document.addEventListener("visibilitychange", onVisibilityChange)
+    window.addEventListener("pageshow", onPageShow)
 
     initCaixa()
     return () => {
       document.removeEventListener("visibilitychange", onVisibilityChange)
+      window.removeEventListener("pageshow", onPageShow)
       if (balanceTimerRef.current) clearInterval(balanceTimerRef.current)
       for (const unsub of caixaUnsubRef.current) unsub()
       caixaUnsubRef.current = []

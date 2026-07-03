@@ -612,6 +612,18 @@ export default function Home() {
 
   useEffect(() => { setIsClient(true); }, []);
 
+  // Auto-conectar private key do localStorage em qualquer aba/recarregamento
+  useEffect(() => {
+    const pk = typeof window !== "undefined"
+      ? (localStorage.getItem("arcflow_private_key") || localStorage.getItem("arcflow_stress_test_key"))
+      : null
+    const hasPrivateKey = !!pk && pk.length >= 64
+    if (hasPrivateKey && !realSwap.getSigner()) {
+      const netKey = (CHAIN_TO_KEY[currentNetwork.chainId] ?? "polygon") as NetworkKey
+      realSwap.setSignerFromPrivateKey(pk!)
+    }
+  }, [currentNetwork.chainId])
+
   const getPortfolioTokens = useCallback(() => {
     const common: { symbol: string; name: string; icon: string; address: string; decimals: number; isNative: boolean }[] = [
       { symbol: currentNetwork.nativeCurrency.symbol, name: currentNetwork.nativeCurrency.name, icon: "🪙", address: "", decimals: currentNetwork.nativeCurrency.decimals, isNative: true },

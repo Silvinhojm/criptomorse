@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { realSwap, NETWORKS, type NetworkKey } from "@/lib/real-swap-executor"
 import { Wallet, Activity, ChevronDown, Lock } from "lucide-react"
 import { DESIGN_SYSTEM as DS } from "@/constants/design-system"
@@ -24,17 +24,45 @@ export default function Header({ onToggleWallet, currentNetworkKey, onNetworkCha
   const [redeAtiva, setRedeAtiva] = useState("polygon")
   const [status, setStatus] = useState<"conectado" | "desconectado">("desconectado")
 
+  const atualizarConexao = useRef(() => {})
+
   useEffect(() => {
     const net = realSwap.getNetworkKey()
     setRedeAtiva(net)
     setBalance(realSwap.getBalance("USDC"))
-    setStatus(realSwap.getAddress() ? "conectado" : "desconectado")
+
+    const checkConnection = () => {
+      setStatus(realSwap.getAddress() ? "conectado" : "desconectado")
+    }
+    checkConnection()
+    atualizarConexao.current = checkConnection
 
     const t = setInterval(() => {
       realSwap.refreshAllBalances().catch(() => {})
       setBalance(realSwap.getBalance("USDC"))
     }, 5000)
-    return () => clearInterval(t)
+
+    const onVisibility = () => {
+      if (!document.hidden) {
+        const pk = localStorage.getItem("arcflow_private_key") || localStorage.getItem("arcflow_stress_test_key")
+        if (!realSwap.getAddress() && pk && pk.length >= 64) {
+          realSwap.setSignerFromPrivateKey(pk)
+        }
+        checkConnection()
+      }
+    }
+    document.addEventListener("visibilitychange", onVisibility)
+
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) checkConnection()
+    }
+    window.addEventListener("pageshow", onPageShow)
+
+    return () => {
+      clearInterval(t)
+      document.removeEventListener("visibilitychange", onVisibility)
+      window.removeEventListener("pageshow", onPageShow)
+    }
   }, [])
 
   const netName = NETWORKS[redeAtiva as NetworkKey]?.name ?? "Desconhecida"
