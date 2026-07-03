@@ -173,7 +173,9 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
   }, [currentNetwork]);
 
   useEffect(() => {
-    const id = setInterval(refreshStats, 8000);
+    const id = setInterval(() => {
+      refreshStats().catch(e => console.warn('[REAL_TRADER] refreshStats failed:', e))
+    }, 8000);
     return () => clearInterval(id);
   }, []);
 

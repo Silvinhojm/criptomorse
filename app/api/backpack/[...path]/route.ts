@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 const BACKPACK_API = 'https://api.backpack.exchange'
 const REQUEST_TIMEOUT = 15000
 
-export async function GET(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
+async function proxy(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }, method: string) {
   try {
     const { path: segments } = await params
     const path = segments.join('/')
@@ -13,7 +13,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ path
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT)
 
-    const res = await fetch(url, { signal: controller.signal })
+    const body = method === 'GET' ? undefined : await req.text()
+    const headers: Record<string, string> = {}
+    if (body) headers['Content-Type'] = req.headers.get('Content-Type') || 'application/json'
+
+    const res = await fetch(url, { method, headers, body, signal: controller.signal })
     clearTimeout(timeoutId)
 
     if (res.status === 429) {
@@ -37,3 +41,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ path
     return NextResponse.json({ error: e?.message ?? 'unknown' }, { status: 502 })
   }
 }
+
+export const GET = (req: NextRequest, ctx: { params: Promise<{ path: string[] }> }) => proxy(req, ctx, 'GET')
+export const POST = (req: NextRequest, ctx: { params: Promise<{ path: string[] }> }) => proxy(req, ctx, 'POST')

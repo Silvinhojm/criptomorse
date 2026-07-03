@@ -22,8 +22,8 @@ export function BackpackSignalsPanel() {
       setLastUpdate(new Date().toLocaleTimeString())
       setMarketOpen(isUSStockMarketOpen())
       setNyTime(getNYSEtatHour())
-    } catch {
-      // silent
+    } catch (e) {
+      console.warn('[BACKPACK] Scan failed:', e)
     }
     setScanning(false)
   }, [])

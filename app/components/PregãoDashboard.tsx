@@ -222,7 +222,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       pregão.registrarCashBox(walletUsdc, { [rede]: saldosReais })
       setCashBox(pregão.getCashBox())
       addLog(`💼 Saldos registrados: $${walletUsdc.toFixed(2)} USDC, €${eurcBal.toFixed(2)} EURC`)
-    })
+    }).catch(e => addLog(`⚠️ Erro ao trocar rede: ${e instanceof Error ? e.message : e}`))
 
     const startBalanceTimer = () => {
       if (balanceTimerRef.current) clearInterval(balanceTimerRef.current)
@@ -330,7 +330,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       setCicloAtivo(false)
       poolScannerExecutor.stop()
       if (NETWORKS[redeRef.current as NetworkKey]?.isTestnet) {
-        import("@/lib/pregao-arc").then(m => m.parar())
+        import("@/lib/pregao-arc").then(m => m.parar()).catch(e => addLog(`⚠️ Erro ao parar pregao-arc: ${e instanceof Error ? e.message : e}`))
       }
       addLog("⏹️ Ciclo dos Pregueiros parado")
       return

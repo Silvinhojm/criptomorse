@@ -331,7 +331,9 @@ async function fetchPricesBatch(tokens: TokenSymbol[]): Promise<Map<string, numb
         }
       }
     }
-  } catch {}
+  } catch {
+    console.warn('[AGENTES] fetchBatchPrices failed')
+  }
   const result = new Map<string, number>()
   for (const t of tokens) {
     const cached = priceFetchCache.get(t)
@@ -759,7 +761,9 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
           pregão.adicionarLog(`🌾 ${newStables.length} pares stablecoin com micro-trend (score ≥${topStables[0]?.score ?? 0}) no topo da análise`)
         }
       }
-    } catch {}
+    } catch {
+      console.warn('[AGENTES] StablePairs/StableMR check failed')
+    }
 
     await stableMR.check(redeAtual).catch(() => {})
   }
@@ -875,7 +879,9 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
               }]
             }
           }
-        } catch {}
+    } catch {
+      console.warn('[AGENTES] TechnicalAgent/RSI check failed')
+    }
         return []
       })(),
 

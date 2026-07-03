@@ -838,3 +838,35 @@ Overhead: 500-1500ms adicionais. Aceitável para trades de 30-120s.
 - **ARCFLOW.md**: seção 22 atualizada (squeeze, history, parâmetros)
 - **README.md**: Arqueiro adicionado à tabela de módulos
 - **docs/arqueiro-visual.md**: diagrama de estados + curva tensionScore + parâmetros completos
+
+## Session Summary (03/07/2026 noite) — Backpack CORS proxy + SSR guards + catch blocks
+
+### What's Changed
+
+**1. Backpack CORS proxy** — `app/api/backpack/[...path]/route.ts`: novo proxy server-side que redireciona para `api.backpack.exchange`. `MarketDataCollector.ts:84`: `BACKPACK_BASE` condicional (`typeof window`), browser usa `/api/backpack`, Node.js usa URL direta. Resolve CORS do `BackpackSignalsPanel` que chamava a Backpack direto do browser.
+
+**2. Backpack proxy POST** — `app/api/backpack/[...path]/route.ts`: exporta `POST` handler (prepara para futuros endpoints que exijam POST). Refatorado para função `proxy()` compartilhada.
+
+**3. SSR guard em 9 módulos** — 9 construtores de singleton em `lib/` agora checam `typeof window !== 'undefined'` antes de acessar `localStorage`:
+- `accountant.ts`, `position-manager.ts`, `volatility-tracker.ts`, `pregão.ts`, `professor.ts`, `escola-robos.ts`, `pair-sector.ts`, `provao-ranking.ts`, `timing-optimizer.ts`
+- Previne `ReferenceError: localStorage is not defined` durante SSR no Vercel
+
+**4. 5 catch blocks com diagnóstico**:
+- `PregãoDashboard.tsx:225`: `.catch(e => addLog(...))` no `switchNetwork().then()`
+- `PregãoDashboard.tsx:333`: `.catch(e => addLog(...))` no `import("@/lib/pregao-arc").then()`
+- `RealAutomatedTrader.tsx:177`: `refreshStats().catch(e => console.warn(...))` no `setInterval`
+- `BackpackSignalsPanel.tsx:25`: `catch (e) { console.warn(...) }` em vez de `// silent`
+- `agentes-do-pregão.ts:334,764,880`: 3 `catch {}` → `console.warn('[AGENTES] ...')` com mensagens específicas
+
+### Impacto Esperado
+- BackpackSignalsPanel funciona sem CORS no Vercel
+- Nenhum singleton de lib/ quebra SSR durante build/deploy no Vercel
+- Erros de rede, switchNetwork, e ciclos do pregao-arc são logados (não mais silenciosos)
+- refreshStats no RealAutomatedTrader não gera unhandled rejection a cada 8s
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Polygon**: $48.22 USDC, $15.72 POL
+- **Backpack proxy**: GET + POST, timeout 15s, rate limit forwarding
+- **SSR safety**: 11 módulos com guard (9 novos + arc-training + pair-profitability)
+- **Diagnóstico**: catch blocks com console.warn específico em vez de silêncio
