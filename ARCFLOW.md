@@ -1215,11 +1215,12 @@ Refinamento binário: squeeze só é considerado ativo quando as Bandas de Bolli
 
 ```
 Bollinger Width  = 2 × K × stddev(prices, SQUEEZE_WINDOW) / mean
-Keltner Width    = 2 × ATR_mult × pseudoATRLong / mean
+Keltner Width    = 2 × ATR_mult × pseudoATRShort / mean
 Squeeze          = Bollinger Width < Keltner Width
 ```
 
 - `SQUEEZE_WINDOW = 20`, `K = 2`, `ATR_mult = 1.5`
+- Ambos usam a **mesma janela** (pseudoATRShort = média returns absolutos 20 períodos), evitando redundância com `atrPercentile` (que compara curto vs longo).
 
 ### 22.4 Máquina de Estados
 
@@ -1270,6 +1271,7 @@ const score = Math.min(100, Math.round(baseScore * tensionFactor))
 | `CALIBRATION_WINDOW` | 100 | Janela para recalibrar baseline |
 | `RESET_THRESHOLD` | 0.5 (50%) | Mudança no ATR médio que dispara reset |
 | `MAX_ARMED_PAIRS` | 3 | Limite de pares simultâneos ARMADO/DISPARO |
+| `MAX_HISTORY` | 500 | Tamanho máximo do buffer de histórico por par |
 | `CYCLE_MS` | 60.000 | Intervalo de tick periódico (1min) |
 
 ### 22.7 Calibração e Reset
@@ -1288,16 +1290,22 @@ const score = Math.min(100, Math.round(baseScore * tensionFactor))
 
 | Fase | Status | Comportamento |
 |------|--------|---------------|
-| 1 — Shadow | **Atual** (default) | Apenas logs `[ARQUEIRO] 🏹 ... (SHADOW)`. GetScore retorna 0. Sem influência. |
-| 2 — Validação | Futuro | `setShadowMode(false)`. TensionScore ativo. Monitorar logs para validar acertos. |
+| 1 — Shadow | **Atual** (default) | Apenas logs `[ARQUEIRO] 🏹 ... (SHADOW)`. GetScore retorna 0. Sem influência. Histórico real acumulado em `history[]` (500 entradas/par). |
+| 2 — Validação | Futuro | `setShadowMode(false)`. TensionScore ativo. Monitorar logs para validar acertos. Dados históricos da Fase 1 disponíveis via `getAllHistory()`. |
 | 3 — Ativo | Futuro | Operação normal. TensionScore integrado em tempo real. |
 
-### 22.10 Persistência
+### 22.10 Persistência e Histórico
+
+O Arqueiro mantém um buffer de histórico em memória (`history[]` no `PairState`) com as últimas **500** entradas por par, contendo `{ timestamp, tensionScore, state, atrPercentile }`. Este buffer é populado a cada tick independentemente do shadow mode, permitindo:
+
+- Análise retrospectiva dos scores reais durante a Fase 1 (Shadow)
+- Gráficos de evolução do tensionScore ao longo do tempo
+- Exportação via `getHistory(pair, network)` ou `getAllHistory()`
 
 O Arqueiro **não persiste estado em localStorage** intencionalmente:
 - Preço histórico é volátil — recomeçar não causa dano
 - Calibração se restabelece em 100 períodos (~500min)
-- Shadow mode coleta dados desde o início
+- Shadow mode coleta dados desde o início no buffer em memória
 
 ---
 

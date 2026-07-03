@@ -52,6 +52,7 @@ Agentes (13) → Pregão → Escriturário → Capital Controller → Corretor �
 | **marketHours** | Runtime-aware: detecta horário NYSE/NASDAQ (9:30–16:00 ET, seg–sex) para só escanear ações em mercado aberto |
 | **BackpackScanner** | Descoberta dinâmica de símbolos: 3 crypto (BTC, ETH, SOL) + top stocks via `getTopStocksByVolume()`. Escaneia a cada 60s, respeita market hours, ranqueia por score dos agentes. Stock tokens ignoram filtro de liquidez (volume é NASDAQ reference data, não exchange) |
 | **BackpackSignalsPanel** | Painel UI na aba "🎒 Sinais" — seções crypto/stock, indicador NYSE 🟢/🔴, preço adaptativo (6 decimais para micro-tokens) |
+| **Arqueiro** | Modulador de tensão/timing: detecta compressão de volatilidade via pseudo-ATR + squeeze Bollinger/Keltner. TensionScore (0-100) modula confiança das ordens no Pregão. 3 fases de rollout (Shadow → Validação → Ativo). |
 
 ### Agentes de Trading
 

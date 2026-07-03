@@ -815,3 +815,26 @@ Overhead: 500-1500ms adicionais. Aceitável para trades de 30-120s.
 - **Arqueiro**: shadow mode ativo, ciclo 60s, pseudo-ATR 20/100, squeeze Bollinger/Keltner, MAX_ARMED_PAIRS=3
 - **Integração**: feedPrice em verificarOrdem, tensionScore modula confiança (shadow), modula score CapitalController (shadow)
 - **ARCFLOW.md**: atualizado com seção 22 (Arqueiro) + seção 23 (Visão Arquitetural) + módulo adicionado no mapa
+
+## Session Summary (03/07/2026 tarde) — 4 Fixes pós-revisão do Silvio
+
+### What's Changed
+
+1. **History buffer para Fase 2** — `lib/arqueiro.ts`: `PairState.history[]` (500 entradas) populado a cada tick com `{ timestamp, tensionScore, state, atrPercentile }`. Independente de shadow mode. `getHistory(pair, network)` e `getAllHistory()` expõem os dados reais acumulados para análise na Fase 2.
+
+2. **Keltner squeeze corrigido** — `lib/arqueiro.ts:118`: `kw` usava `pseudoATRLong` (100p) — essencialmente a mesma informação que `atrPercentile` já capturava (short/long), tornando o squeeze redundante. Corrigido para `pseudoATRShort` (20p): Bollinger e Keltner agora medem a mesma janela, squeeze é uma leitura independente do score.
+
+3. **SectionMatch display:none** — `app/page.tsx:582-586`: `SectionMatch` retornava `null` para seções não-ativas → React desmontava `RealAutomatedTrader`, `PregãoDashboard` etc. ao navegar entre abas, perdendo estado de conexão. Agora usa `display: none`, mantendo componentes vivos no DOM.
+
+4. **shadowMode guard real** — `lib/arqueiro.ts:254-258`: `getScore()` agora checa `_shadowMode` antes de retornar `tensionScore`. Confirmado que as duas integrações no pregão (verificarOrdem:392, executarPacotes:885) recebem 0 → inertes.
+
+5. **sendStressTx burn address** — `lib/job-robot.ts:157-183`: tx mudou de `to: self, value: 0n` (rejeitado como no-op pelo nó) para `to: 0x00..01, value: 1n`. Gas multiplier corrigido de `*1n/100n` (1%) para `*100n/100n` (100%).
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Arqueiro**: history buffer ativo, squeeze usa pseudoATRShort, shadow mode verdadeiro (score=0)
+- **Dashboard**: wallet mantém conexão ao navegar entre seções (display:none)
+- **JobRobot**: stress tx envia 1 wei pra burn address com gas fee correto
+- **ARCFLOW.md**: seção 22 atualizada (squeeze, history, parâmetros)
+- **README.md**: Arqueiro adicionado à tabela de módulos
+- **docs/arqueiro-visual.md**: diagrama de estados + curva tensionScore + parâmetros completos
