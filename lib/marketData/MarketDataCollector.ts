@@ -256,37 +256,13 @@ export class MarketDataCollector {
     const cached = this.getFromCache<StockCandidate[]>(cacheKey)
     if (cached) return cached
 
-    const markets = await this.getMarkets('SPOT')
-    const stockMarkets = markets.filter(m => m.symbol.includes('.US_'))
-    if (stockMarkets.length === 0) return []
-
-    const candidates: StockCandidate[] = await Promise.all(
-      stockMarkets.map(async (m) => {
-        try {
-          const ticker = await this.getTicker(m.symbol)
-          return {
-            symbol: m.symbol,
-            baseSymbol: m.baseSymbol,
-            quoteVolume24h: ticker.quoteVolume24h,
-            trades: ticker.trades,
-          }
-        } catch {
-          return { symbol: m.symbol, baseSymbol: m.baseSymbol, quoteVolume24h: 0, trades: 0 }
-        }
-      })
-    )
-
-    // Stock tokens have quoteVolume24h = 0 (NASDAQ ref data). Sort by trades count
-    // as a proxy for "this stock has market activity" (even trades are NASDAQ ref data,
-    // correlated with popularity). Crypto candidates won't appear here since stockMarkets
-    // only includes .US_ symbols.
-    const sorted = candidates
-      .filter(c => c.trades > 0)
-      .sort((a, b) => b.trades - a.trades)
-      .slice(0, limit)
-
-    this.setCache(cacheKey, sorted)
-    return sorted
+    // Backpack lists .US_ symbols in the markets endpoint but does NOT support
+    // ticker/klines endpoints for them — they return 204 No Content.
+    // Skip stock scanning until a dedicated stock data provider (e.g. Brapi,
+    // Twelve Data) is integrated. Crypto-only for now.
+    const result: StockCandidate[] = []
+    this.setCache(cacheKey, result)
+    return result
   }
 
   clearCache(): void {
