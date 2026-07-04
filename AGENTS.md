@@ -870,3 +870,16 @@ Overhead: 500-1500ms adicionais. Aceitável para trades de 30-120s.
 - **Backpack proxy**: GET + POST, timeout 15s, rate limit forwarding
 - **SSR safety**: 11 módulos com guard (9 novos + arc-training + pair-profitability)
 - **Diagnóstico**: catch blocks com console.warn específico em vez de silêncio
+
+## Session Summary (03/07/2026 noite) — SectionMatch remount fix + ArqueiroPanel
+
+### What's Changed
+
+1. **SectionMatch remount fix** — `app/page.tsx:582-586`: `SectionMatch` alternava entre `<div style="display:none">` (inativo) e `{children}` (ativo) — tipos de React diferentes (div vs fragment) → React desmontava e remontava `PregãoDashboard`, `RealAutomatedTrader` e demais filhos a cada troca de aba. Agora sempre retorna `<div>`, alternando `display:none` / `display:contents`. Componentes mantêm estado (private key, wallet, ciclos).
+
+2. **ArqueiroPanel** — `app/components/ArqueiroPanel.tsx`: novo painel que exibe em tempo real o estado de cada par monitorado pelo Arqueiro (OCIOSO/TENSIONANDO/ARMADO/DISPARO/DESARMADO), tensionScore, atrPercentile, squeeze. Adicionado na aba "Auto Trader" abaixo do `PregãoDashboard`.
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Arqueiro**: shadow mode, painel visível na aba Auto Trader, polling 5s
+- **SectionMatch**: display:contents evita remount — wallet/key/estado preservados entre abas

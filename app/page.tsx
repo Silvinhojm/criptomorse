@@ -16,6 +16,7 @@ import { NanopaymentDashboard } from "./components/NanopaymentDashboard";
 import { BridgeWidget } from "./components/BridgeWidget";
 import { BotBank } from "./components/BotBank";
 import { BackpackSignalsPanel } from "./components/BackpackSignalsPanel";
+import { ArqueiroPanel } from "./components/ArqueiroPanel";
 
 // Agents (usados no connect)
 import { quantumAgent, technicalAgent, synthesisAgent } from "../lib/multi-agent-system";
@@ -911,6 +912,7 @@ export default function Home() {
           <SectionMatch section="trading"><RealAutomatedTrader account={account} currentNetwork={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} /></SectionMatch>
           <SectionMatch section="payments"><NanopaymentDashboard agentScores={agentScores} /></SectionMatch>
           <SectionMatch section="trading"><PregãoDashboard rede={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} /></SectionMatch>
+          <SectionMatch section="trading"><ArqueiroPanel /></SectionMatch>
           <SectionMatch section="signals"><BackpackSignalsPanel /></SectionMatch>
           <SectionMatch section="classroom"><SalaDeAula /></SectionMatch>
         </div>
