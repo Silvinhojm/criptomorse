@@ -189,6 +189,17 @@ export async function executeDirectSwap(
       };
     }
 
+    // Guard: se não há AMM nem DEX para este par em testnet,
+    // retorna erro em vez de fazer self-transfer (swap falso)
+    const NATIVE = '0x0000000000000000000000000000000000000000';
+    if (isTestnetChain(chainId) && fromLower !== NATIVE && toLower !== NATIVE) {
+      const poolKey = `${fromLower}:${toLower}`;
+      if (!AMM_PAIRS[poolKey]) {
+        log(`⛔ Sem rota de swap real para ${fromName} → ${toToken.slice(0, 8)} em testnet`);
+        return { success: false, error: `Sem rota de swap real para este par em testnet (sem AMM/DEX)` };
+      }
+    }
+
     let txHash: string | null = null;
 
     // 1. Tentar approve + transfer ERC20 (gera transações reais na chain)
@@ -213,7 +224,6 @@ export async function executeDirectSwap(
       log(`✅ Transferência confirmada: ${txHash}`);
     } catch (contractErr: any) {
       // 2. Fallback: native transfer via value — SÓ se for token nativo
-      const NATIVE = '0x0000000000000000000000000000000000000000';
       if (fromToken !== NATIVE && toToken !== NATIVE) {
         log(`⛔ Value transfer bloqueado: ${fromToken.slice(0, 10)} não é token nativo`);
         throw new Error('Nenhuma rota disponível para este par na testnet');
