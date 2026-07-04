@@ -18,7 +18,7 @@ async function getLifiQuote(fromToken: string, toToken: string, amount: string, 
 export async function POST(req: Request) {
   try {
     const body = await req.json()
-    const privateKey = body.privateKey || process.env.PRIVATE_KEY
+    const privateKey = body.privateKey || process.env.PRIVATE_KEY_STRESS || process.env.PRIVATE_KEY
     
     if (!privateKey || privateKey.length < 64) {
       return NextResponse.json(

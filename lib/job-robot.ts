@@ -10,6 +10,7 @@ import { createViemAdapterFromPrivateKey } from '@circle-fin/adapter-viem-v2'
 import { defineChain, createWalletClient, createPublicClient, http } from 'viem'
 import { JOB_PROOF_BYTECODE, JOB_PROOF_ABI } from './contracts'
 import { NonceManager } from "./nonce-manager"
+import { hasSellRoute } from './route-verifier'
 
 const ARC_RPC = 'https://rpc.testnet.arc.network'
 const ARC_CHAIN_ID = 5042002
@@ -154,10 +155,31 @@ class JobRobot {
     ])
   }
 
-  /** Envia uma tx de 1 wei para burn address como stress test na Arc */
+  /** Recupera a chave privada separada para stress test (evita nonce collision) */
+  private _getStressPrivateKey(): string {
+    if (typeof process !== 'undefined' && process.env.PRIVATE_KEY_STRESS) {
+      return process.env.PRIVATE_KEY_STRESS
+    }
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('arcflow_private_key_stress') ?? ''
+    }
+    return ''
+  }
+
+  /** Envia uma tx de 1 wei para burn address como stress test na Arc.
+   *  Usa PRIVATE_KEY_STRESS (carteira separada) para não colidir nonce com swaps reais. */
   async sendStressTx(robotName: string, jobNumber: number): Promise<SwapResult> {
+    const stressKey = this._getStressPrivateKey()
+    if (!stressKey || stressKey.length < 64) {
+      return {
+        success: false,
+        stage: 'stress-error',
+        error: 'PRIVATE_KEY_STRESS não configurada — stress tx desativado',
+        retryCount: 0,
+      }
+    }
     const provider = new ethers.JsonRpcProvider(ARC_RPC)
-    const wallet = new ethers.Wallet(this._privateKey, provider)
+    const wallet = new ethers.Wallet(stressKey, provider)
     const address = wallet.address
     const BURN = '0x0000000000000000000000000000000000000001'
     const maxAttempts = 2
@@ -224,6 +246,16 @@ class JobRobot {
 
     this.cycleCount++
     const pair = SWAP_PAIRS[this.cycleCount % SWAP_PAIRS.length]
+
+    // Gate pré-trade: verificar se o token comprado tem rota de venda conhecida
+    if (pair.tokenOut !== 'USDC' && pair.tokenOut !== 'EURC' && !hasSellRoute(pair.tokenOut, 'arc')) {
+      return {
+        success: false,
+        stage: 'blocked',
+        error: `Par bloqueado: ${pair.tokenOut} não tem rota de venda conhecida na Arc testnet`,
+        retryCount: 0,
+      }
+    }
 
     // Circuit breaker: após 3 falhas consecutivas de swap para de tentar
     if (this.consecutiveFails >= 3) {

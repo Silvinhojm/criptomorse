@@ -264,3 +264,198 @@ são gerenciáveis. Bugs em contratos de custódia de terceiros são perda de re
 e potencial passivo legal. A decisão de avançar com um contrato de custódia deve ser
 **separada** da decisão técnica de implementá-lo — e tomada conscientemente, não por
 arrastamento de uma discussão sobre gas.
+
+---
+
+## [04/07/2026] Nonce collision entre stress test e swaps reais — wallet separada
+
+**Severidade:** Alta
+**Status:** Resolvido
+
+### O que aconteceu
+
+O `JobRobot` (`lib/job-robot.ts:sendStressTx()`) envia transações de 1 wei para burn address
+como stress test na Arc testnet. Essas transações usam a **mesma private key** que os swaps reais
+do sistema (corretor em `real-swap-executor.ts`), e ambas passam pelo `NonceManager` singleton
+(`lib/nonce-manager.ts`). Mesmo com o mutex do NonceManager, duas chamadas `getNonce()` em
+provedores diferentes (provider do signer vs provider do stress test) podiam colidir quando
+executadas em concorrência real — resultado: `"nonce has already been used"`.
+
+### Causa raiz
+
+O NonceManager serializa chamadas `getNonce()` via Promise-mutex, mas:
+1. `job-robot.ts:sendStressTx()` e `arc-direct-swap.ts:executeDirectSwap()` são chamados em
+   caminhos de código independentes (um no ciclo do Contratante, outro no Pregão), sem
+   coordenação entre si.
+2. Ambos usam `NonceManager.getInstance().getNonce(provider, chainId, address)` com o **mesmo
+   endereço** (mesma private key).
+3. O NonceManager rastreia nonces por `chainId:address` — mesmo endereço = mesma sequência.
+
+### Segunda opinião técnica
+
+Uma segunda opinião (Qwen) foi consultada sobre a arquitetura de longo prazo (wallet pool com
+Redis, fila distribuída). A recomendação foi: wallet pool é correta para escala futura (3+
+fluxos concorrentes), mas desproporcional para os 2 fluxos atuais. Decisão: manter wallet
+separada e documentar wallet pool como próximo passo conhecido.
+
+### Correção aplicada
+
+- `lib/job-robot.ts:sendStressTx()`: lê `PRIVATE_KEY_STRESS` (env ou localStorage key
+  `arcflow_private_key_stress`) e cria wallet separada para stress tx. Se vazia, stress tx
+  é desativado com erro `"PRIVATE_KEY_STRESS não configurada"`.
+- NonceManager passa a gerenciar nonces de **dois endereços diferentes** (main + stress) →
+  sequências independentes → zero colisão.
+- `.env.example`: documentado `PRIVATE_KEY_STRESS`.
+- `app/api/stress-test/route.ts`: continua aceitando `body.privateKey` da UI (já lia
+  `arcflow_stress_test_key` do localStorage) — compatível com ambas as chaves.
+
+### Não implementado (documentado como próximo passo)
+
+- Wallet pool com Redis para gerenciamento de nonce distribuído — implementar quando houver
+  3+ fluxos concorrentes reais.
+- NonceManager nativo do ethers.js v6 — suficiente para o estágio atual (2 endereços).
+
+---
+
+## [04/07/2026] RouteVerifier: verificação de rota de venda via Multicall3 + gate pré-trade
+
+**Severidade:** Alta
+**Status:** Resolvido
+
+### O que aconteceu
+
+O sistema abriu posições em `cirBTC` e `mcirBTC` na Arc testnet (3 transações confirmadas:
+`0x3a3aac0f`, `0x46ed395a`, `0xf673260c`) sem que existisse rota de venda (DEX pool) para
+revendê-las. A única pool existente na Arc (`GenericAMMPair` em `0xA1e418D16C969FDb9482716C7e2bD3d31872EBfb`)
+só suporta o par USDC/EURC. Isso gerou posições permanentemente presas — o token comprado
+não pode ser vendido de volta.
+
+### Causa raiz
+
+Nenhum gate pré-trade verificava se o token comprado tinha uma rota de venda registrada antes
+de executar a compra. O `arc-direct-swap.ts` só bloqueava `value transfer` para tokens não-nativos,
+mas não impedia a compra em primeiro lugar.
+
+### Método: Multicall3 + cálculo local de AMM
+
+Implementado em `lib/route-verifier.ts`:
+
+1. **Registro de pools conhecidas**: mapa `KNOWN_POOLS[chainId]` com endereço, token0, token1,
+   fee, e flag stablecoin. Arc testnet: GenericAMMPair (USDC/EURC). Polygon: dinâmico via
+   PoolProfiler (preenchido sob demanda).
+
+2. **Multicall3 para batch de reservas**: `checkRouteViaMulticall()` usa `Multicall3.aggregate3`
+   (mesmo contrato `0xcA11bde05977b3631167028862bE2a173976CA11` usado em `ultraflash.ts`) para
+   buscar `getReserves()` de todas as pools relevantes em uma única chamada RPC — em vez de
+   N chamadas individuais.
+
+3. **Cálculo local de output**: `estimateAMMOutput()` implementa a fórmula `x*y=k` com fee:
+   ```
+   amountInWithFee = amountIn * feeBps / 10000
+   numerator = amountInWithFee * reserveOut
+   denominator = reserveIn + amountInWithFee
+   output = numerator / denominator
+   ```
+   Sem `staticCall` durante a verificação — só no momento de assinar a transação.
+
+4. **Cache de 60s**: resultados de `hasSellRoute()` são cacheados para evitar repetir chamadas
+   Multicall3 em ciclos rápidos.
+
+### Gate aplicado em dois pontos
+
+| Local | Arquivo | Comportamento |
+|-------|---------|---------------|
+| JobRobot | `lib/job-robot.ts:executeSwap()` | Antes de executar swap no ciclo do Contratante |
+| RealSwapExecutor | `lib/real-swap-executor.ts:1165` | Antes de cair em `executeDirectSwap()` na testnet |
+
+Ambos chamam `hasSellRoute(toToken, networkKey)`. Se o token não tem rota de venda, o swap
+é abortado com `"Par bloqueado: X sem rota de saída"` e o erro é registrado.
+
+### Posições já presas
+
+As 3 posições abertas antes do gate não são resgatadas automaticamente. Para resgatá-las:
+1. Verificar se `GenericAMMPair` pode receber liquidez do par cirBTC/USDC (requer deploy de
+   novo par ou adicionar liquidez ao existente).
+2. **Alternativa preferida**: aceitar a perda e documentar como custo de aprendizado.
+
+### Segunda opinião
+
+A segunda opinião (Qwen) recomendou usar Multicall3 para batch-fetch de reservas + cálculo
+local de AMM em vez de `staticCall`s individuais, e reservar `staticCall` só para o momento
+de assinar. Implementado conforme recomendado. A recomendação de não criar "walled garden"
+(liquidez própria) para validar fechamento foi acatada — o gate pré-trade é a barreira
+correta, não liquidez simulada.
+
+---
+
+## [04/07/2026] ICircuitBreaker: interface unificada para saúde de rota e financeira
+
+**Severidade:** Média
+**Status:** Resolvido
+
+### O que aconteceu
+
+O `circuit-breaker.ts` existente tinha funções soltas (`recordRouteError`, `recordTradeResult`,
+`blockIfPanicked`) sem interface comum. Todo novo módulo que precisava de proteção contra
+falhas repetidas reinventava sua própria lógica de contagem (ex: `contratante.ts` com
+`consecutiveFails`, `job-robot.ts` com `consecutiveFails`). Isso levou a:
+- Duas implementações paralelas de circuit breaker com políticas diferentes
+- Nenhuma maneira padronizada de consultar estado
+- Nenhuma interface que permitisse ao orquestrador executar `if (routeCB.isOpen() || financialCB.isOpen()) return halt()`
+
+### Correção aplicada
+
+Interface `ICircuitBreaker` em `lib/circuit-breaker.ts`:
+
+```typescript
+interface ICircuitBreaker {
+  recordSuccess(): void
+  recordFailure(reason?: string): void
+  isOpen(): boolean
+  getName(): string
+  getStatus(): { open: boolean; consecutiveFailures: number; cooldownUntil: number | null }
+}
+```
+
+Duas implementações:
+
+| Classe | Política | Cooldown | Uso |
+|--------|----------|----------|-----|
+| `RouteCircuitBreaker` | 5 falhas consecutivas | 20 min | LI.FI, DEX direto |
+| `FinancialCircuitBreaker` | Perdas/drawdown | Pânico global | Trades |
+
+Singletons exportados: `lifiRouteCB`, `dexDirectRouteCB`, `financialCB`.
+
+### Próximo passo (não implementado agora)
+
+Integrar `ICircuitBreaker` no orquestrador de trades (`pregão.ts`):
+```typescript
+if (lifiRouteCB.isOpen() || financialCB.isOpen()) {
+  return halt('Circuit breaker aberto')
+}
+```
+Isso requer mudança no fluxo do Pregão que foge do escopo desta sessão. Fica como próximo
+passo documentado.
+
+---
+
+## [04/07/2026] Arc Testnet: `eth_subscribe` não suportado
+
+**Severidade:** Informativo
+**Status:** Verificado
+
+### Resultado do teste
+
+Testado contra ambos os endpoints RPC da Arc testnet:
+- `https://rpc.testnet.arc.network` → `"code":-32603,"message":"Internal error"`
+- `https://rpc.testnet.arc.io` → resposta vazia
+
+Conclusão: `eth_subscribe` **não é suportado** via HTTP. WebSocket subscriptions requerem
+URL ws/wss que não está disponível publicamente para a Arc testnet.
+
+### Implicação
+
+O monitoramento de blocos e eventos continua usando polling (atual: 2-8s de intervalo).
+Nenhuma mudança de arquitetura necessária. Se no futuro um endpoint WebSocket for disponibilizado
+para a Arc, migrar para event-driven reduz latência de detecção de novos blocos, mas não
+altera a lógica de negócio — apenas a eficiência de polling.

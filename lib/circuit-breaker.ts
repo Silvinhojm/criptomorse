@@ -1,5 +1,92 @@
 ﻿import { saveCircuitBreakerState, loadCircuitBreakerState } from "./persistence";
 
+// ─── ICircuitBreaker Interface ────────────────────────────────────────────────
+// Interface unificada para todos os circuit breakers do sistema.
+// Cada implementação tem sua própria política de limiar e timeout.
+
+export interface ICircuitBreaker {
+  recordSuccess(): void
+  recordFailure(reason?: string): void
+  isOpen(): boolean
+  getName(): string
+  getStatus(): { open: boolean; consecutiveFailures: number; cooldownUntil: number | null }
+}
+
+// ─── RouteCircuitBreaker ──────────────────────────────────────────────────────
+// Monitora saúde de uma rota específica (LI.FI, DEX direto, etc).
+// Abre após 5 falhas consecutivas, cooldown de 20 minutos.
+
+export class RouteCircuitBreaker implements ICircuitBreaker {
+  private routeName: string
+  private _consecutiveFailures = 0
+  private _cooldownUntil: number | null = null
+  private readonly MAX_ERRORS = 5
+  private readonly COOLDOWN_MS = 20 * 60 * 1000
+
+  constructor(routeName: string) {
+    this.routeName = routeName
+  }
+
+  recordSuccess(): void {
+    this._consecutiveFailures = 0
+    this._cooldownUntil = null
+  }
+
+  recordFailure(reason?: string): void {
+    this._consecutiveFailures++
+    console.warn(`🗺️ ${this.routeName}: erro #${this._consecutiveFailures}${reason ? ` — ${reason}` : ''}`)
+    if (this._consecutiveFailures >= this.MAX_ERRORS && !this._cooldownUntil) {
+      this._cooldownUntil = Date.now() + this.COOLDOWN_MS
+      console.warn(`🔇 ${this.routeName} em cooldown até ${new Date(this._cooldownUntil).toLocaleTimeString()}`)
+    }
+  }
+
+  isOpen(): boolean {
+    if (!this._cooldownUntil) return false
+    if (Date.now() >= this._cooldownUntil) {
+      this._consecutiveFailures = 0
+      this._cooldownUntil = null
+      return false
+    }
+    return true
+  }
+
+  getName(): string { return this.routeName }
+  getStatus(): { open: boolean; consecutiveFailures: number; cooldownUntil: number | null } {
+    return { open: this.isOpen(), consecutiveFailures: this._consecutiveFailures, cooldownUntil: this._cooldownUntil }
+  }
+}
+
+// ─── FinancialCircuitBreaker ──────────────────────────────────────────────────
+// Monitora saúde financeira (lucro/prejuízo). Abre após perdas consecutivas
+// ou drawdown acima do limite. Delega ao state global do circuit-breaker.ts.
+
+export class FinancialCircuitBreaker implements ICircuitBreaker {
+  getName(): string { return 'Financial' }
+
+  recordSuccess(): void {
+    // recordTradeResult com lucro positivo já zera consecutiveLosses
+  }
+
+  recordFailure(reason?: string): void {
+    recordError('FinancialCircuitBreaker', reason ?? 'perda financeira')
+  }
+
+  isOpen(): boolean {
+    return blockIfPanicked()
+  }
+
+  getStatus(): { open: boolean; consecutiveFailures: number; cooldownUntil: number | null } {
+    const s = getCircuitBreakerState()
+    return { open: s.isPanicActive, consecutiveFailures: s.consecutiveLosses, cooldownUntil: null }
+  }
+}
+
+// Instâncias singleton
+export const lifiRouteCB = new RouteCircuitBreaker('LI.FI')
+export const dexDirectRouteCB = new RouteCircuitBreaker('DEX_Direto')
+export const financialCB = new FinancialCircuitBreaker()
+
 type RouteHealth = {
   consecutiveErrors: number;
   cooldownUntil: number | null;

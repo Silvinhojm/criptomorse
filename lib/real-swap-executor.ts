@@ -16,6 +16,7 @@ import { CCTP_CONFIG, cctpService } from "./cctp";
 import { unifiedBalance } from "./unified-balance";
 import { caixa } from "./caixa";
 import { hasDirectDex, getDirectDexQuote, executeDirectDexSwap, calculateAmountOutMin } from "./direct-dex";
+import { hasSellRoute } from "./route-verifier";
 
 const BALANCE_STORAGE_KEY_PREFIX = "arcflow_token_balances_"
 
@@ -1162,6 +1163,11 @@ class RealSwapExecutor {
       // Escolhe a melhor rota (maior output estimado)
       if (routes.length === 0) {
         if (net.isTestnet && this.signer) {
+          // Gate pré-trade: verificar se o token comprado tem rota de venda
+          if (!isStable(toToken) && !hasSellRoute(toToken, this.networkKey)) {
+            log(`⛔ Gate: ${toToken} não tem rota de venda conhecida em ${this.networkKey} — abortando`);
+            return this._fail(fromToken, toToken, amountUsd, `Par bloqueado: ${toToken} sem rota de saída`, timestamp);
+          }
           log(`🧪 Nenhuma rota LI.FI/DEX — executando transação direta na testnet (stress)`);
           const directResult = await executeDirectSwap(this.signer, fromTokenAddr, toTokenAddr, fromAmountRaw, this.userAddress, net.chainId, (m) => log(m));
           if (directResult.success) {
