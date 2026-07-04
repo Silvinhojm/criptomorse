@@ -155,13 +155,20 @@ class JobRobot {
     ])
   }
 
-  /** Recupera a chave privada separada para stress test (evita nonce collision) */
+  /** Recupera a chave privada separada para stress test (evita nonce collision).
+   *  Se PRIVATE_KEY_STRESS não estiver configurada, usa a mesma wallet dos swaps
+   *  com warning (nonce compartilhado, mas funcional). */
   private _getStressPrivateKey(): string {
     if (typeof process !== 'undefined' && process.env.PRIVATE_KEY_STRESS) {
       return process.env.PRIVATE_KEY_STRESS
     }
     if (typeof window !== 'undefined') {
-      return localStorage.getItem('arcflow_private_key_stress') ?? ''
+      const dedicated = localStorage.getItem('arcflow_private_key_stress')
+      if (dedicated) return dedicated
+    }
+    if (this._privateKey) {
+      console.warn('[JOB-ROBOT] ⚠️ PRIVATE_KEY_STRESS não configurada — usando mesma wallet (nonce compartilhado)')
+      return this._privateKey
     }
     return ''
   }
