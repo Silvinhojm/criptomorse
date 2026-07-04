@@ -53,6 +53,9 @@ Agentes (13) → Pregão → Escriturário → Capital Controller → Corretor �
 | **BackpackScanner** | Descoberta dinâmica de símbolos: 3 crypto (BTC, ETH, SOL) + top stocks via `getTopStocksByVolume()`. Escaneia a cada 60s, respeita market hours, ranqueia por score dos agentes. Stock tokens ignoram filtro de liquidez (volume é NASDAQ reference data, não exchange) |
 | **BackpackSignalsPanel** | Painel UI na aba "🎒 Sinais" — seções crypto/stock, indicador NYSE 🟢/🔴, preço adaptativo (6 decimais para micro-tokens) |
 | **Arqueiro** | Modulador de tensão/timing: detecta compressão de volatilidade via pseudo-ATR + squeeze Bollinger/Keltner. TensionScore (0-100) modula confiança das ordens no Pregão. 3 fases de rollout (Shadow → Validação → Ativo). |
+| **Batch Executor** | Execução em lote com contrato próprio (`BatchExecutor.sol`), pré-simulação via `eth_call` antes de gastar gas, e cálculo local de AMM. Acumula 8s/10 ordens, lock único no CapitalController. |
+| **Route Verifier** | Verifica se um token tem rota de venda antes de permitir a compra. Usa Multicall3 para batch de reservas de pools, calcula output local via `x*y=k`. Bloqueia cirBTC/mcirBTC na Arc testnet. |
+| **ICircuitBreaker** | Interface unificada para health-check: `RouteCircuitBreaker` (5 falhas → 20min cooldown) + `FinancialCircuitBreaker` (delega ao pânico financeiro existente). |
 
 ### Agentes de Trading
 
@@ -72,6 +75,7 @@ Cada agente tem parâmetros individuais (confiança mínima, threshold de entrad
 | AgenticCommerce (ERC-8183) v1 | `0x319227cf1de5c61d11313af8226a8f5309fa70d9` | [ArcScan](https://testnet.arcscan.app/address/0x319227cf1de5c61d11313af8226a8f5309fa70d9) |
 | AgenticCommerce (ERC-8183) v2 | `0x0747EEf0706327138c69792bF28Cd525089e4583` | [ArcScan](https://testnet.arcscan.app/address/0x0747EEf0706327138c69792bF28Cd525089e4583) |
 | AMM USDC/EURC (GenericAMMPair) | `0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb` | [ArcScan](https://testnet.arcscan.app/address/0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb) |
+| BatchExecutor | Pendente (deploy via `scripts/deployBatchExecutorArc.js`) | — |
 
 ### Base Mainnet
 
@@ -276,6 +280,10 @@ arcflow/
 - [ ] Migração para Arc Mainnet (aguardando lançamento — verão 2026)
 - [ ] Integração x402 para micropagamentos entre agentes
 - [ ] Arc Privacy Sector para estratégias confidenciais
+- [x] Batch Executor com pré-simulação eth_call + contrato próprio
+- [x] RouteVerifier: verificação de rota de venda via Multicall3 antes de comprar
+- [x] ICircuitBreaker: interface unificada (rota + financeiro)
+- [x] Nonce collision: wallet separada para stress test (PRIVATE_KEY_STRESS)
 - [ ] Agente FX Arbitrage: spread StableFX vs AMM público
 - [ ] Unified Balance (Circle API plano pago)
 

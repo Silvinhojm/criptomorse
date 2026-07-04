@@ -1,3 +1,80 @@
+## Session Summary (04/07/2026) — Batch Executor + 3 AI Consensus + Route Verifier + Nonce Fix
+
+### What's Changed
+
+1. **Batch Executor** — `contracts/BatchExecutor.sol` (novo contrato próprio com Pausable + Ownable + ReentrancyGuard), `lib/BatchExecutorService.ts` (service layer com pré-simulação eth_call, acumulação 8s/10 ordens, cálculo AMM local), integrado em `pregão.ts:executarPacotes()` via `simulateOnly()` antes de gastar gas.
+
+2. **Route Verifier** — `lib/route-verifier.ts`: verifica rota de venda via Multicall3 (`getReserves()` em lote), calcula output local via `x*y=k` com fee 0.3%. Integrado em `job-robot.ts` e `real-swap-executor.ts` — bloqueia compra de tokens sem rota de venda (cirBTC/mcirBTC na Arc).
+
+3. **ICircuitBreaker interface** — `lib/circuit-breaker.ts`: `RouteCircuitBreaker` (5 falhas consecutivas → 20min cooldown) + `FinancialCircuitBreaker` (wrapper do circuit breaker financeiro existente). Ambos implementam `check(): HealthStatus`.
+
+4. **Nonce collision fix** — `lib/job-robot.ts:sendStressTx()`: wallet separada via `PRIVATE_KEY_STRESS` (variável de ambiente). Antes usava mesma wallet dos swaps reais → nonce collision com NonceManager.
+
+5. **Arc WebSocket** — Testado: `eth_subscribe` retorna `"Internal error"` — não suportado na Arc. Mantido polling HTTP.
+
+### Arquitetura — 3 AI Consensus (04/07/2026)
+
+5 sugestões analisadas por 3 IAs (DeepSeek + 2):
+
+| # | Sugestão | Veredito | Razão |
+|---|----------|----------|-------|
+| 1 | **Batch Executor** | ✅ IMPLEMENTADO | Único ganho real para $65 capital — diluir gas |
+| 2 | **Dark Pool P2P** | ❌ CANCELADA | "Voto duplo nos dois lados" é bug arquitetural |
+| 3 | **JIT Liquidity** | ❌ CANCELADA | 3× não + contradiz decisão Kelly/tensionScore |
+| 4 | **Paymaster 4337** | ❌ CANCELADA | $1.50/mês de economia não justifica complexidade |
+| 5 | **Cross-Chain Netting** | ❌ CANCELADA | Complexidade desproporcional para 2 chains ativas |
+
+### Batch Executor — Arquitetura
+
+```
+┌──────────────┐    8s / 10 ordens    ┌──────────────────────┐
+│  Pregão      │ ──────────────────►  │ BatchExecutorService │
+│ executarPac. │                      │                      │
+│              │ ◄─────────────────── │ 1. Acumular ordens    │
+│              │   simulated OK/FAIL  │ 2. Simulate (eth_call)│
+│              │                      │ 3. Submit tx on-chain │
+│              │   simulateOnly()     │ 4. Parse resultados   │
+└──────────────┘                      └───────┬──────────────┘
+                                              │
+                                    ┌─────────▼──────────┐
+                                    │  BatchExecutor.sol  │
+                                    │  submitBatch()      │
+                                    │  executeBatch()     │
+                                    │  pause()/unpause()  │
+                                    └─────────────────────┘
+```
+
+### Arquivos Criados
+| Arquivo | Descrição |
+|---------|-----------|
+| `contracts/BatchExecutor.sol` | Contrato: submitBatch, executeBatch, estimateBatch, pause (168 linhas) |
+| `lib/BatchExecutorService.ts` | Service layer: accumulate, simulateOnly, executeBatch (152 linhas) |
+| `lib/route-verifier.ts` | Verificação de rota de venda via Multicall3 + AMM (126 linhas) |
+| `scripts/deployBatchExecutorArc.js` | Deploy na Arc testnet (48 linhas) |
+
+### Arquivos Modificados
+| Arquivo | Mudança |
+|---------|---------|
+| `lib/circuit-breaker.ts` | ICircuitBreaker interface + RouteCircuitBreaker + FinancialCircuitBreaker |
+| `lib/job-robot.ts` | PRIVATE_KEY_STRESS wallet separada, route gate via hasSellRoute() |
+| `lib/real-swap-executor.ts` | Route gate via hasSellRoute() antes de comprar tokens Arc |
+| `lib/pregão.ts` | BatchExecutorService.simulateOnly() em executarPacotes() |
+
+### Próximos Passos
+1. Testar Batch Executor na Arc Testnet (gasless)
+2. Medir economia real de gas vs execução individual
+3. Se funcionar, deploy na Polygon (com capital real)
+4. Monitorar por 1 semana
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Polygon**: ~$63.94 (ativos). Batch executor ainda não deployado na Polygon.
+- **Arc Testnet**: BatchExecutor.sol deployado, route gate ativo (bloqueia cirBTC/mcirBTC sem rota de venda)
+- **Nonce**: wallet stress test isolada, sem colisão com NonceManager
+- **Route Verifier**: bloca compra sem rota de venda — commodity antes de security
+- **ARCFLOW.md**: seções 53-55 adicionadas (Batch Executor, Decisões Arquiteturais, Novos Módulos)
+- **README.md**: tabela de módulos + contratos + roadmap atualizados
+
 <!-- BEGIN:nextjs-agent-rules -->
 # This is NOT the Next.js you know
 

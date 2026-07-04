@@ -13,6 +13,7 @@ import { stableMR } from "./stable-mr"
 import { capitalController } from "./capital-controller"
 import { positionManager } from "./position-manager"
 import { arqueiro } from "./arqueiro"
+import { batchExecutorService, type BatchExecOrder } from "./BatchExecutorService"
 
 export interface PackageResult {
   id: string
@@ -878,6 +879,30 @@ class Pregão {
       this._savePackageResults()
       this.log(`[PREGÃO] 📝 Pacote ${pacote.id}: ${tradesOk}/${swaps.length} simulado | lucro: $${profitReal.toFixed(4)}`)
       return
+    }
+
+    // 🔬 Pre-simulação via eth_call antes de gastar gas
+    const batchOrders: BatchExecOrder[] = swaps.map((sw, i) => {
+      const trade = pacote.trades[i]
+      return {
+        fromToken: sw.fromToken, toToken: sw.toToken,
+        amountRaw: BigInt(sw.amountRaw.toString()), amountUsd: sw.amountUsd,
+        target: sw.target, calldata: sw.calldata,
+        value: BigInt(sw.value?.toString() ?? "0"), spender: sw.spender ?? "",
+        expectedToAmount: sw.expectedToAmount,
+        network: pacote.rede as NetworkKey,
+        minAmountOut: BigInt(Math.floor(sw.expectedToAmount * 0.995 * 1e6).toString()),
+      }
+    })
+    const simulacao = await batchExecutorService.simulateOnly(batchOrders, pacote.rede as NetworkKey).catch(() => null)
+    if (simulacao && !simulacao.passed) {
+      this.log(`[PREGÃO] 🔬 Pre-simulação: ${simulacao.failures.length}/${simulacao.failures.length + simulacao.simulatedOutputs.filter(o => o > 0n).length} ordens falham — abortando pacote`)
+      return
+    }
+    if (simulacao) {
+      this.log(`[PREGÃO] 🔬 Pre-simulação: ${batchOrders.length}/${batchOrders.length} OK (gas estimado: ${simulacao.gasEstimate})`)
+    } else {
+      this.log(`[PREGÃO] 🔬 Pre-simulação indisponível — prosseguindo sem simulação`)
     }
 
     // 🔒 CapitalController: verifica capital para o batch

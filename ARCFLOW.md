@@ -3884,3 +3884,84 @@ O sistema tem 3 mecanismos de scoring que **não competem** — cada um tem fun�
 - **Stock volume**: `quoteVolume24h = 0` — documentado como NASDAQ reference data, não exchange volume
 - **Market hours**: stocks só escaneados 9:30-16:00 ET
 - **Thresholds**: crypto 0.3%, stocks 1.5%, default 0.5%
+
+---
+
+## 53. BATCH EXECUTOR — Execução em Lote com Pré-Simulação
+
+### Contrato (`contracts/BatchExecutor.sol`)
+
+Contrato próprio para execução em lote de swaps, complementando o Multicall3:
+
+| Método | Descrição |
+|--------|-----------|
+| `submitBatch(...)` | Registra batch de até 20 ordens com deadlines individuais |
+| `executeBatch(id)` | Executa todas as ordens de um batch (parcial: um falha, outros prosseguem) |
+| `estimateBatch(...)` | `staticcall` de pré-simulação para validar viabilidade antes do envio |
+| `pause()` / `unpause()` | Segurança: dono pode pausar em emergência |
+
+### Service Layer (`lib/BatchExecutorService.ts`)
+
+| Funcionalidade | Detalhes |
+|----------------|----------|
+| Acumulação | 8s ou 10 ordens (o que vier primeiro) |
+| Pré-simulação | `eth_call` via Multicall3.aggregate3 antes de gastar gas |
+| Cálculo AMM local | `x*y=k` com fee (0.3%), cache de 60s |
+| CapitalController | Lock único para todo o batch |
+| Arc testnet | Fallback para `executeDirectSwap()` quando não há Multicall3 |
+| Gas logging | Economia estimada vs execução individual |
+
+### Integração no Pregão
+
+Adicionado em `lib/pregão.ts:executarPacotes()`: após quoting e antes do CapitalController lock, executa pré-simulação via `batchExecutorService.simulateOnly()`. Se a simulação falha, o batch é abortado sem gastar gas.
+
+---
+
+## 54. ARQUITETURA — Decisões de Design (Análise de 3 IAs + Validação)
+
+Em 04/07/2026, o sistema passou por uma análise de consenso entre 3 IAs (DeepSeek + 2 outras) sobre 5 sugestões arquiteturais. Abaixo o resultado:
+
+| # | Sugestão | DeepSeek | IA 2 | IA 3 | Veredito | Motivo |
+|---|----------|----------|------|------|----------|--------|
+| 1 | **Batch Executor** | ✅ Viável | ✅ Viável | ⚠️ Ressalvas | ✅ IMPLEMENTADO | Único ganho real para $65 de capital — diluir gas |
+| 2 | **Dark Pool P2P** | ⚠️ Ressalvas | ✅ Viável (maior ROI) | ⚠️ Ressalvas | ❌ CANCELADA | "Voto duplo nos dois lados" é bug arquitetural já mapeado |
+| 3 | **JIT Liquidity** | ❌ Não recom. | ⚠️ Ressalvas | ❌ Não recom. | ❌ CANCELADA | 3x não + contradiz decisão do Kelly criterion sobre tensionScore |
+| 4 | **Paymaster 4337** | ⚠️ Ressalvas | ❌ Não recom. | ⚠️ Ressalvas | ❌ CANCELADA | Over-engineering: $1.50/mês de economia não justifica complexidade |
+| 5 | **Cross-Chain Netting** | ❌ Não recom. | ⚠️ Ressalvas | ❌ Não recom. | ❌ CANCELADA | Complexidade desproporcional ao benefício para 2 chains ativas |
+
+### Onde as IAs acertaram em uníssono
+
+- Sugestão 1 é a única viável — todas concordam que diluir gas é o único ganho real para capital de $65
+- Sugestões 3 e 5 são distrações — complexidade desproporcional ao benefício
+- Sugestão 4 é over-engineering — Paymaster não se paga com $1.50/mês de economia
+
+### Onde as IAs erraram (validação humana)
+
+- **Dark Pool como #1 ROI**: IA 2 não sabia que o "voto duplo nos dois lados" é um bug arquitetural já mapeado. Match P2P estaria monetizando ruído de agentes desalinhados.
+- **JIT Liquidity como "viável com ressalvas"**: IA 2 e IA 3 não sabiam que a equipe já decidiu (com base em Kelly criterion) que tensionScore não deve controlar capital diretamente. JIT real precisa de precisão de bloco único via Flashbots — o tensionScore atualiza a cada 60s.
+
+### Insight aproveitado das IAs
+
+- **Flashbots/private bundles + simulação pré-trade via eth_call**: complementa o Batch Executor. Simular antes de enviar elimina trades que iam reverter. Bundles privados protegem contra MEV.
+
+### Próximos passos (pós-Batch Executor)
+
+1. Testar na Arc Testnet (gasless)
+2. Medir economia real de gas vs execução individual
+3. Se funcionar, deploy na Polygon (com capital real)
+4. Monitorar por 1 semana antes de escalar
+
+---
+
+## 55. NOVOS MÓDULOS (04/07/2026)
+
+### Batch Executor
+- `contracts/BatchExecutor.sol` — Contrato próprio para execução em lote (Pausable, Ownable, ReentrancyGuard)
+- `lib/BatchExecutorService.ts` — Service layer com pré-simulação eth_call, integração NonceManager + CapitalController
+- `lib/route-verifier.ts` — Verificação de rota de venda via Multicall3 + cálculo local AMM (x*y=k)
+- `scripts/deployBatchExecutorArc.js` — Script de deploy na Arc testnet
+
+### Correções Estruturais
+- Nonce collision: `PRIVATE_KEY_STRESS` para carteira separada de stress test
+- Route gate: `hasSellRoute()` bloqueia compra de tokens sem rota de venda (cirBTC/mcirBTC na Arc)
+- ICircuitBreaker: Interface unificada (RouteCircuitBreaker + FinancialCircuitBreaker)
