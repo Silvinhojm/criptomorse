@@ -6,7 +6,7 @@ import { ethers } from "ethers";
 import { NonceManager } from "./nonce-manager";
 import { getQuote, isLifiCooldown, toTokenUnits } from "./lifi-executor";
 import type { QuoteResult } from "./lifi-executor";
-import { getCircuitBreakerState, recordError, setTestnetMode } from "./circuit-breaker";
+import { getCircuitBreakerState, recordError, setTestnetMode, recordRouteError, onRouteSuccess, isRouteDisabled } from "./circuit-breaker";
 import { gasPriceOracle } from "./gas-price-oracle";
 import { getArcFeeParams } from "./arc-gas";
 import { generateSyntheticQuote, executeDirectSwap } from "./arc-direct-swap";
@@ -1082,9 +1082,9 @@ class RealSwapExecutor {
         }
       }
 
-      // LI.FI — pula em trades < $20 e em testnet (TVL baixa, "fly" perde dinheiro)
+      // LI.FI — pula em trades < $20, em cooldown de rota, e em testnet
       let lifiQuote: QuoteResult | null = null;
-      if (amountUsd >= 20 && !net.isTestnet) {
+      if (amountUsd >= 20 && !net.isTestnet && !isRouteDisabled("LI.FI")) {
         try {
           lifiQuote = await getQuote({
             fromChain: net.chainId, toChain: net.chainId,
@@ -1231,13 +1231,18 @@ class RealSwapExecutor {
       log(`🚀 Executando rota ${bestRoute.label}...`);
       const result = await bestRoute.execute();
 
+      if (result.success) {
+        onRouteSuccess(bestRoute.label);
+      }
+
       if (!result.success) {
-        recordError("executeSwap", `${bestRoute.label} falhou: ${result.error || "desconhecido"} — tentando fallback`);
+        recordRouteError(bestRoute.label);
         const fallbackRoute = routes.find(r => r.label !== bestRoute.label);
         if (fallbackRoute) {
           log(`⚠️ ${bestRoute.label} falhou, tentando ${fallbackRoute.label}...`);
           const fallbackResult = await fallbackRoute.execute();
           if (!fallbackResult.success) {
+            recordError("executeSwap", `Ambas rotas falharam: ${bestRoute.label} + ${fallbackRoute.label}`);
             return this._fail(fromToken, toToken, amountUsd,
               `Ambas rotas falharam: ${bestRoute.label} + ${fallbackRoute.label}`, timestamp);
           }

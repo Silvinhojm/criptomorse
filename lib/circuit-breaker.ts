@@ -1,5 +1,10 @@
 ﻿import { saveCircuitBreakerState, loadCircuitBreakerState } from "./persistence";
 
+type RouteHealth = {
+  consecutiveErrors: number;
+  cooldownUntil: number | null;
+};
+
 type CircuitBreakerState = {
   isPanicActive: boolean;
   panicReason: string | null;
@@ -11,7 +16,11 @@ type CircuitBreakerState = {
   maxDrawdownPercent: number;
   isTestnet: boolean;
   peakNetEquity: number;
+  routeHealth: Record<string, RouteHealth>;
 };
+
+const MAX_ROUTE_ERRORS_BEFORE_COOLDOWN = 5;
+const COOLDOWN_DURATION_MS = 20 * 60 * 1000; // 20 minutos
 
 const initialState: CircuitBreakerState = {
   isPanicActive: false,
@@ -24,6 +33,7 @@ const initialState: CircuitBreakerState = {
   maxDrawdownPercent: 10,
   isTestnet: false,
   peakNetEquity: 0,
+  routeHealth: {},
 };
 
 let state: CircuitBreakerState = loadCircuitBreakerState<CircuitBreakerState>({ ...initialState });
@@ -106,6 +116,41 @@ export function recordError(agentName: string, errorType: string): CircuitBreake
   }
   saveCircuitBreakerState(state);
   return { ...state };
+}
+
+export function recordRouteError(routeName: string): void {
+  if (!state.routeHealth[routeName]) {
+    state.routeHealth[routeName] = { consecutiveErrors: 0, cooldownUntil: null };
+  }
+  const health = state.routeHealth[routeName];
+  health.consecutiveErrors++;
+  console.warn(`🗺️ Rota ${routeName}: erro #${health.consecutiveErrors}`);
+
+  if (health.consecutiveErrors >= MAX_ROUTE_ERRORS_BEFORE_COOLDOWN && !health.cooldownUntil) {
+    health.cooldownUntil = Date.now() + COOLDOWN_DURATION_MS;
+    console.warn(`🔇 Rota ${routeName} em cooldown até ${new Date(health.cooldownUntil).toLocaleTimeString()}`);
+  }
+  saveCircuitBreakerState(state);
+}
+
+export function onRouteSuccess(routeName: string): void {
+  if (!state.routeHealth[routeName]) return;
+  state.routeHealth[routeName] = { consecutiveErrors: 0, cooldownUntil: null };
+  saveCircuitBreakerState(state);
+}
+
+export function isRouteDisabled(routeName: string): boolean {
+  const health = state.routeHealth[routeName];
+  if (!health || !health.cooldownUntil) return false;
+  if (Date.now() >= health.cooldownUntil) {
+    // Cooldown expirou — limpa e libera
+    health.consecutiveErrors = 0;
+    health.cooldownUntil = null;
+    saveCircuitBreakerState(state);
+    console.log(`✅ Rota ${routeName} liberada do cooldown`);
+    return false;
+  }
+  return true;
 }
 
 export function blockIfPanicked(): boolean {
