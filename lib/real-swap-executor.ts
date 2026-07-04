@@ -1232,7 +1232,7 @@ class RealSwapExecutor {
       const result = await bestRoute.execute();
 
       if (!result.success) {
-        // Se a melhor rota falhou, tenta a outra se existir
+        recordError("executeSwap", `${bestRoute.label} falhou: ${result.error || "desconhecido"} — tentando fallback`);
         const fallbackRoute = routes.find(r => r.label !== bestRoute.label);
         if (fallbackRoute) {
           log(`⚠️ ${bestRoute.label} falhou, tentando ${fallbackRoute.label}...`);
