@@ -81,6 +81,8 @@ export function BotBank() {
 
       if (mounted) {
         found.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        const seen = new Set<string>();
+        found = found.filter(t => { const k = t.id || `${t.agentName}-${t.timestamp}`; if (seen.has(k)) return false; seen.add(k); return true; });
         setTrades(found);
         setLoading(false);
       }

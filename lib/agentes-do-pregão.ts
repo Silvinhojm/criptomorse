@@ -135,24 +135,29 @@ export function limparVotos() {
   try { localStorage.removeItem("arcflow_vote_history") } catch {}
 }
 
-async function avaliarVotosPassados(redeAtual: NetworkKey) {
-  const agora = Date.now()
-  const net = NETWORKS[redeAtual]
-  if (net?.isTestnet) {
-    for (let i = historicoVotos.length - 1; i >= 0; i--) {
-      if (historicoVotos[i].networkKey === redeAtual && agora - historicoVotos[i].timestamp >= MIN_AVALIACAO_MS) {
-        historicoVotos.splice(i, 1)
-      }
-    }
-    return
-  }
+let _avaliandoVotos = false
 
-  const avaliados = new Set<string>()
-  const results: { agentName: string; stake: number }[] = []
-  for (const voto of historicoVotos) {
-    if (voto.networkKey !== redeAtual) continue
-    if (agora - voto.timestamp < MIN_AVALIACAO_MS) continue
-    const id = `${voto.agentName}_${voto.timestamp}`
+async function avaliarVotosPassados(redeAtual: NetworkKey) {
+  if (_avaliandoVotos) return
+  _avaliandoVotos = true
+  try {
+    const agora = Date.now()
+    const net = NETWORKS[redeAtual]
+    if (net?.isTestnet) {
+      for (let i = historicoVotos.length - 1; i >= 0; i--) {
+        if (historicoVotos[i].networkKey === redeAtual && agora - historicoVotos[i].timestamp >= MIN_AVALIACAO_MS) {
+          historicoVotos.splice(i, 1)
+        }
+      }
+      return
+    }
+
+    const avaliados = new Set<string>()
+    const results: { agentName: string; stake: number }[] = []
+    for (const voto of historicoVotos) {
+      if (voto.networkKey !== redeAtual) continue
+      if (agora - voto.timestamp < MIN_AVALIACAO_MS) continue
+      const id = `${voto.agentName}_${voto.timestamp}`
     if (avaliados.has(id)) continue
     avaliados.add(id)
 
@@ -225,6 +230,9 @@ async function avaliarVotosPassados(redeAtual: NetworkKey) {
     if (avaliados.has(`${historicoVotos[i].agentName}_${historicoVotos[i].timestamp}`)) {
       historicoVotos.splice(i, 1)
     }
+  }
+  } finally {
+    _avaliandoVotos = false
   }
 }
 
