@@ -53,7 +53,7 @@ export const SUPPORTED_NETWORKS: Network[] = [
     tokens: [
       { symbol: 'USDC', name: 'USD Coin', address: '0x3600000000000000000000000000000000000000', decimals: 6, icon: '💵' },
       { symbol: 'EURC', name: 'Euro Coin', address: '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a', decimals: 6, icon: '💶' },
-      { symbol: 'cirBTC', name: 'Circle Wrapped Bitcoin', address: '0x171A4217b86A807A64eB94757Db6849fb4bDbAA0', decimals: 8, icon: '₿' },
+      { symbol: 'cirBTC', name: 'Circle Wrapped Bitcoin', address: '0x3120d73DA9691Ccb0bCea8e00d4C039086A32523', decimals: 8, icon: '₿' },
       { symbol: 'mcirBTC', name: 'Mock cirBTC', address: '0x8cad4951192853D14f8Cb813695146b5Ae00EA6d', decimals: 8, icon: '₿' },
     ],
     icon: '🔵',

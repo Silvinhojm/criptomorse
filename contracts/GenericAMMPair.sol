@@ -52,6 +52,11 @@ interface IERC20 {
     event Approval(address indexed owner, address indexed spender, uint256 value);
 
     /**
+     * @dev Returns the number of decimals used by the token.
+     */
+    function decimals() external view returns (uint8);
+
+    /**
      * @dev Returns the value of tokens in existence.
      */
     function totalSupply() external view returns (uint256);
@@ -340,9 +345,9 @@ contract GenericAMMPair is ReentrancyGuard, Ownable {
         uint256 liquidityMinted;
 
         if (totalLiquidity == 0) {
-            // First liquidity provision - check for balanced initial liquidity
-            uint256 ratio = (amount0 * 100) / (amount0 + amount1);
-            require(ratio > 10 && ratio < 90, "Imbalanced initial liquidity");
+            // First liquidity provision — no ratio check because tokens may have
+            // different prices (e.g. USDC $1 vs cirBTC $63k) making raw comparison meaningless.
+            // First LP can set any ratio; subsequent LPs are constrained by reserves.
             
             liquidityMinted = sqrt(amount0 * amount1);
             require(liquidityMinted > MINIMUM_LIQUIDITY, "Insufficient initial liquidity");

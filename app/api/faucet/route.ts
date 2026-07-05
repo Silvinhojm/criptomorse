@@ -21,6 +21,10 @@ type FaucetRequest = {
   eurc?: boolean
 }
 
+export async function GET() {
+  return NextResponse.json({ configured: !!process.env.CIRCLE_API_KEY })
+}
+
 export async function POST(req: NextRequest) {
   try {
     const apiKey = process.env.CIRCLE_API_KEY

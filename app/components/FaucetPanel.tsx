@@ -34,8 +34,8 @@ export default function FaucetPanel({ rede }: { rede: string }) {
   const cfg = FAUCET_NETWORKS[rede]
 
   useEffect(() => {
-    fetch("/api/faucet", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
-      .then(r => { if (r.status !== 503) setHasApiKey(true) })
+    fetch("/api/faucet")
+      .then(r => r.json().then(d => { if (d.configured) setHasApiKey(true) }))
       .catch(() => {})
   }, [])
 
