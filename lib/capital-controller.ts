@@ -24,7 +24,10 @@ interface CapitalState {
 }
 
 function lockKey(request: CapitalRequest): string {
-  return `${request.pair.split('→')[1]}:${request.network}`
+  // pair pode ser "USDC→WMATIC" ou "USDC→WMATIC+USDC→WETH" (batch)
+  // extrai o primeiro boughtToken após a primeira seta
+  const token = request.pair.split('→')[1]?.split(/[+]/)[0] || request.pair
+  return `${token}:${request.network}`
 }
 
 class CapitalController {
@@ -32,12 +35,13 @@ class CapitalController {
   private listeners: Array<() => void> = []
 
   getState() {
-    const networks = Object.keys(this.state.locks)
+    const keys = Object.keys(this.state.locks)
     return {
-      locked: networks.length > 0,
-      lockedBy: networks.length > 0 ? networks[0] : null,
-      lockedAt: networks.length > 0 ? this.state.locks[networks[0]].lockedAt : 0,
+      locked: keys.length > 0,
+      lockedBy: keys.length > 0 ? keys.join(', ') : null,
+      lockedAt: keys.length > 0 ? Math.min(...keys.map(k => this.state.locks[k].lockedAt)) : 0,
       requests: this.state.requests,
+      locks: { ...this.state.locks },
     }
   }
   onChange(cb: () => void) { this.listeners.push(cb); return () => { this.listeners = this.listeners.filter(c => c !== cb) } }
@@ -45,20 +49,21 @@ class CapitalController {
 
   request(request: CapitalRequest): { authorized: boolean; waitPosition: number; reason: string } {
     this.state.requests = this.state.requests.filter(r => Date.now() - r.requestedAt < 300_000)
+    const k = lockKey(request)
 
-    const netLock = this.state.locks[request.network]
-    if (netLock) {
+    const existingLock = this.state.locks[k]
+    if (existingLock) {
       const openPositions = positionManager.getOpenPositions()
       const stillOpen = openPositions.some(p =>
-        `${p.boughtToken}:${p.networkKey}` === netLock.lockedBy
+        `${p.boughtToken}:${p.networkKey}` === existingLock.lockedBy
       )
       if (!stillOpen) {
-        this.unlock(request.network)
+        delete this.state.locks[k]
       } else {
         this.state.requests.push(request)
         this.state.requests.sort((a, b) => b.score - a.score)
         const pos = this.state.requests.findIndex(r => r.id === request.id)
-        return { authorized: false, waitPosition: pos + 1, reason: `Capital ocupado em ${request.network}: ${netLock.lockedBy}` }
+        return { authorized: false, waitPosition: pos + 1, reason: `Capital ocupado: ${existingLock.lockedBy}` }
       }
     }
 
@@ -74,34 +79,48 @@ class CapitalController {
       return { authorized: false, waitPosition: 2, reason: `${better.strategy} tem oportunidade melhor (score ${better.score} vs ${request.score})` }
     }
 
-    this.state.locks[request.network] = { lockedBy: lockKey(request), lockedAt: Date.now() }
+    this.state.locks[k] = { lockedBy: k, lockedAt: Date.now() }
     this.state.requests = this.state.requests.filter(r => r.id !== request.id)
     this.notify()
     return { authorized: true, waitPosition: 0, reason: 'Executar agora' }
   }
 
-  unlock(networkKey: string) {
-    delete this.state.locks[networkKey]
+  unlock(key: string) {
+    delete this.state.locks[key]
 
-    const next = this.state.requests.find(r => r.network === networkKey)
+    const network = key.split(':').slice(1).join(':')
+    const next = this.state.requests.find(r => r.network === network)
     if (next) {
-      const availableUSDC = realSwap.getBalance("USDC")
-      if (availableUSDC >= next.amountUSD) {
-        this.state.locks[networkKey] = { lockedBy: lockKey(next), lockedAt: Date.now() }
-        this.state.requests = this.state.requests.filter(r => r.id !== next.id)
-        console.log(`[Capital] 🔓 Liberado ${networkKey} → ${next.strategy} autorizado (${next.pair} $${next.amountUSD})`)
+      const k = lockKey(next)
+      if (!this.state.locks[k]) {
+        const availableUSDC = realSwap.getBalance("USDC")
+        if (availableUSDC >= next.amountUSD) {
+          this.state.locks[k] = { lockedBy: k, lockedAt: Date.now() }
+          this.state.requests = this.state.requests.filter(r => r.id !== next.id)
+          console.log(`[Capital] 🔓 Liberado ${key} → ${next.strategy} autorizado (${next.pair} $${next.amountUSD})`)
+        }
       }
     }
 
     this.notify()
   }
 
+  unlockNetwork(network: string) {
+    for (const key of Object.keys(this.state.locks)) {
+      if (key.endsWith(':' + network)) {
+        delete this.state.locks[key]
+      }
+    }
+    this.state.requests = this.state.requests.filter(r => r.network !== network)
+    this.notify()
+  }
+
   canExecute(amountUSD: number, pair: string, network: string): boolean {
     const availableUSDC = realSwap.getBalance("USDC")
     if (availableUSDC < amountUSD) return false
-    const boughtToken = pair.split('→')[1]
-    const netLock = this.state.locks[network]
-    if (netLock && netLock.lockedBy !== `${boughtToken}:${network}`) return false
+    const token = pair.split('→')[1]?.split(/[+]/)[0] || pair
+    const k = `${token}:${network}`
+    if (this.state.locks[k] && this.state.locks[k].lockedBy !== k) return false
     return true
   }
 
@@ -127,21 +146,24 @@ class CapitalController {
       return { authorized: false, reason: `Saldo insuficiente: $${availableUSDC.toFixed(2)} < $${amountUSD}` }
     }
 
-    if (this.state.locks[network]) {
-      this.state.requests.push({
-        id: `autonomo:${agentName}:${pair}:${Date.now()}`,
-        strategy: `autonomo-${agentName}`,
-        pair,
-        network,
-        amountUSD,
-        score: info.pontos / 100,
-        estimatedProfit: 0,
-        requestedAt: Date.now(),
-      })
-      return { authorized: false, reason: `Capital ocupado em ${network} — ${agentName} na fila` }
+    const req: CapitalRequest = {
+      id: `autonomo:${agentName}:${pair}:${Date.now()}`,
+      strategy: `autonomo-${agentName}`,
+      pair,
+      network,
+      amountUSD,
+      score: info.pontos / 100,
+      estimatedProfit: 0,
+      requestedAt: Date.now(),
+    }
+    const k = lockKey(req)
+
+    if (this.state.locks[k]) {
+      this.state.requests.push(req)
+      return { authorized: false, reason: `Capital ocupado (${k}) — ${agentName} na fila` }
     }
 
-    this.state.locks[network] = { lockedBy: `${pair.split('→')[1]}:${network}`, lockedAt: Date.now() }
+    this.state.locks[k] = { lockedBy: k, lockedAt: Date.now() }
     this.notify()
     console.log(`[Capital] 🤖 ${agentName} (nível ${info.nivel}) autorizado autonomamente — ${pair} $${amountUSD}`)
     return { authorized: true, reason: `Executando trade autônomo de ${agentName}` }
@@ -149,7 +171,12 @@ class CapitalController {
 
   forceUnlock(networkKey?: string) {
     if (networkKey) {
-      delete this.state.locks[networkKey]
+      // Remove all locks for this network
+      for (const key of Object.keys(this.state.locks)) {
+        if (key.endsWith(':' + networkKey)) {
+          delete this.state.locks[key]
+        }
+      }
       this.state.requests = this.state.requests.filter(r => r.network !== networkKey)
     } else {
       this.state.locks = {}

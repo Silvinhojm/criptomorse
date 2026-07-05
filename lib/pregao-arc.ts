@@ -1,5 +1,6 @@
 import { TRADING_PAIRS, realSwap } from "./real-swap-executor"
 import { pregão } from "./pregão"
+import { hasSellRoute } from './route-verifier'
 
 interface ArcPairState {
   pair: string
@@ -77,12 +78,31 @@ export async function executarCiclo() {
   if (!isRunning) return
 
   let pair = pickPair()
-  const maxAttempts = 5
+  const maxAttempts = 10
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const balance = realSwap.getBalance(pair.fromToken as any)
-    if (balance >= tradeAmount) break
-    log(`⏭️ [ARC] Par ${pair.pair}: saldo ${pair.fromToken}=${balance.toFixed(4)} < $${tradeAmount}, tentando outro...`)
-    pair = pickPair()
+    if (balance < tradeAmount) {
+      log(`⏭️ [ARC] Par ${pair.pair}: saldo ${pair.fromToken}=${balance.toFixed(4)} < $${tradeAmount}, tentando outro...`)
+      pair = pickPair()
+      continue
+    }
+    if (pair.toToken !== 'USDC' && pair.toToken !== 'EURC' && !hasSellRoute(pair.toToken, 'arc')) {
+      log(`⏭️ [ARC] Par ${pair.pair}: ${pair.toToken} sem rota de venda, tentando outro...`)
+      pair = pickPair()
+      continue
+    }
+    break
+  }
+
+  // Última verificação antes de gerar OKs
+  const finalBalance = realSwap.getBalance(pair.fromToken as any)
+  if (finalBalance < tradeAmount) {
+    log(`⏭️ [ARC] Nenhum par viável encontrado após ${maxAttempts} tentativas`)
+    return
+  }
+  if (pair.toToken !== 'USDC' && pair.toToken !== 'EURC' && !hasSellRoute(pair.toToken, 'arc')) {
+    log(`⏭️ [ARC] Nenhum par com rota de venda encontrado após ${maxAttempts} tentativas`)
+    return
   }
 
   const tradeNum = totalTrades + 1

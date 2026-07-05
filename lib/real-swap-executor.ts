@@ -28,7 +28,7 @@ export const TOKEN_DECIMALS: Record<string, number> = {
 }
 
 // Divisores de preço para tokens que compartilham COIN_IDS de outro ativo
-// cirBTC — nosso MintableERC20 (8 decimals) deployado na Arc, preço 1:1 com BTC — sem divisor
+// cirBTC — Circle Wrapped Bitcoin (contrato oficial Circle na Arc), 8 decimals, preço 1:1 com BTC — sem divisor
 export const PRICE_DIVIDERS: Record<string, number> = {
   mcirBTC: 10_000_000_000, // 10^10 — mock token, mantido para compatibilidade
 }
@@ -56,7 +56,7 @@ export const NETWORKS = {
     tokens: {
       USDC: "0x3600000000000000000000000000000000000000",
       EURC: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
-      cirBTC: "0x3120d73DA9691Ccb0bCea8e00d4C039086A32523",
+      cirBTC: "0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF",
       mcirBTC: "0x8cad4951192853D14f8Cb813695146b5Ae00EA6d",
       NATIVE: "0x0000000000000000000000000000000000000000",
     },

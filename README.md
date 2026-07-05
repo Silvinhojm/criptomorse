@@ -47,11 +47,6 @@ Agentes (13) → Pregão → Escriturário → Capital Controller → Corretor �
 | **Circuit Breaker** | Proteção contra perdas consecutivas (3 strikes) |
 | **Gas Price Oracle** | Custo de gas em USD com fallback multi-RPC |
 | **Pair Price Feed** | Preços em tempo real via Chainlink (Polygon) + Pyth (Arc) + SoSoValue |
-| **MarketData Collector** | Cliente Backpack Exchange API (klines, markets, ticker, trades, trades/history) — dados históricos reais para treino do Professor |
-| **liquidityFilter** | Filtro de liquidez ($50K vol 24h, 50% range high-low) para evitar sinais em ativos com baixa atividade |
-| **marketHours** | Runtime-aware: detecta horário NYSE/NASDAQ (9:30–16:00 ET, seg–sex) para só escanear ações em mercado aberto |
-| **BackpackScanner** | Descoberta dinâmica de símbolos: 3 crypto (BTC, ETH, SOL) + top stocks via `getTopStocksByVolume()`. Escaneia a cada 60s, respeita market hours, ranqueia por score dos agentes. Stock tokens ignoram filtro de liquidez (volume é NASDAQ reference data, não exchange) |
-| **BackpackSignalsPanel** | Painel UI na aba "🎒 Sinais" — seções crypto/stock, indicador NYSE 🟢/🔴, preço adaptativo (6 decimais para micro-tokens) |
 | **Arqueiro** | Modulador de tensão/timing: detecta compressão de volatilidade via pseudo-ATR + squeeze Bollinger/Keltner. TensionScore (0-100) modula confiança das ordens no Pregão. 3 fases de rollout (Shadow → Validação → Ativo). |
 | **Batch Executor** | Execução em lote com contrato próprio (`BatchExecutor.sol`), pré-simulação via `eth_call` antes de gastar gas, e cálculo local de AMM. Acumula 8s/10 ordens, lock único no CapitalController. |
 | **Route Verifier** | Verifica se um token tem rota de venda antes de permitir a compra. Usa Multicall3 para batch de reservas de pools, calcula output local via `x*y=k`. Bloqueia cirBTC/mcirBTC na Arc testnet. |

@@ -107,13 +107,7 @@ app/page.tsx                  ← SPA principal (~1000+ linhas, "use client")
            ├── news-agent.ts
            ├── market-agent.ts
            ├── volume-agent.ts
-           ├── sosovalue-agent.ts
-            └── marketData/ (Backpack Exchange)
-                 ├── MarketDataCollector.ts  ← API client (klines, ticker, trades, markets, trades/history)
-                 ├── labelPriceMovement.ts   ← Rotulagem alta/baixa/neutro com threshold por classe (crypto 0.3%, stock 1.5%)
-                 ├── liquidityFilter.ts      ← Filtro de liquidez ($50K vol 24h, 50% range)
-                 ├── marketHours.ts          ← isUSStockMarketOpen() + helpers (NYSE/NASDAQ 9:30-16:00 ET)
-                 └── BackpackScanner.ts      ← Descoberta dinâmica de símbolos + market hours + ranking do Professor
+            ├── sosovalue-agent.ts
 ```
 
 ---
@@ -478,7 +472,7 @@ MIN_BALANCE_THRESHOLD = 0.50  // $0.50 — saldos abaixo disso são ignorados no
 | `arcflow_escola_ultimas` | Últimas 20 avaliações por robô | escola-robos.ts |
 | `arcflow_professor_palpites` | Palpites pendentes e avaliados | professor.ts |
 | `arcflow_parametros_robos` | Parâmetros ajustados por robô (live mainnet) | parametros-robos.ts |
-| `arcflow_parametros_robos_backpack` | Parâmetros ajustados por robô (treino Backpack) | parametros-robos.ts |
+
 | `arcflow_pair_sector` | Avaliações de pares por rede | pair-sector.ts |
 | `arcflow_paper_mode` | Modo Papel (simulação sem gas) ativado/desativado | agentes-do-pregão.ts |
 
@@ -4047,25 +4041,6 @@ A posição cirBTC "há 248h" no dashboard (comprada com token falso `0xf0C4...`
 - Shadow mode (Fase 1): apenas logs, score=0. Integrado em `pregão.ts:verificarOrdem()` e `executarPacotes()`
 - `app/components/ArqueiroPanel.tsx`: painel em tempo real na aba Auto Trader
 
-### Backpack Exchange — Market Data + Sinais
-- `lib/marketData/MarketDataCollector.ts`: cliente HTTP para API pública da Backpack (klines, markets, trades, ticker)
-- `lib/marketData/labelPriceMovement.ts`: rotulagem de movimento (alta/baixa/neutro) com thresholds por classe (crypto 0.3%, stocks 1.5%)
-- `lib/marketData/BackpackScanner.ts`: scanner multi-símbolo com descoberta dinâmica de top stocks, liquidez, market hours
-- `lib/marketData/liquidityFilter.ts`: filtro de ativos com volume <$50K ou amplitude >50%
-- `lib/marketData/marketHours.ts`: `isUSStockMarketOpen()` com timezone NYSE/NASDAQ
-- `lib/professor.ts`: `trainOnHistoricalData()` — treinamento com dados históricos da Backpack
-- `app/components/BackpackSignalsPanel.tsx`: painel de sinais na aba 🎒 Sinais
-- `app/api/backpack/[...path]/route.ts`: proxy CORS server-side
-
-### Solana — Módulo Independente (BP/USDC)
-- `lib/solana/config.ts`: endereços BP, USDC Solana, SOL, pools Raydium
-- `lib/solana/client.ts`: SolanaClient via fetch bruto (sem @solana/web3.js)
-- `lib/solana/pools.ts`: fetch de pools e resumo de carteira
-- `lib/solana/trader.ts`: cotação e construção de swap via Jupiter API v6
-- `app/api/solana-proxy/route.ts`: proxy server-side para Solana RPC + Jupiter
-- `app/components/SolanaPanel.tsx`: painel dashboard na aba ☀️ Solana
-- **Design**: zero toque no EVM, módulo auto-contido, sem dependências do sistema existente
-
 ### Correções Estruturais (05/07/2026)
 - **cirBTC address**: endereço falso `0xf0C4...` substituído pelo oficial Circle `0x171A42...` em 5 arquivos
 - **PRICE_DIVIDER removido**: workaround de 10^10 para cirBTC eliminado (token oficial tem pricing padrão)
@@ -4078,5 +4053,4 @@ A posição cirBTC "há 248h" no dashboard (comprada com token falso `0xf0C4...`
 - **Arc Testnet**: cirBTC endereço corrigido, pool USDC/cirBTC precisa recriação com token oficial
 - **DeFi on ARC**: DEX de terceiro descoberta (Factory `0x34A0b...`, Router `0x284C5A...`), pool USDC/EURC com $1.43M TVL
 - **Arqueiro**: shadow mode ativo, ciclo 60s, monitorando pares com compressão de volatilidade
-- **Backpack**: 3 crypto (BTC, ETH, SOL) + 2 stocks (MU.US, SPCX.US), scan a cada 60s
-- **Solana**: módulo criado, aguardando private key para testes
+- **Backpack/Solana**: removidos — foco exclusivo Arc EVM

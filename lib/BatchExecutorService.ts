@@ -277,12 +277,12 @@ class BatchExecutorService {
 
       this.log(`✅ Batch ${this.totalBatches}: ${orders.length} ordens | gas usado: ${batchResult.totalGasUsed} | economia: ${Math.max(0, gasSaved)} gas`)
 
-      capitalController.unlock(network)
+      capitalController.unlockNetwork(network)
       return { success: true, txHash: batchResult.txHash, results, gasUsed: batchResult.totalGasUsed, gasSaved: Math.max(0, gasSaved) }
 
     } catch (e: any) {
       this.log(`❌ Batch execução falhou: ${e.message}`)
-      capitalController.unlock(network)
+      capitalController.unlockNetwork(network)
       return { success: false, results: orders.map((_, i) => ({ index: i, success: false, error: e.message })) }
     }
   }

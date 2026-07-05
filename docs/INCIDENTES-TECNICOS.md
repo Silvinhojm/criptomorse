@@ -208,7 +208,7 @@ squeeze não depende do valor absoluto do ATR, só da relação entre Bollinger 
 Mas métricas que dependem de valores precisos de volatilidade (ex: stop-loss baseado em
 ATR) não devem usar pseudo-ATR sem validação.
 
-Se no futuro o sistema integrar dados de exchanges centralizadas (ex: Backpack Exchange),
+Se no futuro o sistema integrar dados de exchanges centralizadas,
 os pares com OHLC disponível devem usar ATR verdadeiro, com fallback para pseudo-ATR
 apenas em pares DEX puros.
 

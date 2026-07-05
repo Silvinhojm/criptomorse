@@ -14,7 +14,7 @@ const ERC20_ABI = [
 const AMM_PAIRS: Record<string, string> = {
   '0x3600000000000000000000000000000000000000:0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a': '0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb',
   '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a:0x3600000000000000000000000000000000000000': '0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb',
-  // cirBTC — nosso MintableERC20 deployado na Arc
+  // cirBTC — Circle Wrapped Bitcoin (contrato oficial Circle na Arc)
   '0x3600000000000000000000000000000000000000:0x3120d73da9691ccb0bcea8e00d4c039086a32523': '0x54B607f069D62468b20a0281976f6114Fe80d997',
   '0x3120d73da9691ccb0bcea8e00d4c039086a32523:0x3600000000000000000000000000000000000000': '0x54B607f069D62468b20a0281976f6114Fe80d997',
 };
@@ -141,50 +141,52 @@ export async function executeDirectSwap(
       ? (fromToken.includes("833589f") ? "USDC" : fromToken.includes("A12DB094") ? "EURC" : fromToken.slice(0, 8))
       : fromToken.slice(0, 8);
 
-    // AMM path: stable→stable via GenericAMMPair na Arc testnet
+    // AMM path: qualquer par com AMM_PAIRS entry (stable→stable, volatile→stable, etc.)
     const fromLower = fromToken.toLowerCase();
     const toLower = toToken.toLowerCase();
-    if (isTestnetChain(chainId) && isStableToken(fromLower) && isStableToken(toLower)) {
-      const key = `${fromLower}:${toLower}`;
-      const pairAddr = AMM_PAIRS[key];
-      if (pairAddr) {
-        log(`🔄 AMM stable→stable via GenericAMMPair (${pairAddr.slice(0, 10)}...)`);
-        try {
-          const pool = new ethers.Contract(pairAddr, AMM_ABI, signer);
-          const token = new ethers.Contract(fromToken, ERC20_ABI, signer);
-          const toTokenContract = new ethers.Contract(toToken, ERC20_ABI, signer);
+    const ammKey = `${fromLower}:${toLower}`;
+    const directAmmAddr = AMM_PAIRS[ammKey];
+    if (directAmmAddr) {
+      log(`🔄 AMM direct via GenericAMMPair (${directAmmAddr.slice(0, 10)}...)`);
+      try {
+        const pool = new ethers.Contract(directAmmAddr, AMM_ABI, signer);
+        const token = new ethers.Contract(fromToken, ERC20_ABI, signer);
+        const toTokenContract = new ethers.Contract(toToken, ERC20_ABI, signer);
 
-          const balBefore = await toTokenContract.balanceOf(fromAddress);
+        const balBefore = await toTokenContract.balanceOf(fromAddress);
 
-          const allowance: bigint = await token.allowance(fromAddress, pairAddr);
-          if (allowance < BigInt(fromAmount)) {
-            log(`🧾 Aprovando AMM...`);
-            const approveTx = await token.approve(pairAddr, ethers.MaxUint256);
-            await approveTx.wait();
-            log(`✅ Approve AMM: ${approveTx.hash}`);
-          }
-
-          const toAmount = await pool.getAmountOut(fromToken, fromAmount);
-          const minAmountOut = (toAmount * 995n) / 1000n;
-
-          log(`💱 Swapping ${fromAmount} → ~${toAmount.toString()} (min ${minAmountOut.toString()})`);
-          const swapTx = await pool.swap(fromToken, fromAmount, minAmountOut);
-          const receipt = await swapTx.wait();
-          const txHash = receipt?.hash || swapTx.hash;
-
-          const balAfter = await toTokenContract.balanceOf(fromAddress);
-          const received = balAfter - balBefore;
-          log(`✅ Swap AMM confirmado: ${txHash} | received ${received} ${toToken.slice(0, 8)}`);
-          return {
-            success: true,
-            txHash,
-            explorerUrl: `${EXPLORER}/tx/${txHash}`,
-            amountReceived: received.toString(),
-          };
-        } catch (ammErr: any) {
-          log(`⚠️ AMM falhou (${ammErr?.message?.slice(0, 60)}), fallback synthetic`);
+        const allowance: bigint = await token.allowance(fromAddress, directAmmAddr);
+        if (allowance < BigInt(fromAmount)) {
+          log(`🧾 Aprovando AMM...`);
+          const approveTx = await token.approve(directAmmAddr, ethers.MaxUint256);
+          await approveTx.wait();
+          log(`✅ Approve AMM: ${approveTx.hash}`);
         }
+
+        const toAmount = await pool.getAmountOut(fromToken, fromAmount);
+        const minAmountOut = (toAmount * 995n) / 1000n;
+
+        log(`💱 Swapping ${fromAmount} → ~${toAmount.toString()} (min ${minAmountOut.toString()})`);
+        const swapTx = await pool.swap(fromToken, fromAmount, minAmountOut);
+        const receipt = await swapTx.wait();
+        const txHash = receipt?.hash || swapTx.hash;
+
+        const balAfter = await toTokenContract.balanceOf(fromAddress);
+        const received = balAfter - balBefore;
+        log(`✅ Swap AMM confirmado: ${txHash} | received ${received} ${toToken.slice(0, 8)}`);
+        return {
+          success: true,
+          txHash,
+          explorerUrl: `${EXPLORER}/tx/${txHash}`,
+          amountReceived: received.toString(),
+        };
+      } catch (ammErr: any) {
+        log(`⚠️ AMM direto falhou (${ammErr?.message?.slice(0, 60)}), tentando outras rotas`);
       }
+    }
+
+    // Synthetic path: stable→stable sem AMM
+    if (isTestnetChain(chainId) && isStableToken(fromLower) && isStableToken(toLower) && !directAmmAddr) {
       log(`🔁 Synthetic stable→stable (sem AMM): ${fromName} → ${toToken.slice(0, 8)}`);
       return {
         success: true,

@@ -1,6 +1,6 @@
 import { escolaRobos, type RoboEscolar } from "./escola-robos"
 import { positionManager } from "./position-manager"
-import { parametrosRobos, parametrosRobosBackpack, type ParametrosRobo } from "./parametros-robos"
+import { parametrosRobos, type ParametrosRobo } from "./parametros-robos"
 import { narrador } from "./narrator"
 import { pairSector, type ParPerformance } from "./pair-sector"
 import { accountant } from "./accountant"
@@ -9,9 +9,7 @@ import { pregão } from "./pregão"
 import { TRADING_PAIRS, NETWORKS, realSwap, type TokenSymbol, type NetworkKey } from "./real-swap-executor"
 import { COIN_IDS } from "./coin-ids"
 import { timingOptimizer } from "./timing-optimizer"
-import { marketDataCollector } from "./marketData/MarketDataCollector"
-import { labelPriceMovement } from "./marketData/labelPriceMovement"
-import { isStockSymbol, isUSStockMarketOpen } from "./marketData/marketHours"
+
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC", "USDC.e"])
 
@@ -555,124 +553,6 @@ class Professor {
 
       console.log(`[PROFESSOR] 📦 Pacote via ranking: ${trades.length} trades em ${rede} | total: $${totalAmount.toFixed(2)} | lucro esp.: $${profitTotal.toFixed(4)} | conf: ${confMedia}%`)
     }
-  }
-
-  async trainOnHistoricalData(
-    symbol: string,
-    interval: '1m' | '5m' | '15m' | '1h' = '1h',
-    hoursBack = 24,
-    agentPredictions?: Array<{
-      roboNome: string
-      direcao: 'buy' | 'sell'
-      confianca: number
-      fromToken: string
-      toToken: string
-    }>,
-  ): Promise<{ total: number; acertos: number; erros: number }> {
-    const endTime = Math.floor(Date.now() / 1000)
-    const startTime = endTime - hoursBack * 3600
-
-    const klines = await marketDataCollector.getKlines(symbol, interval, startTime, endTime)
-    if (klines.length < 2) {
-      console.log(`[PROFESSOR] ⚠️ Dados insuficientes para ${symbol} (${klines.length} candles)`)
-      return { total: 0, acertos: 0, erros: 0 }
-    }
-
-    const windows = labelPriceMovement(klines, this._intervalToMinutes(interval), symbol)
-    if (windows.length === 0) return { total: 0, acertos: 0, erros: 0 }
-
-    const robo = escolaRobos.getRobo(symbol) || null
-
-    let total = 0
-    let acertos = 0
-    let erros = 0
-
-    const isStock = isStockSymbol(symbol)
-
-    for (const w of windows) {
-      if (w.label === 'neutro') continue
-      if (isStock) {
-        const windowEnd = new Date(w.endTime * 1000)
-        if (!isUSStockMarketOpen(windowEnd)) continue
-      }
-
-      const agents = agentPredictions ?? this._syntheticPredictions(symbol, robo)
-      if (agents.length === 0) continue
-
-      for (const agent of agents) {
-        const isBuy = agent.direcao === 'buy'
-        const movimentoAlta = w.label === 'alta'
-        const acertou = isBuy ? movimentoAlta : !movimentoAlta
-
-        const pontos = Math.round(agent.confianca * (acertou ? 0.3 : -0.3))
-
-        escolaRobos.registrarResultado(
-          agent.roboNome,
-          acertou,
-          agent.confianca,
-          `[backpack] ${symbol}: ${w.changePercent.toFixed(2)}% (${w.label}) — previa ${agent.direcao} com ${agent.confianca}%`,
-        )
-
-        const roboAtual = escolaRobos.getRobo(agent.roboNome)
-        console.log(
-          `📚 [PROFESSOR][TREINO] ${agent.roboNome} ${acertou ? '✅' : '❌'} ${symbol} | ` +
-          `real: ${w.changePercent.toFixed(2)}% (${w.label}) | previa: ${agent.direcao} ${agent.confianca}% | ` +
-          `${acertou ? '+' : ''}${pontos}pts | total: ${roboAtual.pontos}pts`,
-        )
-
-        const palpiteSimulado: PalpiteRobo = {
-          roboNome: agent.roboNome,
-          rede: 'backpack',
-          par: symbol,
-          fromToken: agent.fromToken,
-          toToken: agent.toToken,
-          direcao: agent.direcao,
-          confianca: agent.confianca,
-          precoNoPalpite: w.openPrice,
-          timestamp: Math.floor(w.startTime / 1000),
-        }
-        if (acertou) {
-          this.streakAcerto.set(agent.roboNome, (this.streakAcerto.get(agent.roboNome) || 0) + 1)
-          this.streakErro.set(agent.roboNome, 0)
-        } else {
-          this.streakErro.set(agent.roboNome, (this.streakErro.get(agent.roboNome) || 0) + 1)
-          this.streakAcerto.set(agent.roboNome, 0)
-        }
-        this._aplicarAjustes(palpiteSimulado, acertou, parametrosRobosBackpack)
-        this._salvarEstado()
-
-        total++
-        if (acertou) acertos++
-        else erros++
-      }
-    }
-
-    console.log(`[PROFESSOR][TREINO] ${symbol}: ${total} avaliações, ${acertos} acertos (${(acertos/total*100).toFixed(1)}%)`)
-    return { total, acertos, erros }
-  }
-
-  private _intervalToMinutes(interval: string): number {
-    const map: Record<string, number> = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240, '6h': 360, '8h': 480, '12h': 720, '1d': 1440 }
-    return map[interval] || 60
-  }
-
-  private _syntheticPredictions(symbol: string, robo: RoboEscolar | null): Array<{ roboNome: string; direcao: 'buy' | 'sell'; confianca: number; fromToken: string; toToken: string }> {
-    if (!robo) return []
-
-    const tokens = symbol.split('_')
-    const fromToken = tokens[0] || 'USDC'
-    const toToken = tokens[1] || symbol
-
-    const confianca = robo.pontos > 0 ? Math.min(75, 40 + robo.pontos / 10) : Math.max(30, 50 + robo.pontos / 20)
-    const direcao = Math.random() > 0.5 ? 'buy' : 'sell'
-
-    return [{
-      roboNome: robo.nome,
-      direcao,
-      confianca: Math.round(confianca),
-      fromToken,
-      toToken,
-    }]
   }
 
   getPairSectorReport(rede: NetworkKey): ParPerformance[]

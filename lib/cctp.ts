@@ -63,7 +63,6 @@ const CCTP_DOMAIN_IDS: Record<string, number> = {
   arbitrum: 3,
   optimism: 2,
   arc: 26,
-  solana: 5,
 };
 
 const TOKEN_MESSENGER_ABI = [

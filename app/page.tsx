@@ -15,9 +15,7 @@ import { Toaster, toast } from "react-hot-toast";
 import { NanopaymentDashboard } from "./components/NanopaymentDashboard";
 import { BridgeWidget } from "./components/BridgeWidget";
 import { BotBank } from "./components/BotBank";
-import { BackpackSignalsPanel } from "./components/BackpackSignalsPanel";
 import { ArqueiroPanel } from "./components/ArqueiroPanel";
-import SolanaPanel from "./components/SolanaPanel";
 import FaucetPanel from "./components/FaucetPanel";
 
 // Agents (usados no connect)
@@ -915,9 +913,7 @@ export default function Home() {
           <SectionMatch section="payments"><NanopaymentDashboard agentScores={agentScores} /></SectionMatch>
           <SectionMatch section="trading"><PregãoDashboard rede={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} /></SectionMatch>
           <SectionMatch section="trading"><ArqueiroPanel /></SectionMatch>
-          <SectionMatch section="signals"><BackpackSignalsPanel /></SectionMatch>
           <SectionMatch section="classroom"><SalaDeAula /></SectionMatch>
-          <SectionMatch section="solana"><SolanaPanel /></SectionMatch>
           <SectionMatch section="faucet"><FaucetPanel rede={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} /></SectionMatch>
         </div>
       )}

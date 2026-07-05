@@ -94,4 +94,3 @@ class ParametrosRobos {
 }
 
 export const parametrosRobos = new ParametrosRobos("arcflow_parametros_robos")
-export const parametrosRobosBackpack = new ParametrosRobos("arcflow_parametros_robos_backpack")

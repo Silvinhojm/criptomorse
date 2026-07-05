@@ -224,11 +224,17 @@ class AdaptiveGridTrading {
     const nPerSide = Math.floor(MAX_GRID_LEVELS / 2)
     const buyPair = TRADING_PAIRS[network]?.find(p => isStable(p.from) && p.to === token)
     const sellPair = TRADING_PAIRS[network]?.find(p => p.from === token && isStable(p.to))
+    if (!buyPair || !sellPair) {
+      pregão.adicionarLog(`⚠️ Grid ${token} sem par completo — removendo grid`)
+      delete this.state[k]
+      saveState(this.state)
+      return
+    }
 
     const freshLevels = this.buildLevels(
       token, newCenter, g.spacing,
-      buyPair?.label ?? `${buyPair?.from}→${token}`,
-      buyPair?.from ?? "USDC" as TokenSymbol,
+      buyPair.label,
+      buyPair.from,
       token,
     )
 

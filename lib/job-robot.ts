@@ -156,9 +156,9 @@ class JobRobot {
   }
 
   /** Recupera a chave privada separada para stress test (evita nonce collision).
-   *  Se PRIVATE_KEY_STRESS não estiver configurada, usa a mesma wallet dos swaps
-   *  com warning (nonce compartilhado, mas funcional). */
-  private _getStressPrivateKey(): string {
+   *  Retorna undefined se não houver chave dedicada — stress tx é pulado,
+   *  evitando nonce collision com swaps reais. */
+  private _getStressPrivateKey(): string | undefined {
     if (typeof process !== 'undefined' && process.env.PRIVATE_KEY_STRESS) {
       return process.env.PRIVATE_KEY_STRESS
     }
@@ -166,22 +166,26 @@ class JobRobot {
       const dedicated = localStorage.getItem('arcflow_private_key_stress')
       if (dedicated) return dedicated
     }
-    if (this._privateKey) {
-      console.warn('[JOB-ROBOT] ⚠️ PRIVATE_KEY_STRESS não configurada — usando mesma wallet (nonce compartilhado)')
-      return this._privateKey
-    }
-    return ''
+    return undefined
   }
 
   /** Envia uma tx de 1 wei para burn address como stress test na Arc.
    *  Usa PRIVATE_KEY_STRESS (carteira separada) para não colidir nonce com swaps reais. */
   async sendStressTx(robotName: string, jobNumber: number): Promise<SwapResult> {
     const stressKey = this._getStressPrivateKey()
-    if (!stressKey || stressKey.length < 64) {
+    if (!stressKey) {
+      return {
+        success: false,
+        stage: 'stress-disabled',
+        error: 'PRIVATE_KEY_STRESS não configurada — stress tx desativado (evita nonce collision)',
+        retryCount: 0,
+      }
+    }
+    if (stressKey.length < 64) {
       return {
         success: false,
         stage: 'stress-error',
-        error: 'PRIVATE_KEY_STRESS não configurada — stress tx desativado',
+        error: 'PRIVATE_KEY_STRESS inválida — stress tx desativado',
         retryCount: 0,
       }
     }
@@ -289,10 +293,19 @@ class JobRobot {
       }
     }
 
-    // Fallback: envia tx simples (0 ARC) como stress na rede — mais confiável que deploy de contrato
+    // Fallback: stress tx só tenta com wallet dedicada (evita nonce collision)
     const stressResult = await this.sendStressTx(robotName, this.cycleCount)
     if (stressResult.success) {
       return stressResult
+    }
+    if (stressResult.stage === 'stress-disabled') {
+      // Sem wallet dedicada — retorna erro do swap original, sem stress
+      return {
+        success: false,
+        stage: 'swap-failed',
+        error: 'Swap falhou (stress tx desativado — configure PRIVATE_KEY_STRESS)',
+        retryCount: 0,
+      }
     }
     this.consecutiveFails++
     return {

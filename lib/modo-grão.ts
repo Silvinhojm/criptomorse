@@ -439,9 +439,9 @@ class ModoGrao {
         this._totalTrades++
         this._lastError = ''
         this._lastSignal = `🧪 Batch ${batchSize}sinais $${batchAmountUSD} ${p.toToken} @ entry $${entryPrice.toFixed(2)}`
-        capitalController.unlock(currentNetwork)
+        capitalController.unlock(p.toToken + ':' + currentNetwork)
       } else {
-        capitalController.unlock(currentNetwork)
+        capitalController.unlock(p.toToken + ':' + currentNetwork)
         this._pendingSignals.push(...signals)
         this._lastError = `Falha batch: ${result.message}`
       }
@@ -483,7 +483,7 @@ class ModoGrao {
     if (pos.profitUSD >= 0) this._wins++
     else this._losses++
     this._totalProfitUSD += pos.profitUSD
-    capitalController.unlock(pos.networkKey)
+    capitalController.unlock(pos.boughtToken + ':' + pos.networkKey)
     this._lastSignal = `${reason === 'target' ? '🎯' : '🛑'} #${pos.id}: $${pos.profitUSD.toFixed(2)}`
   }
 }

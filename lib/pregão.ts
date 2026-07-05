@@ -1016,7 +1016,7 @@ class Pregão {
         if (trade.ordemId) this.atualizarOrdem(trade.ordemId, { status: "falhou" })
       }
     } finally {
-      capitalController.unlock(pacote.rede)
+      capitalController.unlockNetwork(pacote.rede)
     }
   }
 

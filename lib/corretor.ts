@@ -65,7 +65,7 @@ class Corretor {
     if (blockIfPanicked()) {
       this.log(`🚨 Circuit breaker ativo — ordem ${ordem.id} bloqueada`)
       pregão.atualizarOrdem(ordem.id, { status: "falhou" })
-      capitalController.unlock(redeKey)
+      capitalController.unlock(ordem.par.split('→')[1] + ':' + redeKey)
       return
     }
 
@@ -210,7 +210,7 @@ class Corretor {
       this.log(`❌ Erro na execução: ${err.message}`)
       pregão.atualizarOrdem(ordem.id, { status: "falhou" })
     } finally {
-      capitalController.unlock(redeKey)
+      capitalController.unlock(ordem.par.split('→')[1] + ':' + redeKey)
     }
   }
 
@@ -465,7 +465,7 @@ class Corretor {
         if (ordem) pregão.atualizarOrdem(ordem.id, { status: "falhou" })
       }
     } finally {
-      capitalController.unlock(redeKey)
+      capitalController.unlockNetwork(redeKey)
     }
   }
 
