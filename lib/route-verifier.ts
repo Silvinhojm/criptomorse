@@ -28,6 +28,13 @@ const ARC_MCIRBTC = "0x8cad4951192853D14f8Cb813695146b5Ae00EA6d".toLowerCase()
 const ARC_AMM_PAIR = "0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb".toLowerCase()
 const ARC_CIRBTC_POOL = "0xcd7885Ed7D3F4e4b6C88eA2C670a0075b612F073".toLowerCase()
 
+const SYMBOL_TO_ADDRESS: Record<string, string> = {
+  usdc: ARC_USDC,
+  eurc: ARC_EURC,
+  cirbtc: ARC_CIRBTC,
+  mcirbtc: ARC_MCIRBTC,
+}
+
 const STABLECOINS = new Set([
   ARC_USDC, ARC_EURC,
   "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
@@ -66,7 +73,9 @@ export function hasSellRoute(token: string, networkKey: string): boolean {
 }
 
 function checkSellRouteImpl(token: string, networkKey: string): boolean {
-  const t = token.toLowerCase()
+  let t = token.toLowerCase()
+  // Resolve símbolo → endereço (callers podem passar "cirBTC" em vez do hex)
+  if (SYMBOL_TO_ADDRESS[t]) t = SYMBOL_TO_ADDRESS[t]
   if (STABLECOINS.has(t)) return true
   if (networkKey === "arc") {
     for (const pool of KNOWN_POOLS[ARC_CHAIN_ID]) {
