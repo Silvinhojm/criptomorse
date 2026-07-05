@@ -158,10 +158,6 @@ export const TRADING_PAIRS: Record<NetworkKey, Array<{ from: TokenSymbol; to: To
     { from: "cirBTC",  to: "USDC",    label: "cirBTC→USDC" },
     { from: "EURC",    to: "cirBTC",  label: "EURC→cirBTC" },
     { from: "cirBTC",  to: "EURC",    label: "cirBTC→EURC" },
-    { from: "USDC",    to: "mcirBTC", label: "USDC→mcirBTC" },
-    { from: "mcirBTC", to: "USDC",    label: "mcirBTC→USDC" },
-    { from: "EURC",    to: "mcirBTC", label: "EURC→mcirBTC" },
-    { from: "mcirBTC", to: "EURC",    label: "mcirBTC→EURC" },
   ],
   base: [
     { from: "USDC", to: "EURC", label: "USDC→EURC" },

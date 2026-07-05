@@ -263,12 +263,10 @@ export const AGENTE_PARES: Record<string, string[]> = {
   "EURC→USDC": ["Technical", "ArbitrageHunter", "MarketMaker", "Synthesis", "Quantum", "TrendFollower", "MeanReversion"],
   "USDC→cirBTC": ["BTCTrader", "Liquidator", "MomentumTrader", "Synthesis", "Technical", "TrendFollower", "Quantum"],
   "cirBTC→USDC": ["BTCTrader", "Liquidator", "MomentumTrader", "Synthesis", "Technical", "TrendFollower", "Quantum"],
-  "USDC→mcirBTC": ["BTCTrader", "Liquidator", "MomentumTrader", "Synthesis", "Technical"],
-  "mcirBTC→USDC": ["BTCTrader", "Liquidator", "MomentumTrader", "Synthesis", "Technical"],
+
   "EURC→cirBTC": ["ArbitrageHunter", "MarketMaker", "BTCTrader", "Synthesis", "Technical"],
   "cirBTC→EURC": ["ArbitrageHunter", "MarketMaker", "BTCTrader", "Synthesis", "Technical"],
-  "EURC→mcirBTC": ["ArbitrageHunter", "MarketMaker", "BTCTrader", "Synthesis"],
-  "mcirBTC→EURC": ["ArbitrageHunter", "MarketMaker", "BTCTrader", "Synthesis"],
+
   "USDC→USDT": ["ArbitrageHunter", "MarketMaker", "Synthesis"],
   "USDT→USDC": ["ArbitrageHunter", "MarketMaker", "Synthesis"],
   "USDC→WMATIC": ["Technical", "TrendFollower", "MeanReversion", "Liquidator", "MomentumTrader", "Synthesis", "Quantum"],

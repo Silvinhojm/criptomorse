@@ -28,10 +28,12 @@ const AMM_ABI = [
   'function token1() view returns (address)',
 ];
 
+const ARC_USDC = '0x3600000000000000000000000000000000000000'.toLowerCase()
+
 const STABLECOINS = new Set([
   '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
   '0x89b50855aa3be2f677cd6303cec089b5f319d72a',
-  '0x3600000000000000000000000000000000000000',
+  ARC_USDC,
   '0x036cbd53842c5426634e7929541ec2318f3dcf7e',
   '0x1c7d4b196cb0c7b01d743fbc6116a902379c7238',
   '0x07865c6e87b9f70255377e024ace6630c1eaa37f',
@@ -192,9 +194,78 @@ export async function executeDirectSwap(
       };
     }
 
-    // Guard: se não há AMM nem DEX para este par em testnet,
-    // retorna erro em vez de fazer self-transfer (swap falso)
+    // Multi-hop routing para testnet: rota via USDC quando não há par AMM direto
+    // Ex: EURC→cirBTC = EURC→USDC (synthetic) + USDC→cirBTC (AMM)
+    // Ex: cirBTC→EURC = cirBTC→USDC (AMM) + USDC→EURC (synthetic)
     const NATIVE = '0x0000000000000000000000000000000000000000';
+    if (isTestnetChain(chainId) && !AMM_PAIRS[`${fromLower}:${toLower}`]) {
+      const usdcToDest = AMM_PAIRS[`${ARC_USDC}:${toLower}`]
+      const srcToUSDC = AMM_PAIRS[`${fromLower}:${ARC_USDC}`]
+      const isForward = isStableToken(fromLower) && !isStableToken(toLower) && usdcToDest
+      const isReverse = !isStableToken(fromLower) && isStableToken(toLower) && srcToUSDC
+
+      if (isForward) {
+        // Forward: stable → USDC (synthetic) → volatile (AMM)
+        log(`🔄 Multi-hop: ${fromName} → USDC → ${toToken.slice(0, 8)} (testnet)`);
+        try {
+          const pool = new ethers.Contract(usdcToDest, AMM_ABI, signer);
+          const token = new ethers.Contract(ARC_USDC, ERC20_ABI, signer);
+          const toTokenContract = new ethers.Contract(toToken, ERC20_ABI, signer);
+          const balBefore = await toTokenContract.balanceOf(fromAddress);
+          const allowance = await token.allowance(fromAddress, usdcToDest);
+          if (allowance < BigInt(fromAmount)) {
+            const atx = await token.approve(usdcToDest, ethers.MaxUint256);
+            await atx.wait();
+            log(`   ✅ Approve USDC: ${atx.hash}`);
+          }
+          const toAmount = await pool.getAmountOut(ARC_USDC, fromAmount);
+          const minOut = (toAmount * 995n) / 1000n;
+          log(`   💱 Swap AMM: ${fromAmount} USDC → ~${toAmount.toString()} ${toToken.slice(0, 8)}`);
+          const swapTx = await pool.swap(ARC_USDC, fromAmount, minOut);
+          const receipt = await swapTx.wait();
+          const txHash = receipt?.hash || swapTx.hash;
+          const received = (await toTokenContract.balanceOf(fromAddress)) - balBefore;
+          log(`   ✅ Multi-hop: ${txHash} | received ${received}`);
+          return { success: true, txHash, explorerUrl: `https://testnet.arcscan.app/tx/${txHash}`, amountReceived: received.toString() };
+        } catch (ammErr: any) {
+          return { success: false, error: `Multi-hop AMM falhou: ${ammErr?.message?.slice(0, 100)}` };
+        }
+      }
+
+      if (isReverse) {
+        // Reverse: volatile (AMM) → USDC → stable (synthetic)
+        log(`🔄 Multi-hop: ${fromName} → USDC → ${toToken.slice(0, 8)} (testnet)`);
+        try {
+          const pool = new ethers.Contract(srcToUSDC, AMM_ABI, signer);
+          const token = new ethers.Contract(fromToken, ERC20_ABI, signer);
+          log(`   💱 Swap AMM: ${fromAmount} ${fromName} → USDC`);
+          const allowance = await token.allowance(fromAddress, srcToUSDC);
+          if (allowance < BigInt(fromAmount)) {
+            const atx = await token.approve(srcToUSDC, ethers.MaxUint256);
+            await atx.wait();
+            log(`   ✅ Approve ${fromName}: ${atx.hash}`);
+          }
+          const toAmount = await pool.getAmountOut(fromToken, fromAmount);
+          const minOut = (toAmount * 995n) / 1000n;
+          const swapTx = await pool.swap(fromToken, fromAmount, minOut);
+          const receipt = await swapTx.wait();
+          const txHash = receipt?.hash || swapTx.hash;
+          log(`   ✅ Swap AMM: ${txHash} | received ${toAmount.toString()} USDC`);
+          return { success: true, txHash, explorerUrl: `https://testnet.arcscan.app/tx/${txHash}`, amountReceived: toAmount.toString() };
+        } catch (ammErr: any) {
+          return { success: false, error: `Multi-hop AMM falhou: ${ammErr?.message?.slice(0, 100)}` };
+        }
+      }
+
+      // Fallback: se mesmo assim não há rota, blocar
+      const noRoute = fromLower !== NATIVE && toLower !== NATIVE
+      if (noRoute) {
+        log(`⛔ Sem rota de swap real para ${fromName} → ${toToken.slice(0, 8)} em testnet`);
+        return { success: false, error: `Sem rota de swap real para este par em testnet (sem AMM/DEX)` };
+      }
+    }
+
+    // Guard original: bloca testnet sem AMM
     if (isTestnetChain(chainId) && fromLower !== NATIVE && toLower !== NATIVE) {
       const poolKey = `${fromLower}:${toLower}`;
       if (!AMM_PAIRS[poolKey]) {
