@@ -22,10 +22,11 @@ const POLYGON_CHAIN_ID = 137
 
 const ARC_USDC = "0x3600000000000000000000000000000000000000".toLowerCase()
 const ARC_EURC = "0x89b50855aa3be2f677cd6303cec089b5f319d72a".toLowerCase()
-const ARC_CIRBTC = "0xf0c4a4ce1ae1ae0ffe980b5ef89d2ad710607e98".toLowerCase()
-const ARC_MCIRBTC = "0x8cad49518a44f89e21da2953f784d4cbc417c6b8".toLowerCase()
+const ARC_CIRBTC = "0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF".toLowerCase()
+const ARC_MCIRBTC = "0x8cad4951192853D14f8Cb813695146b5Ae00EA6d".toLowerCase()
 
 const ARC_AMM_PAIR = "0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb".toLowerCase()
+const ARC_CIRBTC_POOL = "0xcd7885Ed7D3F4e4b6C88eA2C670a0075b612F073".toLowerCase()
 
 const STABLECOINS = new Set([
   ARC_USDC, ARC_EURC,
@@ -39,6 +40,7 @@ const STABLECOINS = new Set([
 const KNOWN_POOLS: Record<number, PoolEntry[]> = {
   [ARC_CHAIN_ID]: [
     { address: ARC_AMM_PAIR, token0: ARC_USDC, token1: ARC_EURC, fee: 0.003, stablecoin: true },
+    { address: ARC_CIRBTC_POOL, token0: ARC_USDC, token1: ARC_CIRBTC, fee: 0.003, stablecoin: false },
   ],
   [POLYGON_CHAIN_ID]: [],
 }
@@ -67,8 +69,6 @@ function checkSellRouteImpl(token: string, networkKey: string): boolean {
   const t = token.toLowerCase()
   if (STABLECOINS.has(t)) return true
   if (networkKey === "arc") {
-    if (t === ARC_CIRBTC) return false
-    if (t === ARC_MCIRBTC) return false
     for (const pool of KNOWN_POOLS[ARC_CHAIN_ID]) {
       if (pool.token0 === t || pool.token1 === t) return true
     }

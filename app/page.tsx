@@ -17,6 +17,7 @@ import { BridgeWidget } from "./components/BridgeWidget";
 import { BotBank } from "./components/BotBank";
 import { BackpackSignalsPanel } from "./components/BackpackSignalsPanel";
 import { ArqueiroPanel } from "./components/ArqueiroPanel";
+import SolanaPanel from "./components/SolanaPanel";
 
 // Agents (usados no connect)
 import { quantumAgent, technicalAgent, synthesisAgent } from "../lib/multi-agent-system";
@@ -915,6 +916,7 @@ export default function Home() {
           <SectionMatch section="trading"><ArqueiroPanel /></SectionMatch>
           <SectionMatch section="signals"><BackpackSignalsPanel /></SectionMatch>
           <SectionMatch section="classroom"><SalaDeAula /></SectionMatch>
+          <SectionMatch section="solana"><SolanaPanel /></SectionMatch>
         </div>
       )}
 

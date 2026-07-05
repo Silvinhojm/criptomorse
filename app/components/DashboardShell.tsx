@@ -12,6 +12,7 @@ import WelcomeScreen from "./WelcomeScreen"
 import QuantumWavePanel from "./QuantumWavePanel"
 import GridPerformancePanel from "./grid/GridPerformancePanel"
 import AMMPoolStatus from "./AMMPoolStatus"
+import AMMPoolCirBTC from "./AMMPoolCirBTC"
 import ContractRegistryStatus from "./ContractRegistryStatus"
 import NivelAutonomiaStatus from "./NivelAutonomiaStatus"
 import TimingOptimizerStatus from "./TimingOptimizerStatus"
@@ -40,6 +41,7 @@ const SECTIONS: { key: Section; icon: string; label: string }[] = [
   { key: "bridge", icon: "🌉", label: "Bridge" },
   { key: "payments", icon: "🏅", label: "Recompensas" },
   { key: "classroom", icon: "📚", label: "Sala de Aula" },
+  { key: "solana", icon: "☀️", label: "Solana" },
 ]
 
 export default function DashboardShell({ children, account, networkName, isTestnet, currentNetworkKey, onNetworkChange, onConnect, connecting }: Props) {
@@ -101,6 +103,11 @@ export default function DashboardShell({ children, account, networkName, isTestn
             {currentNetworkKey === "arc" && (
               <div className="mb-6">
                 <AMMPoolStatus />
+              </div>
+            )}
+            {currentNetworkKey === "arc" && (
+              <div className="mb-6">
+                <AMMPoolCirBTC />
               </div>
             )}
             <div className="mb-6">

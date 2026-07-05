@@ -25,6 +25,7 @@ import { modoGrao } from "@/lib/modo-grão"
 import { poolScannerExecutor } from "@/lib/pool-scanner-executor"
 import { escolaRobos, MIN_JOBS_PROVA, type RoboEscolar } from "@/lib/escola-robos"
 import { professor } from "@/lib/professor"
+import { volatilityTracker } from "@/lib/volatility-tracker"
 import { pairSector } from "@/lib/pair-sector"
 import { StableOpportunities } from "./StableOpportunities"
 import { PiEngineMonitor } from "./PiEngineMonitor"
@@ -524,6 +525,47 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     setStressTestRunning(false)
     addLog("⏹️ Stress Test em loop parado")
   }
+
+  // ─── MEMORY MONITOR + CLEANUP ───────────────────────────────────────────────
+
+  useEffect(() => {
+    const AUTO_RELOAD_KEY = "arcflow_last_reload"
+    const AUTO_RELOAD_INTERVAL = 2 * 60 * 60 * 1000
+
+    const cleanup = () => {
+      volatilityTracker.cleanStale()
+      positionManager.cleanupInactiveNetworks(Object.keys(NETWORKS) as NetworkKey[])
+      const now = Date.now()
+      const last = parseInt(localStorage.getItem(AUTO_RELOAD_KEY) ?? "0")
+      if (last > 0 && now - last > AUTO_RELOAD_INTERVAL) {
+        addLog(`🔄 Auto-reload após 2h para liberar memória`)
+        localStorage.setItem(AUTO_RELOAD_KEY, String(now))
+        setTimeout(() => window.location.reload(), 3000)
+      }
+    }
+
+    const monitorMemory = () => {
+      if (typeof (window as any).performance?.memory?.usedJSHeapSize === "number") {
+        const mb = Math.round((window as any).performance.memory.usedJSHeapSize / 1024 / 1024)
+        const total = Math.round((window as any).performance.memory.jsHeapSizeLimit / 1024 / 1024)
+        if (mb > 300) addLog(`🫗 Memória: ${mb}MB / ${total}MB — alto, considere recarregar`)
+        else if (mb > 500) {
+          addLog(`🚨 Memória crítica: ${mb}MB — recarregando...`)
+          setTimeout(() => window.location.reload(), 2000)
+        }
+      }
+    }
+
+    const timer = setInterval(() => {
+      cleanup()
+      monitorMemory()
+    }, 30 * 60 * 1000)
+
+    localStorage.setItem(AUTO_RELOAD_KEY, String(Date.now()))
+    addLog(`🧹 Cleanup automático a cada 30min, auto-reload a cada 2h`)
+
+    return () => clearInterval(timer)
+  }, [addLog])
 
   // ─── CLEANUP ─────────────────────────────────────────────────────────────────
 

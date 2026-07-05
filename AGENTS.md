@@ -960,3 +960,76 @@ Overhead: 500-1500ms adicionais. Aceitável para trades de 30-120s.
 - **Build**: limpo (zero erros TS)
 - **Arqueiro**: shadow mode, painel visível na aba Auto Trader, polling 5s
 - **SectionMatch**: display:contents evita remount — wallet/key/estado preservados entre abas
+
+## Session Summary (04/07/2026) — Módulo Solana Independente (BP/USDC)
+
+### What's Changed
+
+1. **`lib/solana/`** — novo diretório auto-contido com 4 módulos:
+   - `config.ts`: endereços BP (`BPxxfRCXkUVhig4HS1Lh7kZqV6SPJhzfEk4x6fVBjPCy`), USDC Solana (`EPjFWdd5...`), SOL, pools Raydium
+   - `client.ts`: `SolanaClient` via fetch bruto (sem `@solana/web3.js`), métodos `getBalance()`, `getTokenBalance()`, `getTokenPrice()` via Jupiter API v6
+   - `pools.ts`: `fetchPools()` + `fetchWalletSummary()` — dados de pool e carteira
+   - `trader.ts`: `getSwapQuote()` + `buildSwapTx()` via Jupiter quote/swap endpoints
+
+2. **`app/api/solana-proxy/route.ts`** — proxy server-side para Solana RPC + Jupiter API, evita CORS do browser
+
+3. **`app/components/SolanaPanel.tsx`** — painel dashboard: input de private key Solana, saldos (SOL/USDC/BP), cotação de swap USDC→BP via Jupiter, indicador de preço BP
+
+4. **Integração UI** — `SectionContext.tsx` add `"solana"`, `DashboardShell.tsx` nova aba `☀️ Solana`, `page.tsx` add `<SectionMatch section="solana">`
+
+### Design
+- **Zero toque no EVM**: módulo não importa nem referencia nada do sistema existente (pregão, route-verifier, agentes, pools Arc/Polygon)
+- **Só carrega se configurado**: painel começa com input de private key, só mostra dados após conectar
+- **Sem `@solana/web3.js`**: toda comunicação via fetch (RPC JSON + Jupiter API v6)
+- **Private key salva em `localStorage`**: chave `arcflow_solana_key`
+
+### Arquivos Criados
+| Arquivo | Descrição |
+|---------|-----------|
+| `lib/solana/config.ts` | Endereços, RPC, Jupiter URL |
+| `lib/solana/client.ts` | SolanaClient (getBalance, getTokenBalance, getTokenPrice) |
+| `lib/solana/pools.ts` | fetchPools, fetchWalletSummary |
+| `lib/solana/trader.ts` | getSwapQuote, buildSwapTx |
+| `app/api/solana-proxy/route.ts` | Proxy RPC + Jupiter |
+| `app/components/SolanaPanel.tsx` | Painel dashboard |
+
+### Arquivos Modificados
+| Arquivo | Mudança |
+|---------|---------|
+| `app/components/SectionContext.tsx` | `+ "solana"` no union type Section |
+| `app/components/DashboardShell.tsx` | `+ ☀️ Solana` tab |
+| `app/page.tsx` | `+ <SectionMatch section="solana">` |
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Solana**: módulo criado, proxy ativo, dashboard integrado, aguardando private key do usuário para testar
+- **Pool USDC/cirBTC na Arc**: intacto (`0xcd7885Ed7D3F4e4b6C88eA2C670a0075b612F073`), swap real testado
+- **EVM**: zero alterações — sistema Polygon/Arc continua operando normalmente
+
+## Session Summary (04/07/2026 tarde) — Out of Memory Fixes
+
+### Problema
+Aplicação consumia memória do navegador após horas rodando ciclos contínuos (Arc: 3s, Polygon: 10s). Posições fechadas acumulavam sem limite no `positionManager`, localStorage crescia sem controle.
+
+### Correções
+
+1. **PositionManager: cap de 200 posições fechadas** — `lib/position-manager.ts`: novo `MAX_CLOSED_POSITIONS = 200` + método `_purgeClosed()` que mantém só as 200 mais recentes. Chamado a cada `savePositions()`.
+
+2. **Memory monitor + cleanup periodico** — `app/components/PregãoDashboard.tsx`: novo `useEffect` com `setInterval` a cada 30min que:
+   - Chama `volatilityTracker.cleanStale()` (remove dados >48h)
+   - Chama `positionManager.cleanupInactiveNetworks()` (remove posições de redes inativas)
+   - Monitora `performance.memory.usedJSHeapSize` — loga aviso se >300MB, recarrega automaticamente se >500MB
+   - Auto-reload forçado a cada 2h (`arcflow_last_reload` no localStorage)
+
+3. **Auto-reload 2h**: se `Date.now() - lastReload > 2h`, força `window.location.reload()` após 3s com log explicativo.
+
+### Impacto
+- Posições fechadas antigas não acumulam mais no heap JS nem no localStorage
+- Memória monitorada ativamente — recarga automática antes do crash
+- Cleanup de dados stale da VolatilityTracker agora é chamado (antes era código morto)
+
+### Arquivos Modificados
+| Arquivo | Mudança |
+|---------|---------|
+| `lib/position-manager.ts` | +MAX_CLOSED_POSITIONS, +_purgeClosed() |
+| `app/components/PregãoDashboard.tsx` | +import volatilityTracker, +memory monitor + cleanup + auto-reload |

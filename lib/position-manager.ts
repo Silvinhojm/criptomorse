@@ -34,6 +34,7 @@ export interface OpenPosition {
 }
 
 const MAX_POSITION_AGE_MS = 12 * 60 * 60 * 1000;
+const MAX_CLOSED_POSITIONS = 200;
 const POSITIONS_STORAGE_KEY = "arcflow_open_positions";
 const MAX_LOSS_PERCENT = -15;
 const STALE_FORCE_CLOSE_MS = 5 * 60 * 1000;
@@ -325,9 +326,21 @@ class PositionManager {
 
   public savePositions(): void {
     try {
+      this._purgeClosed()
       const open = this.getOpenPositions();
       localStorage.setItem(POSITIONS_STORAGE_KEY, JSON.stringify(open));
     } catch { /* localStorage indisponível (SSR, etc.) */ }
+  }
+
+  // Remove closed positions excedentes (mantém só as MAX_CLOSED_POSITIONS mais recentes)
+  private _purgeClosed(): void {
+    const closed = Array.from(this.positions.values()).filter(p => p.status === "closed")
+    if (closed.length <= MAX_CLOSED_POSITIONS) return
+    const sorted = closed.sort((a, b) => (b.closeTimestamp ?? 0) - (a.closeTimestamp ?? 0))
+    const toRemove = sorted.slice(MAX_CLOSED_POSITIONS)
+    for (const pos of toRemove) {
+      this.positions.delete(pos.id)
+    }
   }
 
   private loadPositions(): void {
