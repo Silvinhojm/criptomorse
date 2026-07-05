@@ -1,3 +1,35 @@
+## Session Summary (05/07/2026) — Solana + Backpack Exchange removidos, foco exclusivo Arc EVM
+
+### What's Changed
+
+1. **Deleted Solana module** — `lib/solana/` (4 arquivos: config.ts, client.ts, pools.ts, trader.ts), `app/api/solana-proxy/route.ts`, `app/components/SolanaPanel.tsx`. Removida seção "☀️ Solana" do SectionContext/DashboardShell/page.tsx. Zero referências a Solana em toda a base.
+
+2. **Deleted Backpack Exchange module** — `lib/marketData/` (5 arquivos: MarketDataCollector.ts, labelPriceMovement.ts, liquidityFilter.ts, marketHours.ts, BackpackScanner.ts), `app/api/backpack/[...path]/route.ts`, `app/components/BackpackSignalsPanel.tsx`, `scripts/test-market-data-collector.ts`. Removida aba "🎒 Sinais" do SectionContext/DashboardShell/page.tsx.
+
+3. **Removed `trainOnHistoricalData()` do Professor** — método inteiro (100+ linhas) mais helpers `_intervalToMinutes()` e `_syntheticPredictions()` deletados de `lib/professor.ts`. Import de `marketDataCollector`, `labelPriceMovement`, `isStockSymbol`, `isUSStockMarketOpen` removidos.
+
+4. **Removed `parametrosRobosBackpack`** — segunda instância de `ParametrosRobos` deletada de `lib/parametros-robos.ts`. Import removido de `professor.ts`.
+
+5. **Removed `solana: 5`** — chain domain da Solana removido de `lib/cctp.ts`.
+
+6. **Documentação atualizada** — `ARCFLOW.md`: directory tree, localStorage table, módulos do sistema, Current State limpos. `README.md`: linhas de MarketData/Backpack removidas. `docs/INCIDENTES-TECNICOS.md`: referência a Backpack removida.
+
+7. **Build**: limpo (zero erros TS).
+
+### Impacto
+- **Foco total em Arc EVM**: sem distrações cross-chain (Solana) ou exchanges centralizadas (Backpack)
+- **Código reduzido**: ~1.200 linhas deletadas (15 arquivos)
+- **Professor**: mantém treinamento on-chain (Arc Testnet), sem mais contaminação de parâmetros por dados de CEX
+- **Vercel**: deploy `a9f32b7` enviado, build compilou com sucesso
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Polygon**: $48.22 USDC, $15.72 POL
+- **Arc Testnet**: cirBTC endereço corrigido (oficial Circle), pool USDC/cirBTC precisa recriação
+- **DeFi on ARC**: DEX de terceiro ativa (USDC/EURC pool ~$1.43M TVL)
+- **Arqueiro**: shadow mode, monitorando compressão de volatilidade
+- **Solana/Backpack**: completamente removidos — Arc EVM exclusivo
+
 ## Session Summary (04/07/2026) — Batch Executor + 3 AI Consensus + Route Verifier + Nonce Fix
 
 ### What's Changed
