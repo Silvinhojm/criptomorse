@@ -148,7 +148,9 @@ export function RealTradingDashboard({ account, currentNetwork }: RealTradingDas
         {currentNetwork?.isTestnet && (
           <>
             <br />
-            <a href="https://faucet.arc.network" target="_blank" style={{ color: '#3a6cc8' }}>Obter USDC do faucet</a>
+            <a href="https://faucet.circle.com" target="_blank" style={{ color: '#3a6cc8' }}>Obter tokens do faucet (faucet.circle.com)</a>
+              <br />
+              <a href="https://arc-faucet.dev" target="_blank" style={{ color: '#3a6cc8' }}>Arc Dev Faucet (100 USDC/dia)</a>
           </>
         )}
       </div>

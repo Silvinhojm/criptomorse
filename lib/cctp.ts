@@ -68,7 +68,8 @@ const CCTP_DOMAIN_IDS: Record<string, number> = {
 
 const TOKEN_MESSENGER_ABI = [
   'function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, uint256 maxFee, uint32 minFinalityThreshold) external',
-  'event DepositForBurn(address indexed from, uint256 amount, uint32 indexed destinationDomain, bytes32 indexed mintRecipient, address burnToken, bytes32 indexed maxFee, bytes extraData)',
+  'function depositForBurnWithHook(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, uint256 maxFee, uint32 minFinalityThreshold, bytes hookData) external',
+  'event DepositForBurn(address indexed from, uint256 amount, uint32 indexed destinationDomain, bytes32 indexed mintRecipient, address burnToken, bytes extraData)',
   'function MAX_BURN_AMOUNT_PER_MESSAGE() view returns (uint256)',
 ];
 
@@ -233,8 +234,8 @@ export class CCTPService {
         dstDomainId,
         mintRecipient,
         fromConfig.usdc,
-        0n,   // maxFee (0 = sem Forwarding Service)
-        0,    // minFinalityThreshold (0 = dev chain default)
+        500n,   // maxFee (0.0005 USDC — cobre protocol fee)
+        1000,   // minFinalityThreshold (1000 = Fast Transfer)
         { gasLimit: 300000 }
       );
       const burnReceipt = await burnTx.wait();
@@ -252,18 +253,10 @@ export class CCTPService {
         throw new Error('DepositForBurn event not found');
       }
 
-      // V2: extraData contém a mensagem codificada; usamos o txHash como messageHash
       const messageHash = burnReceipt.transactionHash;
-      const messageBytes = burnEvent.args.extraData || ethers.concat([
-        ethers.toBeHex(burnEvent.args.amount, 32),
-        ethers.toBeHex(burnEvent.args.dstDomain || burnEvent.args.destinationDomain, 4),
-        burnEvent.args.mintRecipient,
-        ethers.zeroPadValue(burnEvent.args.burnToken || fromConfig.usdc, 32),
-        ethers.toBeHex(0, 32),
-      ]);
 
       notifyStep({ ...steps[2], state: 'pending' });
-      const attestation = await this.fetchAttestation(messageHash);
+      const { attestation, message: messageBytes } = await this.fetchAttestation(messageHash, dstDomainId);
       notifyStep({ ...steps[2], state: 'success' });
 
       const toProvider = this.providers[params.toChain];
@@ -295,27 +288,21 @@ export class CCTPService {
     }
   }
 
-  private async fetchAttestation(messageHash: string, maxRetries = 30, intervalMs = 2000): Promise<string> {
-    const cleanHash = messageHash.startsWith('0x') ? messageHash.slice(2) : messageHash;
-    const urls = [
-      `${ATTESTATION_SERVICE_URL}/${cleanHash}/attestation`,
-      `${ATTESTATION_SERVICE_SANDBOX_URL}/${cleanHash}/attestation`,
-      `${ATTESTATION_SERVICE_URL}/${cleanHash}`,
-      `${ATTESTATION_SERVICE_SANDBOX_URL}/${cleanHash}`,
-    ];
-    
+  private async fetchAttestation(messageHash: string, domainId: number, maxRetries = 60, intervalMs = 2000): Promise<{ attestation: string; message: string }> {
     for (let i = 0; i < maxRetries; i++) {
-      for (const url of urls) {
+      for (const baseUrl of [ATTESTATION_SERVICE_SANDBOX_URL, ATTESTATION_SERVICE_URL]) {
         try {
+          const url = `${baseUrl}/${domainId}?transactionHash=${messageHash}`;
           const response = await fetch(url);
           if (response.ok) {
             const data = await response.json();
-            if (data.attestation) {
-              return data.attestation;
+            const msg = data?.messages?.[0];
+            if (msg?.status === "complete" && msg?.attestation && msg?.message) {
+              return { attestation: msg.attestation, message: msg.message };
             }
           }
         } catch (err) {
-          console.debug(`Attestation fetch failed for ${url}:`, err);
+          console.debug(`Attestation fetch failed:`, err);
         }
       }
       await new Promise(resolve => setTimeout(resolve, intervalMs));

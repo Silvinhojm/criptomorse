@@ -28,10 +28,9 @@ export const TOKEN_DECIMALS: Record<string, number> = {
 }
 
 // Divisores de preço para tokens que compartilham COIN_IDS de outro ativo
-// Ex: mcirBTC usa currency_id do BTC mas tem onboard 18 decimals → divide por 10^10
+// cirBTC oficial na Arc (0x171A42...) tem 8 decimals e preço 1:1 com BTC — sem divisor
 export const PRICE_DIVIDERS: Record<string, number> = {
-  cirBTC: 10_000_000_000, // 10^10 — preço raw do BTC (~$60k) dividido para ~$0.000006
-  mcirBTC: 10_000_000_000, // 10^10 — mesma correção
+  mcirBTC: 10_000_000_000, // 10^10 — mock token, mantido para compatibilidade
 }
 
 // ─── Redes suportadas ────────────────────────────────────────────────────────
@@ -57,7 +56,7 @@ export const NETWORKS = {
     tokens: {
       USDC: "0x3600000000000000000000000000000000000000",
       EURC: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
-      cirBTC: "0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF",
+      cirBTC: "0x171A4217b86A807A64eB94757Db6849fb4bDbAA0",
       mcirBTC: "0x8cad4951192853D14f8Cb813695146b5Ae00EA6d",
       NATIVE: "0x0000000000000000000000000000000000000000",
     },

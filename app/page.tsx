@@ -18,6 +18,7 @@ import { BotBank } from "./components/BotBank";
 import { BackpackSignalsPanel } from "./components/BackpackSignalsPanel";
 import { ArqueiroPanel } from "./components/ArqueiroPanel";
 import SolanaPanel from "./components/SolanaPanel";
+import FaucetPanel from "./components/FaucetPanel";
 
 // Agents (usados no connect)
 import { quantumAgent, technicalAgent, synthesisAgent } from "../lib/multi-agent-system";
@@ -917,6 +918,7 @@ export default function Home() {
           <SectionMatch section="signals"><BackpackSignalsPanel /></SectionMatch>
           <SectionMatch section="classroom"><SalaDeAula /></SectionMatch>
           <SectionMatch section="solana"><SolanaPanel /></SectionMatch>
+          <SectionMatch section="faucet"><FaucetPanel rede={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} /></SectionMatch>
         </div>
       )}
 

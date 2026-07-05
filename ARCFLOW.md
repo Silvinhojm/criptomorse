@@ -731,6 +731,15 @@ Se for adicionar um novo token, atualizar em **todos** os lugares:
 9. `networks.ts`: adicionar token à rede correspondente (UI)
 10. `ARCFLOW.md`: atualizar seção de contratos + pares prioritários
 
+### Faucet Automático
+- `app/api/faucet/route.ts`: proxy server-side para `POST /v1/faucet/drips` da Circle
+- Requer `CIRCLE_API_KEY` no `.env.local` (console.circle.com/api-keys)
+- Redes: ARC-TESTNET, ETH-SEPOLIA, AVAX-FUJI, MATIC-AMOY, SOL-DEVNET, ARB-SEPOLIA, BASE-SEPOLIA
+- Com API key: 1 clique → 20 USDC + 20 EURC + nativo (ARC/ETH/etc)
+- Sem API key: link para faucet.circle.com (reCAPTCHA manual)
+- `app/components/FaucetPanel.tsx`: UI na aba 🚰 Faucet
+- Limite: 2h por par (endereço + blockchain)
+
 ---
 
 ## 15. PREGÃO ARC — Multi-Armed Bandit (Testnet)
@@ -3965,3 +3974,109 @@ Em 04/07/2026, o sistema passou por uma análise de consenso entre 3 IAs (DeepSe
 - Nonce collision: `PRIVATE_KEY_STRESS` para carteira separada de stress test
 - Route gate: `hasSellRoute()` bloqueia compra de tokens sem rota de venda (cirBTC/mcirBTC na Arc)
 - ICircuitBreaker: Interface unificada (RouteCircuitBreaker + FinancialCircuitBreaker)
+
+---
+
+## 56. cirBTC FALHA E CORREÇÃO (05/07/2026) — Alinhamento com whitepaper Circle
+
+### Histórico da Falha
+
+Desde o início das operações na Arc Testnet (junho/2026), o sistema usava o endereço **`0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF`** para cirBTC. Este endereço:
+
+- **Não está no whitepaper da Circle** para cirBTC on Arc
+- Tem **6 decimals** (cirBTC oficial tem 8 decimals)
+- Não tinha pool de liquidez nem rota de venda real
+- Exigiu workaround de `PRICE_DIVIDER = 10^10` em `real-swap-executor.ts` para normalizar preço
+- **Não era cirBTC** — era outro token na Arc Testnet
+
+**Impacto**: `hasSellRoute()` nunca bloqueou compra de USDC→cirBTC porque o código procurava pelo endereço oficial (`0x171A42...`) em `KNOWN_POOLS`, mas o token cadastrado em `EXECUTOR_TOKENS` era o falso (`0xf0C4...`). O gate rodava, mas o token sendo comprado não era o mesmo que o gate verificava.
+
+### Descoberta
+
+Em 05/07/2026, durante análise de `hasSellRoute()`, descobrimos que:
+
+1. **Whitepaper Circle** lista cirBTC on Arc como `0x171A4217b86A807A64eB94757Db6849fb4bDbAA0`
+2. **Explorer Arc** confirma existência do token oficial com 8 decimals e supply na testnet
+3. O endereço `0xf0C4...` que usávamos **não aparece** em nenhum documento oficial da Circle
+4. DeFi on ARC DEX (`Factory 0x34A0b64a...`, `Router 0x284C5Afc...`) — DEX de terceiros na Arc — **não tem pool para o endereço falso**, mas pode ter para o oficial
+5. O token falso tem **6 decimals** (incompatível com o padrão de 8 decimals do whitepaper)
+
+### Correções Aplicadas
+
+| Arquivo | Correção |
+|---------|----------|
+| `lib/networks.ts` | Token cirBTC Arc: `0xf0C4...` → `0x171A42...` |
+| `lib/real-swap-executor.ts` | `EXECUTOR_TOKENS.arc.cirBTC.address` corrigido; `PRICE_DIVIDER.cirBTC` removido (token oficial tem pricing padrão) |
+| `lib/route-verifier.ts` | `SYMBOL_TO_ADDRESS.cirBTC` corrigido; `KNOWN_POOLS.arc` atualizado |
+| `app/components/AMMPoolCirBTC.tsx` | `CIRBTC` constant corrigida para endereço oficial |
+| `scripts/deployCirBTCPool.js` | Endereço cirBTC corrigido (bug rawRatio pendente) |
+
+### Alinhamento com Circle Whitepaper
+
+A visão da Circle para cirBTC on Arc (whitepaper):
+
+- **Bridge nativa**: cirBTC na Arc representa BTC bridged via CCTP-style — mesmo mecanismo que USDC usa entre chains
+- **8 decimals**: consistente com BTC (8 decimals) em vez de 6 decimals (USDC padrão)
+- **Preço 1:1 com BTC**: cada cirBTC = 1 BTC (não 1 micro-BTC como o token falso sugeria)
+- **Pool oficial**: Circle incentiva pools em DEXs nativas da Arc (DeFi on ARC) para liquidez de cirBTC
+- **Uso pretendido**: cirBTC como colateral, meio de pagamento e par de trading na Arc — mesmo uso que damos a ele
+
+**Nosso sistema agora está 100% alinhado com a visão Circle**: usamos o endereço oficial, removemos workarounds do token falso, e integraremos com DeFi on ARC para liquidez real.
+
+### Posição Presa de 248h
+
+A posição cirBTC "há 248h" no dashboard (comprada com token falso `0xf0C4...`) **não pode ser vendida** porque:
+- O token na wallet é `0xf0C4...` (falso), não `0x171A42...` (oficial)
+- `hasSellRoute()` agora bloqueia corretamente — não encontra rota de venda para o token falso
+- Solução: fechar posição manualmente via explorer ou ignorar (saldo provavelmente irrecuperável)
+
+### Próximos Passos
+
+1. Recriar pool USDC/cirBTC com endereço oficial `0x171A42...` — via DeFi on ARC Factory (preferível)
+2. Integrar DeFi on ARC Router (`0x284C5Afc...`) no `route-verifier.ts` e `real-swap-executor.ts` para EURC↔USDC (pool real de terceiro com $1.43M de TVL)
+3. Fechar ou abandonar posição no token falso `0xf0C4...`
+4. Iniciar testes de round-trip com cirBTC oficial na Arc
+5. Documentar pool oficial neste ARCFLOW.md seção 38
+
+---
+
+## 57. NOVOS MÓDULOS (03-05/07/2026)
+
+### Arqueiro — Modulador de Tensão/Timing
+- `lib/arqueiro.ts` (294 linhas): pseudo-ATR 20/100, squeeze Bollinger/Keltner, máquina de estados (OCIOSO→TENSIONANDO→ARMADO→DISPARO→DESARMADO)
+- Shadow mode (Fase 1): apenas logs, score=0. Integrado em `pregão.ts:verificarOrdem()` e `executarPacotes()`
+- `app/components/ArqueiroPanel.tsx`: painel em tempo real na aba Auto Trader
+
+### Backpack Exchange — Market Data + Sinais
+- `lib/marketData/MarketDataCollector.ts`: cliente HTTP para API pública da Backpack (klines, markets, trades, ticker)
+- `lib/marketData/labelPriceMovement.ts`: rotulagem de movimento (alta/baixa/neutro) com thresholds por classe (crypto 0.3%, stocks 1.5%)
+- `lib/marketData/BackpackScanner.ts`: scanner multi-símbolo com descoberta dinâmica de top stocks, liquidez, market hours
+- `lib/marketData/liquidityFilter.ts`: filtro de ativos com volume <$50K ou amplitude >50%
+- `lib/marketData/marketHours.ts`: `isUSStockMarketOpen()` com timezone NYSE/NASDAQ
+- `lib/professor.ts`: `trainOnHistoricalData()` — treinamento com dados históricos da Backpack
+- `app/components/BackpackSignalsPanel.tsx`: painel de sinais na aba 🎒 Sinais
+- `app/api/backpack/[...path]/route.ts`: proxy CORS server-side
+
+### Solana — Módulo Independente (BP/USDC)
+- `lib/solana/config.ts`: endereços BP, USDC Solana, SOL, pools Raydium
+- `lib/solana/client.ts`: SolanaClient via fetch bruto (sem @solana/web3.js)
+- `lib/solana/pools.ts`: fetch de pools e resumo de carteira
+- `lib/solana/trader.ts`: cotação e construção de swap via Jupiter API v6
+- `app/api/solana-proxy/route.ts`: proxy server-side para Solana RPC + Jupiter
+- `app/components/SolanaPanel.tsx`: painel dashboard na aba ☀️ Solana
+- **Design**: zero toque no EVM, módulo auto-contido, sem dependências do sistema existente
+
+### Correções Estruturais (05/07/2026)
+- **cirBTC address**: endereço falso `0xf0C4...` substituído pelo oficial Circle `0x171A42...` em 5 arquivos
+- **PRICE_DIVIDER removido**: workaround de 10^10 para cirBTC eliminado (token oficial tem pricing padrão)
+- **Build limpo**: zero erros TS, apenas warnings pré-existentes de refs em PregãoDashboard.tsx
+- **hasSellRoute()**: agora bloqueia corretamente compra de cirBTC no token falso (sem rota de venda)
+
+### Current State (05/07/2026)
+- **Build**: limpo (zero erros TS)
+- **Polygon**: $48.22 USDC, $15.72 POL
+- **Arc Testnet**: cirBTC endereço corrigido, pool USDC/cirBTC precisa recriação com token oficial
+- **DeFi on ARC**: DEX de terceiro descoberta (Factory `0x34A0b...`, Router `0x284C5A...`), pool USDC/EURC com $1.43M TVL
+- **Arqueiro**: shadow mode ativo, ciclo 60s, monitorando pares com compressão de volatilidade
+- **Backpack**: 3 crypto (BTC, ETH, SOL) + 2 stocks (MU.US, SPCX.US), scan a cada 60s
+- **Solana**: módulo criado, aguardando private key para testes

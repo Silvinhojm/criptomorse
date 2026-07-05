@@ -2,7 +2,7 @@
 
 import { createContext, useContext } from "react"
 
-export type Section = "overview" | "trading" | "bot" | "bridge" | "payments" | "classroom" | "signals" | "solana"
+export type Section = "overview" | "trading" | "bot" | "bridge" | "payments" | "classroom" | "signals" | "solana" | "faucet"
 export type SectionContextType = { section: Section }
 
 export const SectionContext = createContext<SectionContextType>({ section: "overview" })

@@ -42,6 +42,7 @@ const SECTIONS: { key: Section; icon: string; label: string }[] = [
   { key: "payments", icon: "🏅", label: "Recompensas" },
   { key: "classroom", icon: "📚", label: "Sala de Aula" },
   { key: "solana", icon: "☀️", label: "Solana" },
+  { key: "faucet", icon: "🚰", label: "Faucet" },
 ]
 
 export default function DashboardShell({ children, account, networkName, isTestnet, currentNetworkKey, onNetworkChange, onConnect, connecting }: Props) {

@@ -7,7 +7,7 @@ import { DESIGN_SYSTEM as DS } from "@/constants/design-system"
 const POOL_ADDR = "0x8cdc84f93F6a5413667354F8fB516959D682423c"
 const ARC_RPC = "https://rpc.testnet.arc.network"
 const USDC = "0x3600000000000000000000000000000000000000"
-const CIRBTC = "0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF"
+const CIRBTC = "0x171A4217b86A807A64eB94757Db6849fb4bDbAA0"
 
 const POOL_ABI = [
   "function reserve0() view returns (uint256)",
