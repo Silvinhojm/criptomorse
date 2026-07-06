@@ -240,6 +240,7 @@ class RealAutomatedTrader {
 
   private async _persist() {
     if (!this.persistEnabled) return;
+    if (this.tradeHistory.length > 500) this.tradeHistory = this.tradeHistory.slice(-500);
     await saveTradeHistory(this.tradeHistory);
     await saveTraderState({ totalProfit: this.totalProfit, lastAction: this.lastAction });
   }

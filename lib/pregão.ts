@@ -78,6 +78,7 @@ export interface CashBoxState {
 type OkIndex = Map<string, Map<string, OkSignal[]>>
 
 import { batchExecutor } from "./batch-executor";
+import { recordRouteFailure, hasSellRoute } from "./route-verifier";
 class Pregão {
   private oks: OkIndex = new Map()
   private ordens: OrdemExecucao[] = []
@@ -425,6 +426,13 @@ class Pregão {
       return
     }
 
+    // Verifica se o token de destino tem rota de venda (para tokens voláteis)
+    if (!isStable(ordemTo as any) && !hasSellRoute(ordemTo, rede)) {
+      this.log(`🚫 ${ordemTo}@${rede} sem rota de venda — ordem rejeitada`)
+      recordRouteFailure(ordemTo, rede)
+      return
+    }
+
     // Cria a ordem
     const ordem: OrdemExecucao = {
       id: `${TEM_GRID ? "grid" : "ordem"}_${Date.now()}_${rede}_${par.replace(/[^a-zA-Z0-9]/g, "_")}`,
@@ -440,6 +448,7 @@ class Pregão {
     }
 
     this.ordens.push(ordem)
+    if (this.ordens.length > 500) this.ordens = this.ordens.slice(-500)
     this._saveOrdens()
     
     // Log detalhado da origem da ordem
@@ -778,12 +787,23 @@ class Pregão {
     const erros = results.filter(r => r === null).length
 
     if (swaps.length === 0) {
-      this.log(`[PREGÃO] ❌ Nenhum swap válido no pacote ${pacote.id} (${erros} erros)`)
+      this.log(`[PREGÃO] ❌ Nenhum swap válido no pacote ${pacote.id} (${erros} erros) — marcando ordens como falha`)
+      for (const trade of pacote.trades) {
+        if (trade.ordemId) this.atualizarOrdem(trade.ordemId, { status: "falhou" })
+        if (!isStable(trade.toToken)) recordRouteFailure(trade.toToken, pacote.rede)
+      }
       return
     }
 
     if (erros > 0) {
       this.log(`[PREGÃO] ⚠️ ${erros}/${pacote.trades.length} trades sem rota — prosseguindo com ${swaps.length}`)
+      for (let i = 0; i < pacote.trades.length; i++) {
+        if (results[i] === null) {
+          const trade = pacote.trades[i]
+          if (trade.ordemId) this.atualizarOrdem(trade.ordemId, { status: "falhou" })
+          if (!isStable(trade.toToken)) recordRouteFailure(trade.toToken, pacote.rede)
+        }
+      }
     }
 
     // ─── 3. Gas-aware threshold (relaxa na última tentativa) ──
@@ -827,6 +847,7 @@ class Pregão {
       timestamp: Date.now(),
     }
     this.packageResults.push(pkgResult)
+    if (this.packageResults.length > 100) this.packageResults = this.packageResults.slice(-100)
 
     this.log(`[PREGÃO] 🚀 Pacote ${pacote.id}: ${swaps.length} swaps em ${pacote.rede} | lucro esp.: $${lucroRealEsperado.toFixed(4)} | gas: $${estimatedGasTotal.toFixed(4)}`)
 

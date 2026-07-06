@@ -1,4 +1,5 @@
 ﻿import { saveCircuitBreakerState, loadCircuitBreakerState } from "./persistence";
+import { SafetyGuard } from './agent-framework/safety-guard'
 
 // ─── ICircuitBreaker Interface ────────────────────────────────────────────────
 // Interface unificada para todos os circuit breakers do sistema.
@@ -15,45 +16,40 @@ export interface ICircuitBreaker {
 // ─── RouteCircuitBreaker ──────────────────────────────────────────────────────
 // Monitora saúde de uma rota específica (LI.FI, DEX direto, etc).
 // Abre após 5 falhas consecutivas, cooldown de 20 minutos.
+// Implementado via SafetyGuard genérico do agent-framework.
 
 export class RouteCircuitBreaker implements ICircuitBreaker {
+  private guard: SafetyGuard
   private routeName: string
-  private _consecutiveFailures = 0
-  private _cooldownUntil: number | null = null
-  private readonly MAX_ERRORS = 5
-  private readonly COOLDOWN_MS = 20 * 60 * 1000
 
   constructor(routeName: string) {
     this.routeName = routeName
+    this.guard = new SafetyGuard({
+      name: routeName,
+      maxFailures: 5,
+      cooldownMs: 20 * 60 * 1000,
+      onTrigger: (msg) => console.warn(`🔇 ${msg}`),
+      onRecover: () => console.log(`✅ ${routeName} recuperado do cooldown`),
+    })
   }
 
   recordSuccess(): void {
-    this._consecutiveFailures = 0
-    this._cooldownUntil = null
+    this.guard.recordSuccess()
   }
 
   recordFailure(reason?: string): void {
-    this._consecutiveFailures++
-    console.warn(`🗺️ ${this.routeName}: erro #${this._consecutiveFailures}${reason ? ` — ${reason}` : ''}`)
-    if (this._consecutiveFailures >= this.MAX_ERRORS && !this._cooldownUntil) {
-      this._cooldownUntil = Date.now() + this.COOLDOWN_MS
-      console.warn(`🔇 ${this.routeName} em cooldown até ${new Date(this._cooldownUntil).toLocaleTimeString()}`)
-    }
+    console.warn(`🗺️ ${this.routeName}: erro #${this.guard.getStatus().consecutiveFailures + 1}${reason ? ` — ${reason}` : ''}`)
+    this.guard.recordFailure(reason)
   }
 
   isOpen(): boolean {
-    if (!this._cooldownUntil) return false
-    if (Date.now() >= this._cooldownUntil) {
-      this._consecutiveFailures = 0
-      this._cooldownUntil = null
-      return false
-    }
-    return true
+    return this.guard.isOpen()
   }
 
   getName(): string { return this.routeName }
   getStatus(): { open: boolean; consecutiveFailures: number; cooldownUntil: number | null } {
-    return { open: this.isOpen(), consecutiveFailures: this._consecutiveFailures, cooldownUntil: this._cooldownUntil }
+    const s = this.guard.getStatus()
+    return { open: s.isOpen, consecutiveFailures: s.consecutiveFailures, cooldownUntil: s.cooldownUntil }
   }
 }
 

@@ -40,6 +40,7 @@ const SECTIONS: { key: Section; icon: string; label: string }[] = [
   { key: "bridge", icon: "🌉", label: "Bridge" },
   { key: "payments", icon: "🏅", label: "Recompensas" },
   { key: "classroom", icon: "📚", label: "Sala de Aula" },
+  { key: "framework", icon: "🏗️", label: "Framework" },
   { key: "faucet", icon: "🚰", label: "Faucet" },
 ]
 

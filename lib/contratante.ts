@@ -131,6 +131,7 @@ class Contratante {
         error: result.error,
       }
       this._reports.push(report)
+      if (this._reports.length > 100) this._reports = this._reports.slice(-100)
 
     if (result.success) {
       this._swapsSucesso++

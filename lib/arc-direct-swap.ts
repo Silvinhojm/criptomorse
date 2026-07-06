@@ -1,6 +1,7 @@
 import { ethers } from 'ethers';
 import { NonceManager } from './nonce-manager';
 import type { QuoteResult } from './lifi-executor';
+import { recordRouteFailure } from './route-verifier';
 
 const ERC20_ABI = [
   'function approve(address spender, uint256 amount) returns (bool)',
@@ -14,9 +15,7 @@ const ERC20_ABI = [
 const AMM_PAIRS: Record<string, string> = {
   '0x3600000000000000000000000000000000000000:0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a': '0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb',
   '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a:0x3600000000000000000000000000000000000000': '0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb',
-  // cirBTC — Circle Wrapped Bitcoin (contrato oficial Circle na Arc)
-  '0x3600000000000000000000000000000000000000:0x3120d73da9691ccb0bcea8e00d4c039086a32523': '0x54B607f069D62468b20a0281976f6114Fe80d997',
-  '0x3120d73da9691ccb0bcea8e00d4c039086a32523:0x3600000000000000000000000000000000000000': '0x54B607f069D62468b20a0281976f6114Fe80d997',
+
 };
 
 const AMM_ABI = [

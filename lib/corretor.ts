@@ -14,6 +14,7 @@ import { hasDirectDex, getDirectDexQuote, calculateAmountOutMin } from "./direct
 import { ethers } from "ethers"
 import { gasPriceOracle } from "./gas-price-oracle"
 import { COIN_IDS } from "./coin-ids"
+import { recordRouteFailure } from "./route-verifier"
 
 const AGENTES_CONHECIDOS = new Set([
   "Quantum", "Technical", "TrendFollower", "MeanReversion",
@@ -342,6 +343,7 @@ class Corretor {
         } else {
           pregão.atualizarOrdem(ordem.id, { status: "falhou" })
           log(`❌ Sem rota para ${ordem.par}`)
+          recordRouteFailure(ordem.fromToken, redeKey)
           return null
         }
 

@@ -88,6 +88,7 @@ class BatchExecutor {
     this.totalBatches++
     this.totalOrdersExecuted += orders.length
     this.history.push(...results)
+    if (this.history.length > 100) this.history = this.history.slice(-100)
 
     return results
   }

@@ -130,6 +130,7 @@ class NanopaymentSystem {
       status: 'completed'
     };
     this.payments.push(payment);
+    if (this.payments.length > 500) this.payments = this.payments.slice(-500)
 
     console.log(`ðŸ’¸ Nanopagamento: ${fromAgent} pagou $${amount} para ${toAgent} - ${reason}`);
     return payment;
@@ -223,6 +224,7 @@ class NanopaymentSystem {
       status: 'completed',
     }
     this.payments.push(payment)
+    if (this.payments.length > 500) this.payments = this.payments.slice(-500)
 
     console.log(`🏆 Recompensa: ${agentName} recebeu $${profitShare.toFixed(4)} por trade ${pair} (${tradeId.slice(0, 8)})`)
     return payment

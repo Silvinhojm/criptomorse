@@ -1,6 +1,6 @@
-# ArcFlow — Sistema Multi-Agente de Trading Autônomo
+# ArcFlow — ARC Agent Coordination Framework
 
-> Plataforma de trading algorítmico multi-chain com 13 agentes de IA operando em consenso, executando swaps reais em Polygon, Arc, Base e Ethereum. Também conhecido como **CriptoMorse**.
+> **ArcFlow é um framework de coordenação de agentes autônomos com camada compartilhada de cognição.** 13 agentes de IA operam em consenso sobre uma base de conhecimento unificada, executando desde trading algorítmico multi-chain até arbitragem de stablecoins — tudo de forma autônoma, sem intervenção humana. Também conhecido como **CriptoMorse**.
 
 ![Next.js](https://img.shields.io/badge/Next.js-15.5-black?logo=next.js)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue?logo=typescript)
@@ -12,39 +12,82 @@
 
 ## O que é
 
-ArcFlow é uma plataforma de trading automatizado onde múltiplos agentes de IA votam em oportunidades de mercado, formam consenso, e executam swaps reais na blockchain — tudo de forma autônoma, sem intervenção humana.
+ArcFlow é um **ARC Agent Coordination Framework** — uma infraestrutura completa para coordenação de agentes autônomos baseada em conhecimento compartilhado. Cada agente consulta uma **camada central de cognição (Knowledge Service)** antes de decidir, garantindo que todas as decisões sejam informadas por um contexto consistente de liquidez, rotas, gas, reputação e histórico.
 
-O sistema opera como um **pregão de bolsa digital**: cada agente analisa o mercado com sua própria estratégia, emite votos com grau de confiança, e o Pregão central consolida o consenso antes de autorizar qualquer execução. Um módulo **Professor** avalia cada decisão após o fato, ajustando os parâmetros de cada agente individualmente com base no histórico de acertos.
+O sistema opera em 6 camadas: **Identity → Knowledge → Intent → Voting → Coordinator → Execution**, com **Audit** e **On-chain Proof** como camadas transversais. Originalmente construído para trading algorítmico multi-chain, o framework evoluiu para suportar qualquer tipo de agente autônomo que precise coordenar ações com base em conhecimento coletivo.
 
 ---
 
 ## Arquitetura
 
+### ARC Agent Framework (visão conceitual)
+
 ```
-Agentes (13) → Pregão → Escriturário → Capital Controller → Corretor → Blockchain
-     ↑                                                                    ↓
-  Professor ←←←←←←← Accountant + Position Manager ←←←←←←←←←←←←←←←←←←←
-     ↓
-  Escola de Robôs (ranking + promoção + turnos de 10min)
+          Identity       Knowledge       Reputation
+              │               │               │
+              └───────┬───────┴───────┬───────┘
+                      │               │
+                   Intent          Voting
+                      │               │
+                      └───────┬───────┘
+                              │
+                         Coordinator
+                              │
+                         Execution
+                              │
+                            Audit
+                              │
+                       On-chain Proof
+```
+
+### ARC Agent Framework (visão implementada)
+
+```
+KnowledgeService.query() ←──────────────┬──────────────┐
+    │                                    │              │
+    ├── PoolProfiler (liquidez)          ▼              ▼
+    ├── RouteVerifier (rotas)       Agentes (13)   Votação
+    ├── GasOracle (custo gas)           │
+    ├── VolatilityTracker (mercado)     ▼
+    ├── Accountant (histórico)     KnowledgeReport
+    └── Reputation (reputação)          │
+                                        ▼
+                                    Intent (AgentIntent)
+                                        │
+                                        ▼
+                                 Pregão → Escriturário
+                                        │
+                                        ▼
+                              Capital Controller
+                                        │
+                                        ▼
+                              Corretor → Blockchain
+                                        │
+                                        ▼
+                              Professor (aprendizado)
 ```
 
 ### Módulos Principais
 
 | Módulo | Descrição |
 |--------|-----------|
-| **Pregão** | Livro de ordens central, matching de OKs, formação de consenso |
+| **Knowledge Service** | SSOT de cognição compartilhada. Agrega 6 fontes (liquidez, rota, gas, mercado, histórico, reputação) em um `KnowledgeReport` padronizado com 4 scores, riskScore, confidenceModifier e recomendações acionáveis. Cache híbrido memória+localStorage com TTLs. |
+| **Pregão** | Livro de ordens central, matching de OKs, formação de consenso. Modulado por Arqueiro e filtrado por Knowledge Service. |
 | **Escriturário** | Valida saldo, dimensiona valor, previne concorrência de par |
 | **Corretor** | Executa swaps via DEX direto (SushiSwap/Uniswap) + LI.FI aggregator |
-| **Professor** | Avalia acertos/erros, ajusta parâmetros por agente, cache em localStorage |
+| **Professor** | Avalia acertos/erros, ajusta parâmetros por agente, cache em localStorage. Circuit breaker por agente+par com recovery. |
 | **Escola de Robôs** | Ranking, turnos de 10min, promoção de agentes com base em performance |
 | **Capital Controller** | Gate central FIFO: 1 trade por vez, fila ordenada por score |
+| **Intent Publisher** | Protocolo formal de intents (off-chain + on-chain via ERC-8183). `OnChainIntentPublisher` com auto-sign e fallback off-chain. |
+| **Reputation** | Sistema de reputação de agentes (winRate, score, streak, level). Integrado ao Knowledge Service como peso de confiança. |
+| **Audit** | Audit trail completo: ações, propostas, resultados, lucro, gas. `AuditReport` com top agentes por período. |
 | **StableMR** | Mean-reversion em pares EURC/USDC com PiFilter Gaussiano |
 | **Modo Grão** | Scalping de stablecoins com batching de sinais MR+MM |
 | **Oscillation Hunter** | Micro-scalping em pools Uniswap V3 profundas (USDC/USDT 0.01%) |
 | **Grid Trading** | Grid adaptativo com 15 níveis, deriva de preço e Red Line |
 | **PiFilter** | Filtro Gaussiano com warmup de 18 amostras para detecção de sinal em ruído DEX |
 | **Arc Training** | Treinamento autônomo dos agentes na Arc Testnet com snapshots |
-| **Circuit Breaker** | Proteção contra perdas consecutivas (3 strikes) |
+| **Circuit Breaker** | Proteção contra perdas consecutivas (3 strikes) + route circuit breaker por par (5 falhas → 30min cooldown) |
 | **Gas Price Oracle** | Custo de gas em USD com fallback multi-RPC |
 | **Pair Price Feed** | Preços em tempo real via Chainlink (Polygon) + Pyth (Arc) + SoSoValue |
 | **Arqueiro** | Modulador de tensão/timing: detecta compressão de volatilidade via pseudo-ATR + squeeze Bollinger/Keltner. TensionScore (0-100) modula confiança das ordens no Pregão. 3 fases de rollout (Shadow → Validação → Ativo). |
@@ -241,10 +284,20 @@ NEXT_PUBLIC_DEFAULT_NETWORK=arc
 ```
 arcflow/
 ├── app/
-│   ├── api/              # 17 rotas de API (price, rpc-proxy, relayer, jobs, etc.)
-│   ├── components/       # 22 componentes React (dashboard, agentes, posições)
+│   ├── api/              # 17+ rotas de API (price, rpc-proxy, relayer, jobs, etc.)
+│   ├── components/       # 22+ componentes React (dashboard, agentes, FrameworkDashboard)
 │   └── page.tsx          # SPA principal
-├── lib/                  # 72+ módulos TypeScript (núcleo do sistema)
+├── lib/                  # 75+ módulos TypeScript (núcleo do sistema)
+│   ├── agent-framework/  # Framework de coordenação de agentes
+│   │   ├── KnowledgeService (cognição compartilhada)
+│   │   ├── IntentPublisher (off-chain + on-chain ERC-8183)
+│   │   ├── Coordinator (consenso FIFO)
+│   │   ├── Voting (votação ponderada)
+│   │   ├── Reputation (score/winRate/streak/level)
+│   │   ├── Audit (audit trail completo)
+│   │   ├── SafetyGuard (circuit breaker)
+│   │   ├── ResourceManager (alocação)
+│   │   └── interface files (IAgent, ICoordinator, IExecutor, etc.)
 │   ├── pregão.ts         # Orquestrador central
 │   ├── stable-mr.ts      # Mean reversion para stablecoins
 │   ├── modo-grão.ts      # Batch trading com PiFilter
@@ -253,7 +306,7 @@ arcflow/
 │   ├── capital-controller.ts
 │   ├── contract-registry.ts  # Registro central de contratos
 │   └── ...
-├── contracts/            # Contratos Solidity (AgentIdentity, ERC8183, AMM)
+├── contracts/            # Contratos Solidity (AgentIdentity, ERC8183, AMM, BatchExecutor)
 ├── scripts/              # Deploy e utilitários
 │   ├── deployAMMArc.js
 │   └── addLiquidityAMM.js
@@ -265,6 +318,7 @@ arcflow/
 
 ## Roadmap
 
+### ✅ Concluído
 - [x] Sistema multi-agente com consenso e aprendizado
 - [x] ERC-8004 AgentIdentity deployado (Arc + Base)
 - [x] ERC-8183 Job Marketplace deployado (Arc, Base, Polygon, Ethereum)
@@ -272,13 +326,25 @@ arcflow/
 - [x] PiFilter Gaussiano para scalping de stablecoins
 - [x] Sistema de treinamento autônomo (ArcTraining)
 - [x] Contract Registry com dashboard on-chain
-- [ ] Migração para Arc Mainnet (aguardando lançamento — verão 2026)
-- [ ] Integração x402 para micropagamentos entre agentes
-- [ ] Arc Privacy Sector para estratégias confidenciais
 - [x] Batch Executor com pré-simulação eth_call + contrato próprio
 - [x] RouteVerifier: verificação de rota de venda via Multicall3 antes de comprar
 - [x] ICircuitBreaker: interface unificada (rota + financeiro)
-- [x] Nonce collision: wallet separada para stress test (PRIVATE_KEY_STRESS)
+- [x] Intent Protocol (off-chain + on-chain ERC-8183)
+- [x] OnChainIntentPublisher com auto-sign na Arc testnet
+- [x] Framework Dashboard com métricas de agente
+- [x] **Knowledge Service — Camada de Cognição Compartilhada** (SSOT com 6 fontes, 4 scores, riskScore, confidenceModifier, recomendações)
+
+### 🔄 Em Andamento
+- [ ] **Knowledge → Fase 2**: Integrar `frameworkKnowledge.query()` em agentes antes de gerarem Intents
+- [ ] **Knowledge → Fase 3**: Voting usar `confidenceModifier` como peso
+- [ ] **Knowledge → Fase 4**: Audit registrar KnowledgeReport junto com cada decisão
+
+### 🔮 Planejado
+- [ ] **Knowledge → Fase 5**: Publicar hash do KnowledgeReport on-chain com a Intent
+- [ ] **Knowledge → Fase 6 (Memory Service)**: Aprender padrões, sequências de falhas, correlações entre ativos
+- [ ] Migração para Arc Mainnet (aguardando lançamento — verão 2026)
+- [ ] Integração x402 para micropagamentos entre agentes
+- [ ] Arc Privacy Sector para estratégias confidenciais
 - [ ] Agente FX Arbitrage: spread StableFX vs AMM público
 - [ ] Unified Balance (Circle API plano pago)
 
@@ -288,6 +354,21 @@ arcflow/
 
 - [`ARCFLOW.md`](ARCFLOW.md) — Mapa completo do sistema, parâmetros, arquitetura, fórmulas matemáticas, bugs conhecidos
 - [`AGENTS.md`](AGENTS.md) — Histórico de sessões e regras para IAs contribuidoras
+- [`docs/arqueiro-visual.md`](docs/arqueiro-visual.md) — Diagrama de estados do Arqueiro, curva de tensionScore, parâmetros
+
+### ARC Agent Framework — Pilares
+
+```
+  Knowledge     — SSOT de cognição compartilhada (Fase 1 ✅, Fases 2-6 em roadmap)
+  Identity      — ERC-8004 AgentIdentity on-chain
+  Reputation    — Score, winRate, streak, level por agente
+  Intent        — Protocolo off-chain + on-chain (ERC-8183)
+  Voting        — Votação ponderada por confiança + conhecimento
+  Coordinator   — Consenso FIFO com score
+  Execution     — Corretor + DEX direto + LI.FI
+  Audit         — Trail completo com lucro/gas/agentes
+  On-chain      — Hash de prova on-chain (Fase 5)
+```
 
 ---
 

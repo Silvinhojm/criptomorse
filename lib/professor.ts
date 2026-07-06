@@ -60,6 +60,8 @@ class Professor {
   private ultimaAvaliacao: number = 0
   private streakErro: Map<string, number> = new Map()
   private streakAcerto: Map<string, number> = new Map()
+  private _paresIgnorados: Set<string> = new Set()
+  private _IGNORADOS_KEY = "arcflow_professor_pares_ignorados"
 
   async init(): Promise<void> {
     try {
@@ -111,8 +113,38 @@ class Professor {
   }
 
   constructor() {
-    if (typeof window !== 'undefined') this._carregar()
+    if (typeof window !== 'undefined') {
+      this._carregar()
+      this._carregarIgnorados()
+    }
     this.init().catch(() => {})
+  }
+
+  private _carregarIgnorados() {
+    try {
+      const raw = localStorage.getItem(this._IGNORADOS_KEY)
+      if (raw) {
+        const arr: string[] = JSON.parse(raw)
+        this._paresIgnorados = new Set(arr)
+        if (arr.length > 0) {
+          console.log(`[PROFESSOR] 🚫 ${arr.length} pares ignorados carregados (agentes no piso)`)
+        }
+      }
+    } catch {
+      // silencioso
+    }
+  }
+
+  private _salvarIgnorados() {
+    try {
+      localStorage.setItem(this._IGNORADOS_KEY, JSON.stringify([...this._paresIgnorados]))
+    } catch {
+      // silencioso
+    }
+  }
+
+  private _parIgnoradoKey(roboNome: string, par: string): string {
+    return `${roboNome}:${this._extrairBasePar(par)}`
   }
 
   private _carregar() {
@@ -178,6 +210,12 @@ class Professor {
 
     if (!COIN_IDS[tokenVolatil]) return
 
+    // 🚫 Circuit breaker por agente+par: se já atingiu o piso, ignora
+    const parIgnoradoKey = this._parIgnoradoKey(palpite.roboNome, palpite.par)
+    if (this._paresIgnorados.has(parIgnoradoKey)) {
+      return
+    }
+
     const precoAtual = await positionManager.fetchTokenPrice(tokenVolatil as TokenSymbol)
     if (!precoAtual || precoAtual <= 0) return
 
@@ -230,6 +268,19 @@ class Professor {
 
     const robo = escolaRobos.getRobo(palpite.roboNome)
     const sinal = acertou ? "+" : ""
+
+    // 🚫 Se atingiu o piso (-500), adiciona à lista de ignorados para este par
+    if (robo.pontos <= -500 && !acertou) {
+      this._paresIgnorados.add(parIgnoradoKey)
+      this._salvarIgnorados()
+      console.log(
+        `📚 [PROFESSOR] ${palpite.roboNome} no piso (-500pts) para ${this._extrairBasePar(palpite.par)} — ignorando avaliações futuras deste par`
+      )
+      // Ainda registra o resultado atual antes de parar
+      this._salvarEstado()
+      return
+    }
+
     narrador.professorAvaliacao(palpite.roboNome, acertou, pontos)
     console.log(
       `📚 [PROFESSOR] ${palpite.roboNome} ${acertou ? "acertou" : "errou"} ${palpite.par} em ${palpite.rede} (${sinal}${pontos}pts) | Total: ${robo.pontos}pts`

@@ -1,5 +1,46 @@
 # Registro de Incidentes Técnicos — CriptoMorse
 
+## [05/07/2026] Memory Leak — Arrays unbounded no frontend
+
+**Severidade:** Crítica
+**Status:** Corrigido
+
+### Sintoma
+Dashboard CriptoMorse (Next.js 15.5 + React 19.2), quando deixado aberto por horas, causava **"Out of Memory"** na aba do Chrome. O heap JS do navegador crescia continuamente sem garbage collection efetivo.
+
+### Causa Raiz
+5 módulos no `lib/` mantinham arrays em memória que **nunca eram podados**, acumulando cada trade/ordem/avaliação do histórico. Adicionalmente, o `PregãoDashboard.tsx` não limpava o intervalo do ciclo (`cicloRef.current`) ao desmontar.
+
+### Bugs Corrigidos
+
+| # | Arquivo | Linha | Array | Correção |
+|---|---------|-------|-------|----------|
+| 1 | `lib/pregão.ts:442` | `this.ordens` | Cap 500 via `.slice(-500)` após push |
+| 2 | `lib/pregão.ts:829` | `this.packageResults` | Cap 100 via `.slice(-100)` após push |
+| 3 | `lib/accountant.ts:142` | `this.reports` | Cap 1000 via `.slice(-1000)` após push (já tinha na persistência, faltava em RAM) |
+| 4 | `lib/real-automated-trader.ts:241` | `this.tradeHistory` | Cap 500 via `.slice(-500)` em `_persist()` (já tinha no localStorage, faltava em RAM) |
+| 5 | `lib/pair-sector.ts:50` | `this.avaliacoes` | Cap 500 via `.slice(-500)` após push (já tinha na persistência, faltava em RAM) |
+| 6 | `lib/batch-executor.ts:90` | `this.history` | Cap 100 via `.slice(-100)` após push |
+| 7 | `lib/contratante.ts:133` | `this._reports` | Cap 100 via `.slice(-100)` após push |
+| 8 | `lib/nanopayment-system.ts:132,225` | `this.payments` | Cap 500 via `.slice(-500)` após push |
+| 9 | `app/components/PregãoDashboard.tsx:574` | `cicloRef.current` | Adicionado `clearInterval(cicloRef.current)` e `clearInterval(balanceTimerRef.current)` no cleanup effect (antes só limpava `stressTestIntervalRef`) |
+
+### Arrays já limitados (verificados, não precisaram de correção)
+- `lib/arqueiro.ts` — `ps.history` cap 500 (linha 254), `ps.prices` cap `LONG_WINDOW+1` (linha 212)
+- `lib/agent-voting.ts` — `this.votes` = [] após cada `resolve()` (linha 162)
+- `lib/professor.ts` — `this.palpites` filtrados por TTL de 1h (linha 160)
+- `lib/quantum-oracle.ts` — `this.history` cap 100 via `shift()` (linha 149)
+- `lib/quantum-wave.ts` — `this.waveMemory` cap 50 via `shift()` (linha 123)
+- `lib/stress-test-arc.ts` — `this.results` = [] a cada `run()` (linha 27)
+- `lib/agentes-do-pregão.ts` — `historicoVotos` cap 500 (linha 129), `hist` bounded por TTL (linha 42-44)
+
+### Impacto
+- Heap JS do navegador agora tem limite máximo previsível: ~2-3MB para os arrays de histórico em vez de crescimento ilimitado
+- Intervalo do ciclo não vaza se o componente desmontar
+- Build: limpo (zero erros TS)
+
+---
+
 Este documento registra problemas técnicos reais encontrados durante o desenvolvimento, a
 investigação até a causa raiz, e a decisão tomada — incluindo casos onde a decisão foi
 **não** avançar com algo. Não é um changelog de features; é um registro de engenharia

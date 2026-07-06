@@ -13,21 +13,19 @@ const PREGUEIROS_DISPLAY = [
   { config: { nome: "Sentimento", icone: "🧠", cor: "#22c55e" } },
   { config: { nome: "Tático", icone: "⚡", cor: "#fbbf24" } },
 ]
-import { NETWORKS, realSwap, isStable } from "@/lib/real-swap-executor"
+import { NETWORKS, realSwap } from "@/lib/real-swap-executor"
 import type { NetworkKey } from "@/lib/real-swap-executor"
 import { caixa } from "@/lib/caixa"
 import { resumeFromPanic, setTestnetMode } from "@/lib/circuit-breaker"
 import { AGENTES_NOMES, AGENTE_CORES, getPregãoAllowedBalance, setPregãoAllowedBalance, isPaperMode, setPaperMode } from "@/lib/agentes-do-pregão"
 import { positionManager } from "@/lib/position-manager"
 import { narrador } from "@/lib/narrator"
-import { contratante } from "@/lib/contratante"
 import { modoGrao } from "@/lib/modo-grão"
 import { poolScannerExecutor } from "@/lib/pool-scanner-executor"
 import { escolaRobos, MIN_JOBS_PROVA, type RoboEscolar } from "@/lib/escola-robos"
 import { professor } from "@/lib/professor"
 import { volatilityTracker } from "@/lib/volatility-tracker"
-import { pairSector } from "@/lib/pair-sector"
-import { StableOpportunities } from "./StableOpportunities"
+
 import { PiEngineMonitor } from "./PiEngineMonitor"
 import { ArcTrainingPanel } from "./ArcTrainingPanel"
 
@@ -47,7 +45,7 @@ interface PregãoDashboardProps {
 
 export function PregãoDashboard({ rede }: PregãoDashboardProps) {
   const [ordens, setOrdens] = useState<OrdemExecucao[]>([])
-  const [oksAtivos, setOksAtivos] = useState<{ par: string; rede: string; pregueiros: string[]; total: number }[]>([])
+
   const [cashBox, setCashBox] = useState<CashBoxState>({ saldoUSDC: 0, saldosPorRede: {}, ultimaAtualizacao: 0 })
   const [logs, setLogs] = useState<string[]>([])
   const [status, setStatus] = useState({ ordensAtivas: 0, ordensConcluidas: 0, oksPendentes: 0, sessionTrades: 0, sessionWins: 0, sessionLosses: 0, sessionProfit: 0 })
@@ -62,14 +60,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     const v = getPregãoAllowedBalance()
     return v === Infinity ? 15 : v
   })
-  const [isLoading, setIsLoading] = useState(false)
-  const [stressTestKey, setStressTestKey] = useState(() => {
-    if (typeof window !== "undefined") return localStorage.getItem("arcflow_stress_test_key") || ""
-    return ""
-  })
-  const [stressTestResult, setStressTestResult] = useState<{ success: boolean; details?: string; results?: any[] } | null>(null)
-  const [stressTestRunning, setStressTestRunning] = useState(false)
-  const stressTestIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
   const logRef = useRef<HTMLDivElement>(null)
   const cicloRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [cicloAtivo, setCicloAtivo] = useState(false)
@@ -77,14 +68,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
   const [openPositions, setOpenPositions] = useState(0)
   const [openPositionsData, setOpenPositionsData] = useState<ReturnType<typeof positionManager.getOpenPositions>>([])
   const [recentTrades, setRecentTrades] = useState<ReturnType<typeof positionManager.getRecentTrades>>([])
-  const [contratanteState, setContratanteState] = useState(contratante.getState())
-  const [contratanteAtivo, setContratanteAtivo] = useState(false)
   const [modoGraoState, setModoGraoState] = useState(modoGrao.getState())
-  const [kitKey, setKitKey] = useState(() => {
-    if (typeof window !== "undefined") return localStorage.getItem("arcflow_kit_key") ?? ""
-    return ""
-  })
-  const contratanteTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [escolaRobosData, setEscolaRobosData] = useState<RoboEscolar[]>([])
   const [professorStats, setProfessorStats] = useState({ totalPalpites: 0, pendentes: 0, ultimaAvaliacao: 0 })
   const redeRef = useRef(rede)
@@ -310,7 +294,6 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
   }
 
   const atualizarTudo = useCallback(() => {
-    setOksAtivos(pregão.getOksAtivos())
     setOrdens([...pregão.getTodasOrdens()])
     setStatus(pregão.getStatus())
     setCashBox(pregão.getCashBox())
@@ -442,90 +425,6 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     atualizarTudo()
   }
 
-  // ─── STRESS TEST ─────────────────────────────────────────────────────────────
-
-  const runStressTestWithKey = async () => {
-    if (!stressTestKey) {
-      alert("❌ Digite a private key primeiro")
-      return
-    }
-
-    try {
-      setIsLoading(true)
-      setStressTestResult(null)
-      addLog("🧪 Iniciando Stress Test na Arc Testnet...")
-      
-      const response = await fetch('/api/stress-test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ privateKey: stressTestKey })
-      })
-      
-      const data = await response.json()
-      
-      if (data.success) {
-        const { result } = data
-        setStressTestResult({
-          success: true,
-          details: `Total: ${result.total}, Sucesso: ${result.success}, Falhas: ${result.failed}`,
-          results: result.results
-        })
-        addLog(`✅ Stress Test: ${result.success}/${result.total} sucesso`)
-        result.results.forEach((r: any, i: number) => {
-          addLog(`  ${i+1}. ${r.operation} → ${r.success ? '✅' : '❌'} ${r.duration}ms${r.error ? ' - ' + r.error : ''}`)
-        })
-      } else {
-        setStressTestResult({
-          success: false,
-          details: data.error || "Erro desconhecido"
-        })
-        addLog(`❌ Stress Test falhou: ${data.error}`)
-      }
-    } catch (error) {
-      setStressTestResult({
-        success: false,
-        details: error instanceof Error ? error.message : String(error)
-      })
-      addLog(`❌ Erro no Stress Test: ${error}`)
-      alert(`❌ Erro: ${error}`)
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const startStressTestLoop = async () => {
-    if (!stressTestKey) {
-      alert("❌ Digite a private key primeiro")
-      return
-    }
-
-    if (stressTestRunning) {
-      alert("⚠️ Stress Test já está rodando")
-      return
-    }
-
-    setStressTestRunning(true)
-    setStressTestResult(null)
-    addLog("🔄 Iniciando Stress Test em loop na Arc Testnet...")
-
-    // Executa imediatamente o primeiro ciclo
-    await runStressTestWithKey()
-
-    // Configura o intervalo
-    stressTestIntervalRef.current = setInterval(async () => {
-      await runStressTestWithKey()
-    }, 30000)
-  }
-
-  const stopStressTestLoop = () => {
-    if (stressTestIntervalRef.current) {
-      clearInterval(stressTestIntervalRef.current)
-      stressTestIntervalRef.current = null
-    }
-    setStressTestRunning(false)
-    addLog("⏹️ Stress Test em loop parado")
-  }
-
   // ─── MEMORY MONITOR + CLEANUP ───────────────────────────────────────────────
 
   useEffect(() => {
@@ -571,70 +470,16 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
 
   useEffect(() => {
     return () => {
-      if (stressTestIntervalRef.current) {
-        clearInterval(stressTestIntervalRef.current)
-        stressTestIntervalRef.current = null
+      if (cicloRef.current) {
+        clearInterval(cicloRef.current)
+        cicloRef.current = null
+      }
+      if (balanceTimerRef.current) {
+        clearInterval(balanceTimerRef.current)
+        balanceTimerRef.current = null
       }
     }
   }, [])
-
-  // ─── Contratante (JobRobot) ─────────────────────────────────────────────────
-
-  useEffect(() => {
-    const unsub = contratante.onChange(() => setContratanteState(contratante.getState()))
-    const netRede = NETWORKS[redeRef.current as NetworkKey]
-    if (netRede?.isTestnet) {
-      const pk = localStorage.getItem("arcflow_private_key")
-      if (pk) {
-        contratante.setPrivateKey(pk)
-        setContratanteAtivo(true)
-        addLog("🤖 Contratante auto-iniciado — executando jobs na Arc testnet")
-      }
-    }
-    return () => unsub()
-  }, [addLog])
-
-  useEffect(() => {
-    if (!contratanteAtivo) {
-      if (contratanteTimerRef.current) clearInterval(contratanteTimerRef.current)
-      return
-    }
-    const netRede = NETWORKS[redeRef.current as NetworkKey]
-    if (netRede?.isTestnet !== true) {
-      addLog("⚠️ Contratante só funciona em testnet (Arc)")
-      setContratanteAtivo(false)
-      return
-    }
-    const run = async () => {
-      const { ok, msg } = await contratante.tryExecuteCycle()
-      addLog(msg)
-    }
-    run()
-    contratanteTimerRef.current = setInterval(run, 15000)
-    return () => {
-      if (contratanteTimerRef.current) clearInterval(contratanteTimerRef.current)
-    }
-  }, [contratanteAtivo, rede])
-
-  const alternarContratante = () => {
-    const netRede = NETWORKS[redeRef.current as NetworkKey]
-    if (netRede?.isTestnet !== true) {
-      addLog("⚠️ Contratante só funciona em testnet (Arc)")
-      return
-    }
-    if (!contratanteAtivo) {
-      const pk = localStorage.getItem("arcflow_private_key")
-      if (!pk) {
-        addLog("❌ Contratante: private key não encontrada no localStorage")
-        return
-      }
-      contratante.setPrivateKey(pk)
-      addLog("🤖 Contratante iniciado — executando swaps USDC/EURC a cada 60s na Arc testnet")
-    } else {
-      addLog("⏹️ Contratante parado")
-    }
-    setContratanteAtivo(!contratanteAtivo)
-  }
 
   // ─── Modo Grão ────────────────────────────────────────────────────────────────
 
@@ -808,122 +653,6 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         </button>
       </div>
 
-      {/* 🧪 STRESS TEST COM PRIVATE KEY - APENAS NA ARC */}
-      {NETWORKS[redeRef.current as NetworkKey]?.isTestnet && (
-        <div style={{ marginBottom: 12, background: "rgba(124,58,237,0.08)", borderRadius: 12, padding: 12, border: "1px solid rgba(124,58,237,0.25)" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-            <span style={{ fontSize: 20 }}>🧪</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, color: "#a78bfa", fontWeight: "bold" }}>Stress Test — Arc Testnet</div>
-              <div style={{ fontSize: 9, color: "#94a3b8" }}>
-                Execute transações em lote para testar a capacidade da rede
-                {stressTestRunning && (
-                  <span style={{ color: "#22c55e", marginLeft: 8 }}>🟢 RODANDO</span>
-                )}
-              </div>
-            </div>
-          </div>
-          
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <input
-              type="password"
-              placeholder="Private Key (0x...)"
-              value={stressTestKey}
-              onChange={(e) => {
-                setStressTestKey(e.target.value)
-                localStorage.setItem("arcflow_stress_test_key", e.target.value)
-              }}
-              disabled={stressTestRunning}
-              style={{
-                flex: 1,
-                minWidth: "150px",
-                padding: "6px 10px",
-                fontSize: 10,
-                fontFamily: "monospace",
-                borderRadius: 6,
-                background: stressTestRunning ? "#1a1a2e" : "#0f172a",
-                border: "1px solid rgba(124,58,237,0.3)",
-                color: "#e2e8f0",
-                outline: "none"
-              }}
-            />
-            
-            {!stressTestRunning ? (
-              <button
-                onClick={startStressTestLoop}
-                disabled={!stressTestKey}
-                style={{
-                  padding: "6px 16px",
-                  fontSize: 11,
-                  fontWeight: "bold",
-                  borderRadius: 6,
-                  border: "none",
-                  background: (!stressTestKey) ? "#6b7280" : "#22c55e",
-                  color: "#fff",
-                  cursor: (!stressTestKey) ? "not-allowed" : "pointer"
-                }}
-              >
-                ▶️ Iniciar Loop
-              </button>
-            ) : (
-              <button
-                onClick={stopStressTestLoop}
-                style={{
-                  padding: "6px 16px",
-                  fontSize: 11,
-                  fontWeight: "bold",
-                  borderRadius: 6,
-                  border: "none",
-                  background: "#ef4444",
-                  color: "#fff",
-                  cursor: "pointer"
-                }}
-              >
-                ⏹️ Parar Loop
-              </button>
-            )}
-          </div>
-          
-          {stressTestKey && !stressTestRunning && (
-            <div style={{ fontSize: 8, color: "#6b7280", marginTop: 4 }}>
-              🔑 Private Key carregada {stressTestKey.length > 0 ? `(${stressTestKey.slice(0, 6)}...${stressTestKey.slice(-4)})` : ""}
-            </div>
-          )}
-          {stressTestRunning && (
-            <div style={{ fontSize: 8, color: "#22c55e", marginTop: 4 }}>
-              🔄 Executando a cada 30 segundos. Clique em "Parar Loop" para interromper.
-            </div>
-          )}
-          {stressTestResult && (
-            <div style={{
-              marginTop: 8,
-              padding: "8px 10px",
-              borderRadius: 6,
-              background: stressTestResult.success ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
-              border: `1px solid ${stressTestResult.success ? "rgba(34,197,94,0.2)" : "rgba(239,68,68,0.2)"}`
-            }}>
-              <div style={{ fontSize: 10, color: stressTestResult.success ? "#22c55e" : "#ef4444", fontWeight: "bold" }}>
-                {stressTestResult.success ? "✅ Stress Test concluído!" : "❌ Stress Test falhou"}
-              </div>
-              {stressTestResult.details && (
-                <div style={{ fontSize: 9, color: "#94a3b8", marginTop: 2 }}>
-                  {stressTestResult.details}
-                </div>
-              )}
-              {stressTestResult.results && (
-                <div style={{ fontSize: 8, color: "#6b7280", marginTop: 4, maxHeight: 80, overflowY: "auto" }}>
-                  {stressTestResult.results.map((r: any, i: number) => (
-                    <div key={i} style={{ color: r.success ? "#22c55e" : "#ef4444" }}>
-                      {i+1}. {r.operation} → {r.success ? "✅" : "❌"} {r.duration}ms{r.error ? ` - ${r.error}` : ""}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 9, color: "#94a3b8", marginBottom: 4 }}>Intervalo entre ciclos: {cicloIntervalo}s</div>
         <input type="range" min={3} max={60} step={1} value={cicloIntervalo}
@@ -961,72 +690,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         </div>
       </div>
 
-      {/* 🤖 Contratante — Job Robot (Arc testnet only) */}
-      {NETWORKS[redeRef.current as NetworkKey]?.isTestnet && (
-        <div style={{ marginBottom: 12, background: "rgba(59,130,246,0.05)", borderRadius: 12, padding: 12, border: "1px solid rgba(59,130,246,0.15)" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-            <span style={{ fontSize: 20 }}>📋</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, color: "#60a5fa", fontWeight: "bold" }}>Contratante — Job Robot</div>
-              <div style={{ fontSize: 9, color: "#94a3b8" }}>
-                {contratanteState.swapsExecutados > 0
-                  ? `${contratanteState.swapsSucesso} swaps OK • ${contratanteState.swapsFalha} falhas • ${contratanteState.totalTxs} transações`
-                  : "Executa swaps USDC/EURC na Arc testnet via Circle App Kit"}
-              </div>
-            </div>
-            <button onClick={alternarContratante} style={{
-              padding: "6px 12px", fontSize: 10, fontWeight: "bold",
-              background: contratanteAtivo ? "#ef4444" : "#3b82f6", color: "#fff",
-              border: "none", borderRadius: 6, cursor: "pointer"
-            }}>
-              {contratanteAtivo ? "⏹️ Parar" : "▶️ Iniciar"}
-            </button>
-          </div>
-          {contratanteState.ultimoResultado && (
-            <div style={{ fontSize: 9, color: contratanteState.ultimoError ? "#ef4444" : "#94a3b8", padding: "4px 8px", background: "rgba(0,0,0,0.3)", borderRadius: 6 }}>
-              {contratanteState.ultimoResultado}
-              {contratanteState.ultimoError && (
-                <div style={{ color: "#ef4444", marginTop: 2 }}>⚠️ {contratanteState.ultimoError}</div>
-              )}
-            </div>
-          )}
-          <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center" }}>
-            <span style={{ fontSize: 9, color: "#64748b", whiteSpace: "nowrap" }}>🔑 Kit Key</span>
-            <input
-              type="password"
-              value={kitKey}
-              onChange={(e) => {
-                setKitKey(e.target.value)
-                localStorage.setItem("arcflow_kit_key", e.target.value)
-              }}
-              placeholder="KIT_KEY:keyId:keySecret"
-              style={{ flex: 1, background: "#0f172a", border: "1px solid #1e293b", borderRadius: 6, padding: "4px 8px", color: "#e2e8f0", fontSize: 10, fontFamily: "monospace" }}
-            />
-            {kitKey && (
-              <button onClick={() => { setKitKey(""); localStorage.removeItem("arcflow_kit_key") }} style={{ background: "none", border: "none", color: "#64748b", cursor: "pointer", fontSize: 10 }}>✕</button>
-            )}
-          </div>
-          {contratanteState.cicloAtual > 0 && (
-            <div style={{ fontSize: 8, color: "#6b7280", marginTop: 4 }}>
-              Ciclo {contratanteState.cicloAtual} • {contratanteState.swapsSucesso} sucesso / {contratanteState.swapsFalha} falhas
-            </div>
-          )}
-          {contratanteState.reports.length > 0 && (
-            <div style={{ fontSize: 8, color: "#94a3b8", marginTop: 4, maxHeight: 60, overflowY: "auto" }}>
-              {contratanteState.reports.slice(0, 5).map((r, i) => (
-                <div key={i} style={{ color: r.success ? "#22c55e" : "#ef4444", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {r.success ? "✅" : "❌"} {r.pair} ${r.amountIn} {r.txHash ? `• ${r.txHash.slice(0, 8)}` : ""}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
 
-      {/* 🌾 Stable Micro-Trades — Oportunidades em pares stablecoin */}
-      <div style={{ marginBottom: 12 }}>
-        <StableOpportunities />
-      </div>
 
       {/* 🌾 Modo Grão — Microtrades */}
       <div style={{ marginBottom: 12, background: "rgba(34,197,94,0.05)", borderRadius: 12, padding: 12, border: "1px solid rgba(34,197,94,0.15)" }}>
@@ -1166,33 +830,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         </div>
       </div>
 
-      {/* 📋 Job Proof — candidatos da Escola de Robôs */}
-      {NETWORKS[redeRef.current as NetworkKey]?.isTestnet && (
-        <div style={{ marginBottom: 12, background: "rgba(59,130,246,0.05)", borderRadius: 12, padding: 12, border: "1px solid rgba(59,130,246,0.15)" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-            <span style={{ fontSize: 20 }}>📋</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, color: "#60a5fa", fontWeight: "bold" }}>Prova de Jobs — Escola de Robôs</div>
-              <div style={{ fontSize: 9, color: "#94a3b8" }}>
-                {contratanteAtivo ? "Contratante rodando — jobs sendo distribuídos" : "Robôs precisam completar jobs como prova para serem verificados"}
-              </div>
-            </div>
-            <span style={{ fontSize: 9, color: contratanteAtivo ? "#22c55e" : "#6b7280", fontWeight: "bold" }}>
-              {contratanteAtivo ? "🟢 Ativo" : "⏸️ Parado"}
-            </span>
-          </div>
-          {escolaRobos.getCandidatosProva().length > 0 && (
-            <div style={{ fontSize: 8, color: "#6b7280", marginTop: 4 }}>
-              🎯 Candidatos: {escolaRobos.getCandidatosProva().map(r => `${r.nome} (${r.jobsCompletos}/${MIN_JOBS_PROVA} jobs)`).join(", ")}
-            </div>
-          )}
-          {escolaRobos.getAll().filter(r => r.jobsCompletos >= MIN_JOBS_PROVA).length > 0 && (
-            <div style={{ fontSize: 8, color: "#22c55e", marginTop: 2 }}>
-              ✅ Verificados: {escolaRobos.getAll().filter(r => r.jobsCompletos >= MIN_JOBS_PROVA).map(r => r.nome).join(", ")}
-            </div>
-          )}
-        </div>
-      )}
+
 
       {/* 📚 Escola de Robôs — Turnos + Promoção via Professor */}
       <div style={{ marginBottom: 12, background: "rgba(34,197,94,0.05)", borderRadius: 12, padding: 12, border: "1px solid rgba(34,197,94,0.15)" }}>
@@ -1296,141 +934,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
         )}
       </div>
 
-      {/* 📊 Relatório Pair-Sector — desempenho por rede */}
-      <div style={{ marginBottom: 12, background: "rgba(139,92,246,0.05)", borderRadius: 12, padding: 12, border: "1px solid rgba(139,92,246,0.15)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-          <span style={{ fontSize: 20 }}>📊</span>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 11, color: "#a78bfa", fontWeight: "bold" }}>Setor de Pares — por rede</div>
-            <div style={{ fontSize: 9, color: "#94a3b8" }}>
-              {pairSector.getStats().totalAvaliacoes > 0
-                ? `${pairSector.getStats().totalAvaliacoes} avaliações • ${Object.keys(pairSector.getStats().porRede).length} redes`
-                : "Aguardando palpites dos robôs para avaliar pares"}
-            </div>
-          </div>
-        </div>
-        {Object.entries(pairSector.getStats().porRede).length > 0 ? (
-          (Object.entries(pairSector.getStats().porRede) as [string, { total: number; avaliadas: number }][]).map(([rede, info]) => {
-            const pares = professor.getPairSectorReport(rede as NetworkKey)
-            return (
-              <div key={rede} style={{ marginBottom: 8 }}>
-                <div style={{ fontSize: 10, color: "#a78bfa", fontWeight: "bold", marginBottom: 4, textTransform: "uppercase" }}>
-                  🌐 {NETWORKS[rede as NetworkKey]?.name || rede} ({info.total} avals, {info.avaliadas} avaliadas)
-                </div>
-                {pares.length === 0 ? (
-                  <div style={{ fontSize: 9, color: "#6b7280", padding: "2px 8px" }}>
-                    Nenhum par avaliado ainda nesta rede
-                  </div>
-                ) : (
-                  pares.slice(0, 5).map((par, i) => (
-                    <div key={i} style={{
-                      display: "flex", justifyContent: "space-between", alignItems: "center",
-                      padding: "5px 8px", marginBottom: 2,
-                      background: par.taxaAcerto >= 60 ? "rgba(34,197,94,0.08)" : par.taxaAcerto >= 40 ? "rgba(251,191,36,0.08)" : "rgba(239,68,68,0.05)",
-                      borderRadius: 6, fontSize: 9
-                    }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={{ color: "#fff", fontWeight: "bold" }}>{par.par}</span>
-                        <span style={{ color: par.taxaAcerto >= 60 ? "#22c55e" : par.taxaAcerto >= 40 ? "#fbbf24" : "#ef4444", fontWeight: "bold" }}>
-                          {par.taxaAcerto.toFixed(0)}%
-                        </span>
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#6b7280" }}>
-                        <span>{par.acertos}/{par.totalAvaliacoes}</span>
-                        {par.melhoresRobos.length > 0 && (
-                          <span>🏆 {par.melhoresRobos.slice(0, 2).map(r => r.nome).join(", ")}</span>
-                        )}
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            )
-          })
-        ) : (
-          <div style={{ fontSize: 9, color: "#6b7280", padding: "8px 0", textAlign: "center" }}>
-            ⏳ Nenhuma avaliação registrada ainda — os dados aparecerão após o primeiro ciclo de palpites
-          </div>
-        )}
-      </div>
 
-      {oksAtivos.length > 0 && (
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 11, color: COR_PREGÃO, marginBottom: 6, display: "flex", alignItems: "center", gap: 4 }}>
-            <span>🔍</span> Robôs analisando oportunidades
-          </div>
-          {oksAtivos.map((ok, i) => (
-            <div key={i} style={{
-              display: "flex", justifyContent: "space-between", alignItems: "center",
-              padding: "4px 8px", marginBottom: 3,
-              background: ok.total >= 3 ? "rgba(34,197,94,0.15)" : "rgba(255,255,255,0.03)",
-              borderRadius: 6, fontSize: 10
-            }}>
-              <div>
-                <span style={{ color: "#fff", fontWeight: "bold" }}>{ok.par}</span>
-                <span style={{ color: "#6b7280", marginLeft: 6 }}>{ok.rede}</span>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ color: ok.total >= 3 ? "#22c55e" : COR_PREGÃO, fontWeight: "bold" }}>
-                  {ok.total} OK{ok.total !== 1 ? "s" : ""}
-                </span>
-                <span style={{ color: "#6b7280", fontSize: 9 }}>
-                  {ok.pregueiros.join(", ")}
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {ordens.filter(o => o.status === "executando" || o.status === "concluido").length > 0 && (
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 11, color: COR_PREGÃO, marginBottom: 6, display: "flex", alignItems: "center", gap: 4 }}>
-            <span>📜</span> Trades Executados
-          </div>
-          {ordens.filter(o => o.status === "executando" || o.status === "concluido").slice(-10).reverse().map((ordem, i) => {
-            const fechandoPosicao = !isStable(ordem.fromToken) && isStable(ordem.toToken)
-            return (
-              <div key={`${ordem.id}_${i}`} style={{
-                padding: "6px 8px", marginBottom: 3,
-                background: ordem.status === "executando" ? "rgba(249,115,22,0.1)" : "rgba(0,0,0,0.2)",
-                borderRadius: 6, fontSize: 10
-              }}>
-                {ordem.status === "executando" ? (
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <span style={{ color: "#f97316" }}>▶️</span>
-                    <span style={{ color: "#fff", fontWeight: "bold" }}>{ordem.par}</span>
-                    <span style={{ color: "#f97316", fontSize: 9 }}>Sugestão aceita</span>
-                    <span style={{ color: "#6b7280", fontSize: 9, marginLeft: "auto" }}>{tempoRelativo(ordem.timestamp)}</span>
-                  </div>
-                ) : (
-                  <>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <div>
-                        <span style={{ color: "#fff", fontWeight: "bold" }}>{ordem.par}</span>
-                        <span style={{ color: "#6b7280", marginLeft: 6 }}>{ordem.rede}</span>
-                      </div>
-                    </div>
-                    {ordem.resultado && (
-                      <div style={{ color: ordem.resultado.profit >= 0 ? "#22c55e" : "#ef4444", fontSize: 10, marginTop: 2, fontWeight: "bold" }}>
-                        {fechandoPosicao
-                          ? `🔒 Fechamento · Lucro: $${ordem.resultado.profit.toFixed(4)}`
-                          : `💰 ${ordem.resultado.fromAmount.toFixed(2)} executado · Lucro: $${ordem.resultado.profit.toFixed(4)}`}
-                        <span style={{ color: "#6b7280", marginLeft: 8, fontWeight: "normal" }}>{tempoRelativo(ordem.timestamp)}</span>
-                        {ordem.resultado.txHash && (
-                          <span style={{ color: "#3b82f6", marginLeft: 6, fontWeight: "normal" }}>
-                            TX: {ordem.resultado.txHash.slice(0, 8)}...
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      )}
 
       {/* Item 12: Log técnico oculto por padrão */}
       <details>

@@ -17,6 +17,7 @@ import { BridgeWidget } from "./components/BridgeWidget";
 import { BotBank } from "./components/BotBank";
 import { ArqueiroPanel } from "./components/ArqueiroPanel";
 import FaucetPanel from "./components/FaucetPanel";
+import { FrameworkDashboard } from "./components/FrameworkDashboard";
 
 // Agents (usados no connect)
 import { quantumAgent, technicalAgent, synthesisAgent } from "../lib/multi-agent-system";
@@ -915,6 +916,7 @@ export default function Home() {
           <SectionMatch section="trading"><ArqueiroPanel /></SectionMatch>
           <SectionMatch section="classroom"><SalaDeAula /></SectionMatch>
           <SectionMatch section="faucet"><FaucetPanel rede={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} /></SectionMatch>
+          <SectionMatch section="framework"><FrameworkDashboard /></SectionMatch>
         </div>
       )}
 

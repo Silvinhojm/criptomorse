@@ -54,6 +54,46 @@ const KNOWN_POOLS: Record<number, PoolEntry[]> = {
 
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000"
 
+// ── Per-pair circuit breaker ──────────────────────────────────────────────────
+// Bloqueia um par após N falhas consecutivas de rota, por 30 minutos
+const ROUTE_FAILURE_THRESHOLD = 5
+const ROUTE_COOLDOWN_MS = 30 * 60 * 1000
+const routeFailures = new Map<string, { count: number; blockedUntil: number }>()
+
+function routeKey(token: string, network: string): string {
+  return `${token.toLowerCase()}:${network}`
+}
+
+export function isRouteBlocked(token: string, network: string): boolean {
+  const k = routeKey(token, network)
+  const entry = routeFailures.get(k)
+  if (!entry) return false
+  if (Date.now() >= entry.blockedUntil) {
+    routeFailures.delete(k)
+    return false
+  }
+  return true
+}
+
+export function recordRouteFailure(token: string, network: string): void {
+  const k = routeKey(token, network)
+  const entry = routeFailures.get(k) ?? { count: 0, blockedUntil: 0 }
+  entry.count++
+  if (entry.count >= ROUTE_FAILURE_THRESHOLD) {
+    entry.blockedUntil = Date.now() + ROUTE_COOLDOWN_MS
+    console.warn(`[ROUTE] 🚫 Par ${k} bloqueado por ${ROUTE_COOLDOWN_MS / 60000}min (${entry.count} falhas consecutivas)`)
+  }
+  routeFailures.set(k, entry)
+}
+
+export function resetRouteFailures(token?: string, network?: string): void {
+  if (token && network) {
+    routeFailures.delete(routeKey(token, network))
+  } else {
+    routeFailures.clear()
+  }
+}
+
 let cache: Record<string, { result: boolean; timestamp: number }> = {}
 const CACHE_TTL = 60_000
 
@@ -62,6 +102,7 @@ function key(token: string, network: string): string {
 }
 
 export function hasSellRoute(token: string, networkKey: string): boolean {
+  if (isRouteBlocked(token, networkKey)) return false
   const k = key(token, networkKey)
   const cached = cache[k]
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {

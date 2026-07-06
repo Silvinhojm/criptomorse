@@ -140,6 +140,7 @@ class Accountant {
 
   addReport(report: TradeReport) {
     this.reports.push(report);
+    if (this.reports.length > 1000) this.reports = this.reports.slice(-1000);
     this._updateAgentScore(report);
     this._save();
     // Notifica o sistema de provão sobre o trade

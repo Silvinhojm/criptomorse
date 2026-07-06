@@ -1,3 +1,57 @@
+## Session Summary (06/07/2026) — Framework Protocol + Dashboard + PregãoDashboard podado
+
+### What's Changed
+
+1. **PregãoDashboard podado (~480 linhas removidas)**: Stress Test, Contratante, StableOpportunities, OKs Ativos, Trades Executados, Pair-Sector — todas as seções de trading removidas. Componente caiu de ~1400 para ~543 linhas.
+
+2. **AgentIntent protocol** — `lib/agent-framework/intent-types.ts`: `AgentIntent`, `IntentRecord`, `IntentStatus`, `IIntentPublisher`. `lib/agent-framework/intent-publisher.ts`: `IntentPublisher` com publish, vote, updateStatus, recordResult, subscribe.
+
+3. **Framework singletons** — `lib/agent-framework/singletons.ts`: `frameworkReputation` (Reputation), `frameworkAudit` (Audit), `frameworkIntents` (IntentPublisher) — estado global reutilizável.
+
+4. **Framework Dashboard** — `app/components/FrameworkDashboard.tsx`: agentes ativos com winRate/score, audit trail (lucro/gas/agentes), intent feed com status e votos, atividades recentes. Polling 3s.
+
+5. **Nova aba "🏗️ Framework"** — adicionada ao `DashboardShell.tsx` e `SectionContext.tsx`. `page.tsx` inclui `<FrameworkDashboard />`.
+
+6. **OnChainIntentPublisher** — `lib/agent-framework/onchain-intent-publisher.ts`: publica intents como jobs ERC-8183 na Arc testnet com auto-sign. Métodos submitDeliverable/completeJob para o ciclo on-chain. `frameworkIntents` agora é `OnChainIntentPublisher` com fallback off-chain.
+
+7. **Build**: limpo (zero erros TS).
+
+### Impacto
+- Sistema agora tem protocolo formal de intents (off-chain + on-chain via ERC-8183)
+- Framework Dashboard substitui métricas de trading por métricas de agente (reputação, consenso, audit)
+- PregãoDashboard reduzido para ~40% do tamanho original — só mantém seções genéricas (agentes, escola robôs, carteira, monitoramento)
+- Intents podem ser publicadas on-chain na Arc testnet via auto-sign (precisa `configure(privateKey)`)
+- ERC-8183 contract `0x3192...` na Arc testnet
+
+## Session Summary (05/07/2026 tarde) — Memory Leak Fix: 9 bounded arrays + cleanup
+
+### What's Changed
+
+1. **PregãoDashboard cicloRef cleanup** — `app/components/PregãoDashboard.tsx:574`: adicionado `clearInterval(cicloRef.current)` e `clearInterval(balanceTimerRef.current)` no cleanup effect. Antes só limpava `stressTestIntervalRef`. Se o componente desmontasse, o ciclo continuava rodando infinitamente.
+
+2. **8 arrays bounded em lib/** — todos os arrays de histórico em memória agora têm teto máximo:
+   - `pregão.ts:ordens` cap 500, `packageResults` cap 100
+   - `accountant.ts:reports` cap 1000
+   - `real-automated-trader.ts:tradeHistory` cap 500
+   - `pair-sector.ts:avaliacoes` cap 500
+   - `batch-executor.ts:history` cap 100
+   - `contratante.ts:_reports` cap 100
+   - `nanopayment-system.ts:payments` cap 500
+
+3. **Documentado em `docs/INCIDENTES-TECNICOS.md`** — tabela completa com arquivo, linha, array e correção.
+
+### Impacto
+- Heap JS do navegador tem crescimento limitado previsível (~2-3MB) em vez de ilimitado
+- Nenhum intervalo vaza se componente desmontar
+- 9 arrays bounded (8 RAM + 1 cleanup)
+- Build: limpo (zero erros TS)
+
+### Current State
+- **Polygon**: $48.22 USDC, $15.72 POL
+- **Arc Testnet**: cirBTC endereço corrigido (oficial Circle), pool USDC/cirBTC precisa recriação
+- **Memory leaks**: 9 bugs corrigidos — heap limitado a ~2-3MB para históricos
+- **Solana/Backpack**: completamente removidos — Arc EVM exclusivo
+
 ## Session Summary (05/07/2026) — Solana + Backpack Exchange removidos, foco exclusivo Arc EVM
 
 ### What's Changed
@@ -1065,3 +1119,68 @@ Aplicação consumia memória do navegador após horas rodando ciclos contínuos
 |---------|---------|
 | `lib/position-manager.ts` | +MAX_CLOSED_POSITIONS, +_purgeClosed() |
 | `app/components/PregãoDashboard.tsx` | +import volatilityTracker, +memory monitor + cleanup + auto-reload |
+
+## Session Summary (06/07/2026 noite) — KnowledgeService: Camada de Cognição Compartilhada
+
+### What's Changed
+
+1. **`lib/agent-framework/knowledge-types.ts`** (novo — 30 linhas): `KnowledgeRequest` (pair, network, action, agent, amount) + `KnowledgeReport` (canTrade, 4 scores, riskScore, expectedValue, confidenceModifier, warnings, recommendations, sources).
+
+2. **`lib/agent-framework/knowledge-service.ts`** (novo — 375 linhas): `KnowledgeService` — SSOT que agrega 6 fontes existentes em paralelo:
+   - `poolProfiler` → liquidityScore (0-100, baseado em pools V3 + stablecoin fallback)
+   - `gasPriceOracle` → gasScore (0-100, thresholds de $0.003 a $0.10)
+   - `route-verifier` → routeScore (0-100, diferencial por BUY/SELL + circuit breaker)
+   - `volatilityTracker` → marketScore (trend + volatility confidence multiplier)
+   - `accountant` → histórico do agente (winRate, score)
+   - `frameworkReputation` → reputação do agente (score)
+   - Cache híbrido memória + localStorage com TTLs por tipo (liquidez 25s, rota 60s, gas 12s, preço 7s, histórico 5min, reputação 1min)
+   - `confidenceModifier` cumulativo (-80% a +25%): liquidez<20 → -25%, rota bloqueada → -50%, reputação<20 → -30%, winRate>70% → +8%, marketScore>70 → +12%
+   - `riskScore` (0-100) composto: liqRisk×0.3 + routeRisk×0.3 + gasRisk×0.2 + marketRisk×0.2
+   - `expectedValue`: estimado por confidence média × maxExpected (0.2% stable / 1% volátil)
+   - `recommendations[]`: "Aguarde redução do gas", "Reduza o volume", "Tente novamente em 30min", etc.
+   - `computeExpectedValue`, `computeRiskScore`, `generateRecommendations` — 3 novos métodos públicos para consumo externo
+
+3. **`lib/agent-framework/singletons.ts`** — adicionado `frameworkKnowledge = new KnowledgeService()`
+
+4. **`lib/agent-framework/index.ts`** — exporta `KnowledgeRequest`, `KnowledgeReport`, `KnowledgeService`, `frameworkKnowledge`
+
+5. **Documentação arquitetural completa** — no topo de `knowledge-service.ts`:
+   - Diagrama Before/After (agente isolado → cognição compartilhada)
+   - 6 fases de evolução (Fase 1 ✅ até Fase 6 🔮 Memory Service)
+   - 7 decisões arquiteturais consolidadas de avaliação de IA
+   - Diagrama ARC Agent Framework (Knowledge/Identity/Reputation → Intent/Voting → Coordinator → Execution → Audit → On-chain Proof)
+
+### Impacto
+- **Mudança de paradigma**: agente consulta conhecimento coletivo ANTES de decidir (não depois)
+- **KnowledgeReport como "linguagem comum"** entre agentes, coordinator, voting, audit
+- **4 scores independentes** permitem explicar decisões (ex: "Liquidez: 15, Gas: 92, Rota: 0")
+- **confidenceModifier** cria segunda camada de inteligência — o framework diz "você está otimista demais"
+- **riskScore + expectedValue** impedem operações tecnicamente possíveis mas economicamente ruins
+- **recommendations** transforma o serviço de guardião em consultor
+- Todas as 7 recomendações da avaliação de IA foram implementadas ou documentadas como fases futuras
+
+### Próximas Fases
+- **Fase 2**: Integrar `frameworkKnowledge.query()` em agentes antes de gerarem Intents
+- **Fase 3**: Voting usar `confidenceModifier` como peso
+- **Fase 4**: Audit registrar KnowledgeReport junto com cada decisão
+- **Fase 5**: Publicar hash do relatório on-chain com a Intent
+- **Fase 6 (Memory Service)**: Aprender padrões, sequências de falhas, correlações entre ativos
+
+### Arquivos Criados
+| Arquivo | Descrição |
+|---------|-----------|
+| `lib/agent-framework/knowledge-types.ts` | KnowledgeRequest, KnowledgeReport interfaces (30 linhas) |
+| `lib/agent-framework/knowledge-service.ts` | KnowledgeService com cache, scoring, confidence modifier (375 linhas) |
+
+### Arquivos Modificados
+| Arquivo | Mudança |
+|---------|---------|
+| `lib/agent-framework/singletons.ts` | +frameworkKnowledge |
+| `lib/agent-framework/index.ts` | +KnowledgeRequest, KnowledgeReport, KnowledgeService, frameworkKnowledge |
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Framework completo**: Identity → Knowledge (NOVO) → Intent → Voting → Coordinator → Execution → Audit → On-chain Proof
+- **KnowledgeService**: 6 fontes, cache TTL, 4 scores, riskScore, confidenceModifier, recommendations
+- **Polygon**: $48.22 USDC, $15.72 POL
+- **Arc Testnet**: sistema rodando ao vivo

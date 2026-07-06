@@ -48,6 +48,7 @@ class PairSector {
 
   registrarAvaliacao(av: AvaliacaoPar) {
     this.avaliacoes.push(av)
+    if (this.avaliacoes.length > 500) this.avaliacoes = this.avaliacoes.slice(-500)
     this._salvar()
   }
 
