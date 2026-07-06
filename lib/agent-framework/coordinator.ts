@@ -6,6 +6,7 @@ import type { IAudit } from "./IAudit"
 import { Voting, type VoteResult } from "./voting"
 import { Audit } from "./audit"
 import { frameworkReputation } from "./singletons"
+import { IntentDeduplicator } from "./intent-deduplicator"
 
 export { type ConsensusResult, type CycleReport, type SubmissionResult }
 
@@ -16,6 +17,7 @@ export interface CoordinatorConfig {
   executor?: IExecutor
   safetyGuard?: ISafetyGuard
   audit?: IAudit
+  dedupWindowMs?: number
 }
 
 export class Coordinator implements ICoordinator {
@@ -30,6 +32,7 @@ export class Coordinator implements ICoordinator {
   private minAgents: number
   readonly MIN_AGREEING_AGENTS = 2
   readonly WEIGHTED_CONFIDENCE_THRESHOLD = 25
+  readonly deduplicator: IntentDeduplicator
 
   constructor(config: CoordinatorConfig) {
     this.name = config.name
@@ -38,6 +41,7 @@ export class Coordinator implements ICoordinator {
     this.executor_ = config.executor ?? null
     this.safetyGuard_ = config.safetyGuard ?? null
     this.audit_ = config.audit ?? null
+    this.deduplicator = new IntentDeduplicator(config.dedupWindowMs ?? 30_000)
   }
 
   registerAgent(agent: IAgent): void {
@@ -86,6 +90,23 @@ export class Coordinator implements ICoordinator {
           agentVotes: [],
           tiebreaker: "",
           reason: `Safety guard open — proposal ${proposal.id} rejected`,
+        },
+      }
+    }
+
+    const dup = this.deduplicator.isDuplicate(proposal.agentId, proposal.action, proposal.params)
+    if (dup.duplicate) {
+      if (dup.count <= this.deduplicator.MAX_WARNINGS) {
+        console.warn(`[${this.name}] 🚫 Duplicate intent from ${proposal.agentId} — discarded (×${dup.count} in ${this.deduplicator.WINDOW_MS / 1000}s)`)
+      }
+      return {
+        consensus: {
+          approved: false,
+          action: proposal.action,
+          confidence: 0,
+          agentVotes: [],
+          tiebreaker: "",
+          reason: `Duplicate intent from ${proposal.agentId} — discarded (×${dup.count})`,
         },
       }
     }
@@ -289,6 +310,15 @@ export class Coordinator implements ICoordinator {
 
     for (const proposal of proposals) {
       try {
+        // Dedup check
+        const dup = this.deduplicator.isDuplicate(proposal.agentId, proposal.action, proposal.params)
+        if (dup.duplicate) {
+          if (dup.count <= this.deduplicator.MAX_WARNINGS) {
+            console.warn(`[${this.name}] 🚫 Duplicate intent from agent ${proposal.agentId} in cycle — discarded (×${dup.count})`)
+          }
+          continue
+        }
+
         // Collect votes
         const votes = await this.collectVotes(proposal)
         const knowledgeMod = (proposal.params?.knowledgeModifier as number | undefined) ?? 0

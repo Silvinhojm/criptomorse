@@ -1321,3 +1321,51 @@ Propósito da análise:
 - **Fase 3**: ✅ Concluída — votos ponderados por reputação do agente + conhecimento do framework
 - **Fase 4 (Audit)**: ⏳ Preparado — AuditEntry aceita knowledgeModifier/knowledgeWarnings; Coordinator já registra
 - **Próximo**: Fase 4 — Registrar KnowledgeReport completo no Audit; Fase 5 — Publicar hash on-chain
+
+## Session Summary (07/07/2026 tarde) — Fix recrusão infinita: injetarSinal + Architecture Principles
+
+### Bug Corrigido
+
+**Recrusão infinita no Coordinator**: `Coordinator.submitProposal()` → `TradingAdapter.execute()` → `pregão.receberOK()` (interceptado) → `Coordinator.submitProposal()` → ad infinitum. `RangeError: Maximum call stack size exceeded` em `coordinator.ts:119`.
+
+**Root cause**: `receberOK()` era interceptado para rotear ao Coordinator, mas o TradingAdapter (executor do Coordinator) chamava o mesmo `receberOK()` ao devolver o sinal para o Pregão — criando ciclo.
+
+**Fix estrutural**: Pregão agora expõe duas rotas:
+| Rota | Visibilidade | Uso |
+|------|-------------|-----|
+| `receberOK()` | Público | Agentes externos, UI — **interceptado**, roteia para Coordinator |
+| `injetarSinal()` | Público (uso interno) | TradingAdapter — chama diretamente `verificarOrdem()` sem interceptação |
+
+O TradingAdapter (`trading-adapter.ts:54`) agora chama `pregão.injetarSinal(signal)` em vez de `originalReceberOK(signal)`. A interceptação de `receberOK()` permanece para manter o Coordinator como entry point único para agentes externos.
+
+### `docs/ARCHITECTURE_PRINCIPLES.md`
+
+12 princípios arquiteturais imutáveis:
+1. Coordinator é único entry point público
+2. Nenhum executor chama API pública do Coordinator (proíbe ciclo)
+3. Separe API pública do motor interno (receberOK vs injetarSinal)
+4. Proibido usar flags de atalho (isExecuting=true, skipCoordinator=true etc.)
+5. Todo fluxo passa pelo Coordinator
+6. Todo domínio é um Adapter (Framework ≠ domínio)
+7. Toda decisão gera Audit
+8. Nenhum agente consulta fonte externa diretamente (só Knowledge Service)
+9. Framework não depende de nenhum domínio (zero imports de lib/ no core)
+10. Toda identidade tem reputação
+11. Prefira extrair a recriar (nunca reescreva, extraia interface + adapte original)
+12. Toda regra global pertence ao Policy Engine
+
+### Arquivos Modificados
+| Arquivo | Mudança |
+|---------|---------|
+| `lib/pregão.ts:270-292` | +`injetarSinal()` — rota interna que chama `verificarOrdem()` direto |
+| `lib/agentes-do-pregão.ts:493-497` | TradingAdapter agora chama `pregão.injetarSinal()` em vez de `originalReceberOK()` |
+| `docs/ARCHITECTURE_PRINCIPLES.md` | ✨ Novo — 12 princípios imutáveis (regras de arquitetura do ArcFlow) |
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Commit**: `10f5c80` — `Fix recrusão infinita: TradingAdapter usa injetarSinal() em vez de receberOK()`
+- **Deploy Vercel**: ✅ `https://criptomorse.vercel.app` — build compilou, deploy aliado
+- **Fase 1**: ✅ Completa — Coordinator é entry point único, Pregão é dependência interna, TradingAdapter usa rota interna
+- **Fase 2**: ✅ Concluída
+- **Fase 3**: ✅ Concluída
+- **Próximo**: Fase 4 (Audit completo) → Fase 5 (On-chain proof) → Fase 6 (Policy Engine)
