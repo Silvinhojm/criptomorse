@@ -1,5 +1,6 @@
 import type { AgentIntent, IntentRecord, IntentFilter, IIntentPublisher, IntentStatus } from "./intent-types"
 import type { DecisionReport } from "./decision-report"
+import { ethers } from "ethers"
 
 let nextIntentId = 0
 
@@ -93,6 +94,12 @@ export class IntentPublisher implements IIntentPublisher {
     record.decisionReport = report
     this._notify(record)
     return true
+  }
+
+  async anchorDecision(id: string, report: DecisionReport): Promise<{ txHash: string; blockNumber: number } | null> {
+    const hash = ethers.solidityPackedKeccak256(["string"], [JSON.stringify(report)])
+    console.log(`[IntentPublisher] 📝 Off-chain anchor: ${id} → hash=${hash}`)
+    return null
   }
 
   subscribe(cb: (record: IntentRecord) => void): () => void {

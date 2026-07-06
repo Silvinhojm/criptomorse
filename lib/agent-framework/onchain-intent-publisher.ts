@@ -1,9 +1,12 @@
 import { ethers } from "ethers"
 import { IntentPublisher, type AgentIntent, type IntentRecord } from "./intent-publisher"
 import { AGENTIC_COMMERCE_ABI, ZERO_HOOK } from "@/lib/agentic-commerce-abi"
+import { DECISION_ANCHOR_ABI } from "@/lib/decision-anchor-abi"
+import type { DecisionReport } from "./decision-report"
 
 const ARC_RPC = "https://rpc.testnet.arc.network"
-const ERC8183_ADDRESS = "0x319227cf1de5c61d11313af8226a8f5309fa70d9"
+const ERC8183_ADDRESS = "0x0747EEf0706327138c69792bF28Cd525089e4583"
+const DECISION_ANCHOR_ADDRESS = (typeof process !== "undefined" && (process.env as any).NEXT_PUBLIC_DECISION_ANCHOR_ADDRESS) || "0x7813e04338dc9d6b7676843a52152c57438cc7b2"
 
 export class OnChainIntentPublisher {
   private publisher: IntentPublisher
@@ -115,6 +118,58 @@ export class OnChainIntentPublisher {
     } catch (e) {
       console.warn("[ONCHAIN] Erro ao completar job:", e)
       return false
+    }
+  }
+
+  async anchorDecision(id: string, report: DecisionReport): Promise<{ txHash: string; blockNumber: number } | null> {
+    try {
+      const reportJson = JSON.stringify({
+        id: report.id,
+        intentId: report.intentId,
+        agentId: report.agentId,
+        action: report.action,
+        knowledge: report.knowledge ? {
+          liquidity: report.knowledge.liquidity,
+          gasScore: report.knowledge.gasScore,
+          routeScore: report.knowledge.routeScore,
+          marketScore: report.knowledge.marketScore,
+          riskScore: report.knowledge.riskScore,
+          confidenceModifier: report.knowledge.confidenceModifier,
+          expectedValue: report.knowledge.expectedValue,
+        } : undefined,
+        voting: report.voting ? {
+          approved: report.voting.approved,
+          confidence: report.voting.confidence,
+          totalVoters: report.voting.totalVoters,
+          reason: report.voting.reason,
+        } : undefined,
+        execution: report.execution ? {
+          success: report.execution.success,
+          profit: report.execution.profit,
+          gasCost: report.execution.gasCost,
+          durationMs: report.execution.durationMs,
+          txHash: report.execution.txHash,
+          adapter: report.execution.adapter,
+        } : undefined,
+      })
+      const hash = ethers.solidityPackedKeccak256(["string"], [reportJson])
+
+      if (this.onChainEnabled && this.signer) {
+        const contract = new ethers.Contract(DECISION_ANCHOR_ADDRESS, DECISION_ANCHOR_ABI, this.signer)
+        const tx = await contract.anchor(hash, reportJson, { gasLimit: 100000 })
+        const receipt = await tx.wait()
+        if (!receipt || receipt.status === 0) throw new Error("anchor revertido")
+
+        console.log(`[ONCHAIN] 🔗 Decision anchored: ${id} → tx:${tx.hash} block:${receipt.blockNumber}`)
+        return { txHash: tx.hash, blockNumber: receipt.blockNumber }
+      }
+
+      const fallbackHash = ethers.solidityPackedKeccak256(["string"], [reportJson])
+      console.log(`[ONCHAIN] 📝 Off-chain anchor (not configured): ${id} → hash=${fallbackHash}`)
+      return null
+    } catch (e) {
+      console.warn("[ONCHAIN] Erro ao ancorar decisao:", e)
+      return null
     }
   }
 

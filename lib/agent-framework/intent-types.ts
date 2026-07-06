@@ -50,4 +50,5 @@ export interface IIntentPublisher {
   recordResult(id: string, result: { success: boolean; profit: number; txHash?: string; errorMsg?: string }): boolean
   setDecisionReport(id: string, report: import("./decision-report").DecisionReport): boolean
   subscribe(cb: (record: IntentRecord) => void): () => void
+  anchorDecision?(id: string, report: import("./decision-report").DecisionReport): Promise<{ txHash: string; blockNumber: number } | null>
 }

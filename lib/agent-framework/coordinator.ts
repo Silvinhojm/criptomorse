@@ -281,6 +281,17 @@ export class Coordinator implements ICoordinator {
     dp.durationMs = dp.resolvedAt - startTime
     this._saveDecisionReport(intentId, dp)
 
+    // ── On-chain proof ──
+    if (executionResult.success && this.intentPublisher_?.anchorDecision) {
+      this.intentPublisher_.anchorDecision(intentId, dp).then(result => {
+        if (result) {
+          if (dp.execution) dp.execution.txHash = result.txHash
+          this._saveDecisionReport(intentId, dp)
+          console.log(`[${this.name}] 🔗 On-chain proof: tx:${result.txHash} block:${result.blockNumber}`)
+        }
+      }).catch(() => {})
+    }
+
     return { consensus, executionResult }
   }
 
@@ -469,6 +480,32 @@ export class Coordinator implements ICoordinator {
               profit: result.profit ?? 0,
               reason: result.errorMsg,
             })
+          }
+
+          // On-chain proof
+          if (result.success && this.intentPublisher_?.anchorDecision) {
+            const dp: DecisionReport = {
+              id: `decision_cycle_${this.cycleCount}_${proposal.agentId}`,
+              intentId: cycleIntentId,
+              agentId: proposal.agentId,
+              action: proposal.action,
+              params: proposal.params ?? {},
+              createdAt: Date.now(),
+              resolvedAt: Date.now(),
+              execution: {
+                success: result.success,
+                profit: result.profit ?? 0,
+                gasCost: result.gasCost ?? 0,
+                durationMs: 0,
+                txHash: result.txHash,
+                adapter: this.executor_?.name ?? "unknown",
+              },
+            }
+            this.intentPublisher_.anchorDecision(cycleIntentId, dp).then(anchorResult => {
+              if (anchorResult) {
+                console.log(`[${this.name}] 🔗 On-chain proof (cycle): tx:${anchorResult.txHash} block:${anchorResult.blockNumber}`)
+              }
+            }).catch(() => {})
           }
         } else {
           this._transitionIntent(cycleIntentId, "REJECTED")
