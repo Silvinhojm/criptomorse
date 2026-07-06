@@ -18,7 +18,7 @@ export interface AgentIntent {
   timestamp: number
 }
 
-export type IntentStatus = "pending" | "voting" | "approved" | "rejected" | "executing" | "executed" | "failed"
+export type IntentStatus = "CREATED" | "KNOWLEDGE_VALIDATED" | "VOTING" | "APPROVED" | "REJECTED" | "EXECUTING" | "COMPLETED" | "FAILED"
 
 export interface IntentRecord {
   intent: AgentIntent
@@ -27,6 +27,7 @@ export interface IntentRecord {
   result?: { success: boolean; profit: number; txHash?: string; errorMsg?: string }
   createdAt: number
   resolvedAt?: number
+  statusHistory?: { status: IntentStatus; timestamp: number }[]
 }
 
 export interface IntentFilter {
@@ -41,5 +42,6 @@ export interface IIntentPublisher {
   publish(intent: AgentIntent): Promise<string>
   getRecord(id: string): IntentRecord | null
   list(filter?: IntentFilter): IntentRecord[]
+  updateStatus(id: string, status: IntentStatus): void
   subscribe(cb: (record: IntentRecord) => void): () => void
 }

@@ -120,7 +120,7 @@
 
 import { poolProfiler } from "../pool-profiler"
 import { hasSellRoute, isRouteBlocked, STABLECOINS } from "../route-verifier"
-import { gasPriceOracle } from "../gas-price-oracle"
+import { gasPriceOracle, type GasContext } from "../gas-price-oracle"
 import { accountant } from "../accountant"
 import { volatilityTracker } from "../volatility-tracker"
 import { pairPriceFeed } from "../pair-price-feed"
@@ -172,8 +172,8 @@ export class KnowledgeService {
   async query(request: KnowledgeRequest): Promise<KnowledgeReport> {
     const syncRoutes = this._checkRoutes(request)
 
-    const [gasCost, pools, vol] = await Promise.all([
-      this._getGasCost(request.network),
+    const [gasCtx, pools, vol] = await Promise.all([
+      this._getGasContext(request.network),
       this._getPools(request),
       this._getVolatility(request),
     ])
@@ -182,7 +182,7 @@ export class KnowledgeService {
     const repScore = frameworkReputation.getScore(request.agent)
 
     const liquidityScore = this._liquidityScore(pools, request)
-    const gasScore = this._gasScore(gasCost)
+    const gasScore = this._gasScore(gasCtx.gasCostUsd)
     const routeScore = this._routeScore(syncRoutes, request.action)
     const marketScore = this._marketScore(vol)
 
@@ -218,12 +218,19 @@ export class KnowledgeService {
       riskScore,
       expectedValue,
       confidenceModifier,
+      gasContext: {
+        network: gasCtx.network,
+        gasPriceGwei: gasCtx.gasPriceGwei,
+        nativePrice: gasCtx.nativePrice,
+        gasCostUsd: gasCtx.gasCostUsd,
+        fallbackUsed: gasCtx.fallbackUsed,
+      },
       warnings,
       recommendations,
       sources: {
         liquidity: true,
         route: syncRoutes.toRoute || syncRoutes.fromRoute,
-        gas: gasCost > 0,
+        gas: gasCtx.gasCostUsd > 0,
         price: hasChainlinkFeed(request.pair.from, request.network) || hasChainlinkFeed(request.pair.to, request.network),
         history: history.score > 0,
         reputation: repScore > 0,
@@ -234,10 +241,19 @@ export class KnowledgeService {
 
   // ── Internal query methods ──────────────────────────────────────────────
 
-  private async _getGasCost(network: string): Promise<number> {
-    return this._withCache(cacheKey("gas", network), TTLS.gas, () =>
-      gasPriceOracle.getGasCost(network as NetworkKey).catch(() => 0.01)
-    )
+  private async _getGasContext(network: string): Promise<GasContext> {
+    const cached = this.cache.get(cacheKey("gas", network)) as { data: GasContext; ts: number } | undefined
+    if (cached && Date.now() - cached.ts < TTLS.gas) return cached.data
+    const ctx = await gasPriceOracle.getGasContext(network as NetworkKey).catch(() => ({
+      network: network as NetworkKey,
+      gasPriceGwei: 0,
+      nativePrice: 1,
+      gasCostUsd: 0.01,
+      timestamp: Date.now(),
+      fallbackUsed: true,
+    }))
+    this.cache.set(cacheKey("gas", network), { data: ctx, ts: Date.now() })
+    return ctx
   }
 
   private async _getPools(request: KnowledgeRequest): Promise<number> {

@@ -15,12 +15,22 @@ export class IntentPublisher implements IIntentPublisher {
     this.maxRecords = maxRecords
   }
 
+  private _transition(record: IntentRecord, newStatus: IntentStatus): void {
+    record.status = newStatus
+    if (!record.statusHistory) record.statusHistory = []
+    record.statusHistory.push({ status: newStatus, timestamp: Date.now() })
+    if (newStatus === "APPROVED" || newStatus === "REJECTED" || newStatus === "FAILED" || newStatus === "COMPLETED") {
+      record.resolvedAt = Date.now()
+    }
+  }
+
   async publish(intent: AgentIntent): Promise<string> {
     const record: IntentRecord = {
       intent: { ...intent, id: intent.id || `intent_${++nextIntentId}_${Date.now()}` },
-      status: "pending",
+      status: "CREATED",
       votes: [],
       createdAt: Date.now(),
+      statusHistory: [{ status: "CREATED", timestamp: Date.now() }],
     }
 
     this.records.set(record.intent.id, record)
@@ -50,10 +60,7 @@ export class IntentPublisher implements IIntentPublisher {
   updateStatus(id: string, status: IntentStatus): boolean {
     const record = this.records.get(id)
     if (!record) return false
-    record.status = status
-    if (status === "approved" || status === "rejected" || status === "failed") {
-      record.resolvedAt = Date.now()
-    }
+    this._transition(record, status)
     this._notify(record)
     return true
   }
@@ -74,8 +81,7 @@ export class IntentPublisher implements IIntentPublisher {
     const record = this.records.get(id)
     if (!record) return false
     record.result = result
-    record.status = result.success ? "executed" : "failed"
-    record.resolvedAt = Date.now()
+    this._transition(record, result.success ? "COMPLETED" : "FAILED")
     this._notify(record)
     return true
   }
@@ -89,11 +95,12 @@ export class IntentPublisher implements IIntentPublisher {
     const all = Array.from(this.records.values())
     return {
       total: all.length,
-      pending: all.filter(r => r.status === "pending" || r.status === "voting").length,
-      approved: all.filter(r => r.status === "approved").length,
-      executed: all.filter(r => r.status === "executed").length,
-      failed: all.filter(r => r.status === "failed").length,
-      rejected: all.filter(r => r.status === "rejected").length,
+      pending: all.filter(r => r.status === "CREATED" || r.status === "KNOWLEDGE_VALIDATED").length,
+      voting: all.filter(r => r.status === "VOTING").length,
+      approved: all.filter(r => r.status === "APPROVED" || r.status === "EXECUTING").length,
+      completed: all.filter(r => r.status === "COMPLETED").length,
+      failed: all.filter(r => r.status === "FAILED").length,
+      rejected: all.filter(r => r.status === "REJECTED").length,
     }
   }
 

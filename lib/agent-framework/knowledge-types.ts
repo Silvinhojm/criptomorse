@@ -21,6 +21,13 @@ export interface KnowledgeReport {
   confidenceModifier: number
   warnings: string[]
   recommendations: string[]
+  gasContext?: {
+    network: string
+    gasPriceGwei: number
+    nativePrice: number
+    gasCostUsd: number
+    fallbackUsed: boolean
+  }
   sources: {
     liquidity: boolean
     route: boolean

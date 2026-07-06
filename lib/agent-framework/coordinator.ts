@@ -3,6 +3,7 @@ import type { IAgent, AgentProposal, AgentVote } from "./IAgent"
 import type { IExecutor } from "./IExecutor"
 import type { ISafetyGuard } from "./ISafetyGuard"
 import type { IAudit } from "./IAudit"
+import type { IIntentPublisher, IntentStatus } from "./intent-types"
 import { Voting, type VoteResult } from "./voting"
 import { Audit } from "./audit"
 import { frameworkReputation } from "./singletons"
@@ -18,6 +19,7 @@ export interface CoordinatorConfig {
   safetyGuard?: ISafetyGuard
   audit?: IAudit
   dedupWindowMs?: number
+  intentPublisher?: IIntentPublisher
 }
 
 export class Coordinator implements ICoordinator {
@@ -33,6 +35,7 @@ export class Coordinator implements ICoordinator {
   readonly MIN_AGREEING_AGENTS = 2
   readonly WEIGHTED_CONFIDENCE_THRESHOLD = 25
   readonly deduplicator: IntentDeduplicator
+  private intentPublisher_: IIntentPublisher | null
 
   constructor(config: CoordinatorConfig) {
     this.name = config.name
@@ -42,6 +45,7 @@ export class Coordinator implements ICoordinator {
     this.safetyGuard_ = config.safetyGuard ?? null
     this.audit_ = config.audit ?? null
     this.deduplicator = new IntentDeduplicator(config.dedupWindowMs ?? 30_000)
+    this.intentPublisher_ = config.intentPublisher ?? null
   }
 
   registerAgent(agent: IAgent): void {
@@ -111,12 +115,18 @@ export class Coordinator implements ICoordinator {
       }
     }
 
+    const intentId = `intent_${proposal.agentId}_${Date.now()}`
+    this._transitionIntent(intentId, "CREATED")
+
     let hasEnoughConsensus = false
     let consensus: ConsensusResult
     const knowledgeMod = (proposal.params?.knowledgeModifier as number | undefined) ?? 0
 
+    this._transitionIntent(intentId, "KNOWLEDGE_VALIDATED")
+
     // If agents are registered, run voting
     if (this.agents.size > 0) {
+      this._transitionIntent(intentId, "VOTING")
       const votes = await this.collectVotes(proposal)
       for (const v of votes) {
         const repScore = frameworkReputation.getScore(v.agentId)
@@ -148,10 +158,12 @@ export class Coordinator implements ICoordinator {
     }
 
     if (!hasEnoughConsensus) {
+      this._transitionIntent(intentId, "REJECTED")
       return { consensus }
     }
 
     if (!this.executor_) {
+      this._transitionIntent(intentId, "REJECTED")
       return {
         consensus: { ...consensus, approved: false, reason: "No executor configured" },
       }
@@ -159,12 +171,16 @@ export class Coordinator implements ICoordinator {
 
     const canExec = this.executor_.canExecute(proposal)
     if (!canExec.allowed) {
+      this._transitionIntent(intentId, "REJECTED")
       return {
         consensus: { ...consensus, approved: false, reason: canExec.reason },
       }
     }
 
+    this._transitionIntent(intentId, "APPROVED")
+    this._transitionIntent(intentId, "EXECUTING")
     const executionResult = await this.executor_.execute(proposal)
+    this._transitionIntent(intentId, executionResult.success ? "COMPLETED" : "FAILED")
 
     if (this.audit_) {
       this.audit_.record(Audit.createEntry({
@@ -309,6 +325,7 @@ export class Coordinator implements ICoordinator {
     report.proposalsSubmitted = proposals.length
 
     for (const proposal of proposals) {
+      const cycleIntentId = `intent_${proposal.agentId}_${Date.now()}`
       try {
         // Dedup check
         const dup = this.deduplicator.isDuplicate(proposal.agentId, proposal.action, proposal.params)
@@ -318,6 +335,9 @@ export class Coordinator implements ICoordinator {
           }
           continue
         }
+        this._transitionIntent(cycleIntentId, "CREATED")
+        this._transitionIntent(cycleIntentId, "KNOWLEDGE_VALIDATED")
+        this._transitionIntent(cycleIntentId, "VOTING")
 
         // Collect votes
         const votes = await this.collectVotes(proposal)
@@ -342,13 +362,16 @@ export class Coordinator implements ICoordinator {
         report.consensusReached++
 
         if (consensus.approved && this.executor_) {
+          this._transitionIntent(cycleIntentId, "APPROVED")
+          this._transitionIntent(cycleIntentId, "EXECUTING")
+
           // Execute
           const result = await this.executor_.execute(proposal)
+          this._transitionIntent(cycleIntentId, result.success ? "COMPLETED" : "FAILED")
           report.executionsDispatched++
 
           // Audit
           if (this.audit_) {
-            const knowledgeMod = (proposal.params?.knowledgeModifier as number | undefined)
             this.audit_.record(Audit.createEntry({
               agentId: proposal.agentId,
               action: proposal.action,
@@ -369,13 +392,37 @@ export class Coordinator implements ICoordinator {
               reason: result.errorMsg,
             })
           }
+        } else {
+          this._transitionIntent(cycleIntentId, "REJECTED")
         }
       } catch (e) {
         report.errors++
+        this._transitionIntent(cycleIntentId, "FAILED")
         console.warn(`[${this.name}] Cycle error on proposal ${proposal.id}:`, e)
       }
     }
 
     return report
+  }
+
+  private _transitionIntent(intentId: string, status: IntentStatus): void {
+    if (!this.intentPublisher_) return
+    const existing = this.intentPublisher_.getRecord(intentId)
+    if (existing) {
+      this.intentPublisher_.updateStatus(intentId, status)
+    } else {
+      this.intentPublisher_.publish({
+        id: intentId,
+        agentId: "coordinator",
+        action: status,
+        params: {},
+        confidence: 100,
+        timestamp: Date.now(),
+      }).then(() => {
+        this.intentPublisher_?.updateStatus(intentId, status)
+      }).catch(() => {
+        /* falha silenciosa — intent publisher é opcional */
+      })
+    }
   }
 }

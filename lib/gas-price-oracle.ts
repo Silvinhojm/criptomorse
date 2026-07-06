@@ -49,8 +49,17 @@ const COINGECKO_IDS: Record<string, string> = {
   POL: "1730847291434274818",
 };
 
+export interface GasContext {
+  network: NetworkKey
+  gasPriceGwei: number
+  nativePrice: number
+  gasCostUsd: number
+  timestamp: number
+  fallbackUsed: boolean
+}
+
 class GasPriceOracle {
-  private cache: Map<string, { gasCostUsd: number; timestamp: number }> = new Map();
+  private cache: Map<string, { gasCostUsd: number; gasPriceGwei: number; nativePrice: number; timestamp: number; fallbackUsed: boolean; network: NetworkKey }> = new Map();
   private nativePriceCache: Map<string, { price: number; timestamp: number }> = new Map();
 
   private async _fetchGasPrice(rpcUrl: string, fallbacks?: string[]): Promise<bigint> {
@@ -98,46 +107,91 @@ class GasPriceOracle {
   }
 
   async getGasCost(networkKey: NetworkKey): Promise<number> {
-    const cached = this.cache.get(networkKey);
-    if (cached && Date.now() - cached.timestamp < 30000) return cached.gasCostUsd;
+    const ctx = await this.getGasContext(networkKey)
+    return ctx.gasCostUsd
+  }
 
-    const net = NETWORKS_STATIC[networkKey];
-    if (!net) return GAS_COST_ESTIMATE[networkKey] ?? 0.05;
+  async getGasContext(networkKey: NetworkKey): Promise<GasContext> {
+    const cached = this.cache.get(networkKey)
+    if (cached && Date.now() - cached.timestamp < 30000) {
+      return {
+        network: cached.network,
+        gasPriceGwei: cached.gasPriceGwei,
+        nativePrice: cached.nativePrice,
+        gasCostUsd: cached.gasCostUsd,
+        timestamp: cached.timestamp,
+        fallbackUsed: cached.fallbackUsed,
+      }
+    }
+
+    const net = NETWORKS_STATIC[networkKey]
+    if (!net) {
+      const fallback = GAS_COST_ESTIMATE[networkKey] ?? 0.05
+      return {
+        network: networkKey,
+        gasPriceGwei: 0,
+        nativePrice: 1,
+        gasCostUsd: fallback,
+        timestamp: Date.now(),
+        fallbackUsed: true,
+      }
+    }
 
     try {
-      let gasPriceWei = await this._fetchGasPrice(net.rpcUrl, RPC_FALLBACKS[networkKey]);
-      if (gasPriceWei === 0n) throw new Error("Gas price is 0");
+      let gasPriceWei = await this._fetchGasPrice(net.rpcUrl, RPC_FALLBACKS[networkKey])
+      if (gasPriceWei === 0n) throw new Error("Gas price is 0")
 
       // Arc min base fee is 20 Gwei
       if (networkKey === "arc") {
-        const MIN_GWEI = 20n;
-        const feeGwei = ethers.formatUnits(gasPriceWei, "gwei");
+        const MIN_GWEI = 20n
+        const feeGwei = ethers.formatUnits(gasPriceWei, "gwei")
         if (BigInt(Math.floor(Number(feeGwei))) < MIN_GWEI) {
-          gasPriceWei = ethers.parseUnits(MIN_GWEI.toString(), "gwei");
+          gasPriceWei = ethers.parseUnits(MIN_GWEI.toString(), "gwei")
         }
       }
 
       // Ethereum min base fee is 5 Gwei (RPCs sometimes return <1 gwei)
       if (networkKey === "ethereum") {
-        const MIN_GWEI_ETH = 5n;
-        const feeGwei = ethers.formatUnits(gasPriceWei, "gwei");
+        const MIN_GWEI_ETH = 5n
+        const feeGwei = ethers.formatUnits(gasPriceWei, "gwei")
         if (BigInt(Math.floor(Number(feeGwei))) < MIN_GWEI_ETH) {
-          gasPriceWei = ethers.parseUnits(MIN_GWEI_ETH.toString(), "gwei");
+          gasPriceWei = ethers.parseUnits(MIN_GWEI_ETH.toString(), "gwei")
         }
       }
 
-      const gasPriceGwei = parseFloat(ethers.formatUnits(gasPriceWei, "gwei"));
-      const nativePriceUsd = await this._fetchNativePrice(net.nativeSymbol);
+      const gasPriceGwei = parseFloat(ethers.formatUnits(gasPriceWei, "gwei"))
+      const nativePriceUsd = await this._fetchNativePrice(net.nativeSymbol)
+      const gasCostUsd = (gasPriceGwei * 1e-9) * GAS_UNITS_SWAP * nativePriceUsd
 
-      const gasCostUsd = (gasPriceGwei * 1e-9) * GAS_UNITS_SWAP * nativePriceUsd;
-      this.cache.set(networkKey, { gasCostUsd, timestamp: Date.now() });
+      this.cache.set(networkKey, {
+        gasCostUsd,
+        gasPriceGwei,
+        nativePrice: nativePriceUsd,
+        timestamp: Date.now(),
+        fallbackUsed: false,
+        network: networkKey,
+      })
 
-      console.log(`Gas price oracle: ${gasPriceGwei.toFixed(2)} gwei | ${net.nativeSymbol} $${nativePriceUsd.toFixed(2)} | swap ~$${gasCostUsd.toFixed(4)}`);
-      return gasCostUsd;
-    } catch {
-      const fallback = GAS_COST_ESTIMATE[networkKey] ?? 0.05;
-      console.log(`Gas price oracle falhou, fallback $${fallback.toFixed(3)}`);
-      return fallback;
+      console.log(`[GAS] ${networkKey}: ${gasPriceGwei.toFixed(2)} gwei | ${net.nativeSymbol} $${nativePriceUsd.toFixed(2)} | swap ~$${gasCostUsd.toFixed(4)}`)
+      return {
+        network: networkKey,
+        gasPriceGwei,
+        nativePrice: nativePriceUsd,
+        gasCostUsd,
+        timestamp: Date.now(),
+        fallbackUsed: false,
+      }
+    } catch (e) {
+      const fallback = GAS_COST_ESTIMATE[networkKey] ?? 0.05
+      console.log(`[GAS] ${networkKey}: fallback $${fallback.toFixed(3)} (${e instanceof Error ? e.message : String(e)})`)
+      return {
+        network: networkKey,
+        gasPriceGwei: 0,
+        nativePrice: 1,
+        gasCostUsd: fallback,
+        timestamp: Date.now(),
+        fallbackUsed: true,
+      }
     }
   }
 

@@ -73,7 +73,7 @@ export class OnChainIntentPublisher {
               profit: 0,
               txHash: tx.hash,
             })
-            this.publisher.updateStatus(id, "approved")
+            this.publisher.updateStatus(id, "APPROVED")
           }
         }
       } catch (e) {
@@ -93,7 +93,7 @@ export class OnChainIntentPublisher {
       const tx = await contract.submit(jobId, deliverableHash, "0x")
       const receipt = await tx.wait()
       if (!receipt || receipt.status === 0) throw new Error("submit revertido")
-      this.publisher.updateStatus(intentId, "executed")
+      this.publisher.updateStatus(intentId, "COMPLETED")
       return true
     } catch (e) {
       console.warn("[ONCHAIN] Erro ao submeter deliverable:", e)
