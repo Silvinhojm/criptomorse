@@ -17,7 +17,9 @@ import { COIN_IDS, TOKENS_WITH_FEED } from "./coin-ids"
 import { stablePairScanner } from "./stable-pair-scanner"
 import { stableMR } from "./stable-mr"
 import { timingOptimizer } from "./timing-optimizer"
-import { frameworkKnowledge } from "./agent-framework/singletons"
+import { frameworkKnowledge, frameworkCoordinator } from "./agent-framework/singletons"
+import { TradingAdapter } from "./agent-framework/trading-adapter"
+import type { AgentProposal } from "./agent-framework/IAgent"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 
@@ -485,6 +487,15 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   // 🔥 FIX CRÍTICO: wrapper só INTERCEPTA (não encaminha) sinais de agentes na TESTNET.
   // Em mainnet, registra aprendizado E encaminha ao pregão para execução real.
   const originalReceberOK = pregão.receberOK.bind(pregão)
+
+  // 🔌 Framework: Configura TradingAdapter como executor do Coordinator
+  // O Coordinator vira o entry point real; o Pregão vira dependência interna do adapter
+  const tradingAdapter = new TradingAdapter((signal) => {
+    originalReceberOK(signal)
+  })
+  frameworkCoordinator.setExecutor(tradingAdapter)
+  const _frameworkReady = true
+
   interface AgreedPairCandidates {
     pair: AgentPairVote
     agents: AgentPairVote[]
@@ -575,7 +586,26 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       }
     }
 
-    originalReceberOK(signal)  // mainnet: registra aprendizado + encaminha ao pregão
+    // 🔌 Framework: Coordinator como entry point
+    // O sinal passa por Coordinator → consensus → TradingAdapter → originalReceberOK
+    // O Pregão vira dependência interna do TradingAdapter, não mais o orquestrador
+    if (_frameworkReady) {
+      const proposal: AgentProposal = {
+        id: `prop_${signal.pregueiro}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        agentId: signal.pregueiro,
+        action: signal.direcao === "sell" ? "SELL" : "BUY",
+        params: signal as unknown as Record<string, unknown>,
+        confidence: signal.confianca,
+        timestamp: Date.now(),
+      }
+      const result = await frameworkCoordinator.submitProposal(proposal)
+      if (!result.consensus.approved) {
+        pregão.adicionarLog(`[FRAMEWORK] 🚫 ${signal.pregueiro} → ${signal.par} rejeitado: ${result.consensus.reason}`)
+        return
+      }
+    } else {
+      originalReceberOK(signal)  // fallback: rota direta ao Pregão
+    }
   }
 
   // Monta lista combinada de pares de todas as redes alvo

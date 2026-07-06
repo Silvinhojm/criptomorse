@@ -1,5 +1,5 @@
-import type { IAgent } from "./IAgent"
-import type { IExecutor } from "./IExecutor"
+import type { IAgent, AgentProposal } from "./IAgent"
+import type { IExecutor, ExecutionResult } from "./IExecutor"
 import type { ISafetyGuard } from "./ISafetyGuard"
 import type { IAudit } from "./IAudit"
 
@@ -21,11 +21,17 @@ export interface CycleReport {
   timestamp: number
 }
 
+export interface SubmissionResult {
+  consensus: ConsensusResult
+  executionResult?: ExecutionResult
+}
+
 export interface ICoordinator {
   readonly name: string
   registerAgent(agent: IAgent): void
   unregisterAgent(agentId: string): void
   getAgents(): IAgent[]
+  submitProposal(proposal: AgentProposal): Promise<SubmissionResult>
   runCycle(): Promise<CycleReport>
   getExecutor(): IExecutor | null
   getSafetyGuard(): ISafetyGuard | null

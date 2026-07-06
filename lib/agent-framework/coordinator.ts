@@ -1,4 +1,4 @@
-import type { ICoordinator, ConsensusResult, CycleReport } from "./ICoordinator"
+import type { ICoordinator, ConsensusResult, CycleReport, SubmissionResult } from "./ICoordinator"
 import type { IAgent, AgentProposal, AgentVote } from "./IAgent"
 import type { IExecutor } from "./IExecutor"
 import type { ISafetyGuard } from "./ISafetyGuard"
@@ -7,7 +7,7 @@ import { Voting, type VoteResult } from "./voting"
 import { Audit } from "./audit"
 import { frameworkReputation } from "./singletons"
 
-export { type ConsensusResult, type CycleReport }
+export { type ConsensusResult, type CycleReport, type SubmissionResult }
 
 export interface CoordinatorConfig {
   name: string
@@ -74,6 +74,99 @@ export class Coordinator implements ICoordinator {
 
   setAudit(a: IAudit): void {
     this.audit_ = a
+  }
+
+  async submitProposal(proposal: AgentProposal): Promise<SubmissionResult> {
+    if (this.safetyGuard_ && this.safetyGuard_.isOpen()) {
+      return {
+        consensus: {
+          approved: false,
+          action: proposal.action,
+          confidence: 0,
+          agentVotes: [],
+          tiebreaker: "",
+          reason: `Safety guard open — proposal ${proposal.id} rejected`,
+        },
+      }
+    }
+
+    let hasEnoughConsensus = false
+    let consensus: ConsensusResult
+    const knowledgeMod = (proposal.params?.knowledgeModifier as number | undefined) ?? 0
+
+    // If agents are registered, run voting
+    if (this.agents.size > 0) {
+      const votes = await this.collectVotes(proposal)
+      for (const v of votes) {
+        const repScore = frameworkReputation.getScore(v.agentId)
+        const repWeight = Math.max(0.1, Math.min(1.0, repScore / 100))
+        this.voting.recordVote({
+          agentId: v.agentId,
+          proposalId: proposal.id,
+          approved: v.approved,
+          confidence: v.confidence,
+          reputationWeight: repWeight,
+          knowledgeWeight: 1 + knowledgeMod / 100,
+          reason: v.reason,
+          timestamp: v.timestamp,
+        })
+      }
+      consensus = this.resolveConsensus(proposal, votes)
+      hasEnoughConsensus = consensus.approved
+    } else {
+      // No agents registered yet — pass through directly
+      hasEnoughConsensus = true
+      consensus = {
+        approved: true,
+        action: proposal.action,
+        confidence: proposal.confidence,
+        agentVotes: [],
+        tiebreaker: "",
+        reason: "No voting agents — direct execution",
+      }
+    }
+
+    if (!hasEnoughConsensus) {
+      return { consensus }
+    }
+
+    if (!this.executor_) {
+      return {
+        consensus: { ...consensus, approved: false, reason: "No executor configured" },
+      }
+    }
+
+    const canExec = this.executor_.canExecute(proposal)
+    if (!canExec.allowed) {
+      return {
+        consensus: { ...consensus, approved: false, reason: canExec.reason },
+      }
+    }
+
+    const executionResult = await this.executor_.execute(proposal)
+
+    if (this.audit_) {
+      this.audit_.record(Audit.createEntry({
+        agentId: proposal.agentId,
+        action: proposal.action,
+        proposal,
+        result: executionResult,
+        approved: consensus.approved,
+        confidence: consensus.confidence,
+        voters: this.agents.size,
+        knowledgeModifier: knowledgeMod,
+      }))
+    }
+
+    for (const agent of this.agents.values()) {
+      agent.onFeedback({
+        success: executionResult.success,
+        profit: executionResult.profit ?? 0,
+        reason: executionResult.errorMsg,
+      })
+    }
+
+    return { consensus, executionResult }
   }
 
   private async collectProposals(ctx: Record<string, unknown>): Promise<AgentProposal[]> {

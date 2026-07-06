@@ -1,3 +1,63 @@
+## Session Summary (07/07/2026) — Fase 1: Coordinator como núcleo + Roadmap Estratégico
+
+### What's Changed
+
+1. **`ICoordinator.submitProposal()`** — nova interface pública que recebe uma `AgentProposal` externa, roda votação com agentes registrados, resolve consenso, executa via executor e retorna `SubmissionResult { consensus, executionResult }`.
+
+2. **`Coordinator.submitProposal()`** implementado em `coordinator.ts`:
+   - Se há agentes registrados: coleta votos → resolve consenso → executa via executor
+   - Se não há agentes registrados: pass-through direto (compatibilidade com sistema atual sem agentes IAgent)
+   - Safety guard → canExecute → execute → audit → feedback, tudo no mesmo fluxo
+   - Logs de rejeição: `[FRAMEWORK] 🚫 agente → par rejeitado: motivo`
+
+3. **`TradingAdapter`** (`lib/agent-framework/trading-adapter.ts`) — novo `IExecutor` que recebe uma função `executeTrade(signal)` no construtor. `execute()` converte `AgentProposal.params` de volta para sinal e chama o Pregão internamente. O Pregão vira dependência interna — não é mais o entry point público.
+
+4. **`frameworkCoordinator`** em `singletons.ts` — instância global do Coordinator com Audit configurado. Exportado em `index.ts`.
+
+5. **`agentes-do-pregão.ts`** — após o setup do Pregão, cria `TradingAdapter` com `originalReceberOK` como callback e registra no Coordinator. O `receberOK` agora roteia sinais para `Coordinator.submitProposal()`. Fallback direto ao Pregão preservado se o Coordinator não estiver configurado.
+
+6. **`docs/ROADMAP.md`** — documento estratégico com 12 fases arquiteturais (Fase 1: Coordinator como núcleo → Fase 12: Plataforma), princípios do projeto, e visão final do ArcFlow como framework open source de coordenação de agentes autônomos.
+
+### Novo Fluxo (Fase 1)
+
+```
+Agente
+     ↓
+Knowledge (Fase 2 — já ativo)
+     ↓
+Coordinator.submitProposal() ← NOVO entry point
+     ↓
+Voting (se agentes registrados)
+     ↓
+TradingAdapter.execute() ← NOVO
+     ↓
+Pregão (internamente)
+     ↓
+Audit
+```
+
+### Arquivos Criados
+| Arquivo | Descrição |
+|---------|-----------|
+| `lib/agent-framework/trading-adapter.ts` | IExecutor que wrappa Pregão (60 linhas) |
+| `docs/ROADMAP.md` | Roadmap estratégico 12 fases (220 linhas) |
+
+### Arquivos Modificados
+| Arquivo | Mudança |
+|---------|---------|
+| `lib/agent-framework/ICoordinator.ts` | +SubmissionResult interface, +submitProposal() |
+| `lib/agent-framework/coordinator.ts` | Implementa submitProposal() com fallback sem agentes |
+| `lib/agent-framework/singletons.ts` | +frameworkCoordinator |
+| `lib/agent-framework/index.ts` | +SubmissionResult, TradingAdapter, TradeSignal, frameworkCoordinator |
+| `lib/agentes-do-pregão.ts` | Cria TradingAdapter com originalReceberOK; roteia via Coordinator.submitProposal() |
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Fase 1**: ✅ Em andamento — Coordinator é o entry point real; TradingAdapter wrappa Pregão
+- **Fase 2**: ✅ Concluída
+- **Fase 3**: ✅ Concluída (votação ponderada)
+- **Próximo**: Fase 4 (Audit completo) → Fase 5 (On-chain proof) → Fase 6 (Policy Engine)
+
 ## Session Summary (06/07/2026) — Framework Protocol + Dashboard + PregãoDashboard podado
 
 ### What's Changed
