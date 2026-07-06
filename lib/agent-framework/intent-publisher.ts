@@ -1,4 +1,5 @@
 import type { AgentIntent, IntentRecord, IntentFilter, IIntentPublisher, IntentStatus } from "./intent-types"
+import type { DecisionReport } from "./decision-report"
 
 let nextIntentId = 0
 
@@ -82,6 +83,14 @@ export class IntentPublisher implements IIntentPublisher {
     if (!record) return false
     record.result = result
     this._transition(record, result.success ? "COMPLETED" : "FAILED")
+    this._notify(record)
+    return true
+  }
+
+  setDecisionReport(id: string, report: DecisionReport): boolean {
+    const record = this.records.get(id)
+    if (!record) return false
+    record.decisionReport = report
     this._notify(record)
     return true
   }

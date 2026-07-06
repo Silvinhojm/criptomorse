@@ -20,6 +20,8 @@ export interface AgentIntent {
 
 export type IntentStatus = "CREATED" | "KNOWLEDGE_VALIDATED" | "VOTING" | "APPROVED" | "REJECTED" | "EXECUTING" | "COMPLETED" | "FAILED"
 
+import type { DecisionReport } from "./decision-report"
+
 export interface IntentRecord {
   intent: AgentIntent
   status: IntentStatus
@@ -28,6 +30,7 @@ export interface IntentRecord {
   createdAt: number
   resolvedAt?: number
   statusHistory?: { status: IntentStatus; timestamp: number }[]
+  decisionReport?: DecisionReport
 }
 
 export interface IntentFilter {
@@ -42,6 +45,9 @@ export interface IIntentPublisher {
   publish(intent: AgentIntent): Promise<string>
   getRecord(id: string): IntentRecord | null
   list(filter?: IntentFilter): IntentRecord[]
-  updateStatus(id: string, status: IntentStatus): void
+  updateStatus(id: string, status: IntentStatus): boolean
+  recordVote(id: string, vote: { agentId: string; approved: boolean; confidence: number; reputationWeight?: number; knowledgeWeight?: number; reason: string }): boolean
+  recordResult(id: string, result: { success: boolean; profit: number; txHash?: string; errorMsg?: string }): boolean
+  setDecisionReport(id: string, report: import("./decision-report").DecisionReport): boolean
   subscribe(cb: (record: IntentRecord) => void): () => void
 }

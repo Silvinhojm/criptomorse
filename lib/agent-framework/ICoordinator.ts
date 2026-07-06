@@ -26,6 +26,8 @@ export interface SubmissionResult {
   executionResult?: ExecutionResult
 }
 
+import type { PolicyEngine } from "./policy-engine"
+
 export interface ICoordinator {
   readonly name: string
   registerAgent(agent: IAgent): void
@@ -36,4 +38,5 @@ export interface ICoordinator {
   getExecutor(): IExecutor | null
   getSafetyGuard(): ISafetyGuard | null
   getAudit(): IAudit | null
+  getPolicyEngine(): PolicyEngine
 }

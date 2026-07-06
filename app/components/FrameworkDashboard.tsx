@@ -19,7 +19,7 @@ export function FrameworkDashboard() {
   const [recentAudits, setRecentAudits] = useState(frameworkAudit.getRecent(20))
   const [intents, setIntents] = useState(frameworkIntents.list({ limit: 50 }))
   const [intentStats, setIntentStats] = useState(frameworkIntents.getStats())
-  const [dedupStats, setDedupStats] = useState({ activeEntries: 0, oldestMs: 0 })
+  const [selectedIntent, setSelectedIntent] = useState<string | null>(null)
   const [now, setNow] = useState(Date.now())
   const mounted = useRef(true)
 
@@ -153,7 +153,7 @@ export function FrameworkDashboard() {
           </div>
         </div>
 
-        {/* Intent Feed com Pipeline */}
+        {/* Intent Pipeline com Decision Reports */}
         <div style={{ background: CARD_BG, borderRadius: 8, padding: 12, border: `1px solid ${BORDER}`, gridColumn: "span 2" }}>
           <div style={{ fontSize: 11, fontWeight: "bold", color: ACCENT, marginBottom: 8 }}>
             📨 Intent Pipeline ({intentStats.total})
@@ -162,16 +162,14 @@ export function FrameworkDashboard() {
             <div style={{ color: TEXT_MUTED }}>Nenhuma intent publicada</div>
           ) : (
             intents.map(r => {
-              const knowledge = r.intent.knowledgeReport
-              const stages = r.statusHistory?.length ?? 0
-              const lastStage = r.statusHistory?.[r.statusHistory.length - 1]
-              const stageTime = lastStage && r.statusHistory && r.statusHistory.length > 1
-                ? lastStage.timestamp - r.statusHistory[r.statusHistory.length - 2].timestamp
-                : 0
+              const dr = r.decisionReport
+              const isOpen = selectedIntent === r.intent.id
               return (
                 <div key={r.intent.id} style={{
-                  padding: "6px 0", borderBottom: `1px solid ${BORDER}`, fontSize: 10
-                }}>
+                  padding: "6px 0", borderBottom: `1px solid ${BORDER}`, fontSize: 10,
+                  cursor: "pointer",
+                }} onClick={() => setSelectedIntent(isOpen ? null : r.intent.id)}>
+                  {/* Summary row */}
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1 }}>
                       <StatusDot status={r.status} />
@@ -183,46 +181,94 @@ export function FrameworkDashboard() {
                       </span>
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ color: TEXT_MUTED, fontSize: 9 }}>
-                        conf {r.intent.confidence.toFixed(0)}% · {r.votes.length} votos
-                      </span>
-                      {r.result && (
-                        <span style={{ color: r.result.success ? GREEN : RED, fontSize: 9 }}>
-                          {r.result.success ? "✅" : "❌"} ${(r.result.profit ?? 0).toFixed(4)}
-                        </span>
-                      )}
+                      {dr?.durationMs && <span style={{ color: TEXT_MUTED, fontSize: 9 }}>{dr.durationMs}ms</span>}
+                      {dr?.voting && <span style={{ color: TEXT_MUTED, fontSize: 9 }}>{dr.voting.approved ? "✅" : "❌"}</span>}
                     </div>
                   </div>
 
-                  {/* Knowledge + Lifecycle metadata */}
-                  {(knowledge || stages > 1) && (
-                    <div style={{ display: "flex", gap: 8, marginTop: 3, fontSize: 8, color: TEXT_MUTED }}>
-                      {stages > 1 && (
-                        <span>{stages} estágios · {stageTime > 0 ? `${(stageTime / 1000).toFixed(0)}s` : ""}</span>
+                  {/* Expanded Decision Report */}
+                  {isOpen && dr && (
+                    <div style={{ marginTop: 6, padding: 8, background: "rgba(0,0,0,0.15)", borderRadius: 6, fontSize: 9 }}>
+                      {/* Knowledge block */}
+                      <div style={{ color: "#818cf8", fontWeight: "bold", marginBottom: 4 }}>
+                        📊 Knowledge Report
+                      </div>
+                      {dr.knowledge ? (
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 12px", marginBottom: 6 }}>
+                          <span>💧 Liquidity <b style={{ color: TEXT_PRIMARY }}>{dr.knowledge.liquidity}</b></span>
+                          <span>⛽ Gas <b style={{ color: TEXT_PRIMARY }}>{dr.knowledge.gasScore}</b></span>
+                          <span>🛣️ Route <b style={{ color: TEXT_PRIMARY }}>{dr.knowledge.routeScore}</b></span>
+                          <span>📊 Market <b style={{ color: TEXT_PRIMARY }}>{dr.knowledge.marketScore}</b></span>
+                          <span>⚠️ Risk <b style={{ color: TEXT_PRIMARY }}>{dr.knowledge.riskScore}</b></span>
+                          <span>📈 EV <b style={{ color: TEXT_PRIMARY }}>{(dr.knowledge.expectedValue * 100).toFixed(2)}%</b></span>
+                          <span>🎯 Modifier <b style={{ color: dr.knowledge.confidenceModifier >= 0 ? GREEN : RED }}>
+                            {dr.knowledge.confidenceModifier >= 0 ? "+" : ""}{dr.knowledge.confidenceModifier}%
+                          </b></span>
+                        </div>
+                      ) : (
+                        <div style={{ color: TEXT_MUTED, marginBottom: 6 }}>Knowledge não consultado</div>
                       )}
-                      {knowledge && (
-                        <>
-                          <span>💧{knowledge.liquidity}</span>
-                          <span>⛽{knowledge.gasScore}</span>
-                          <span>🛣️{knowledge.routeScore}</span>
-                          <span>📊{knowledge.marketScore}</span>
-                          <span>⚠️{knowledge.riskScore}</span>
-                          <span>📈{(knowledge.expectedValue * 100).toFixed(2)}%</span>
-                        </>
+                      {dr.knowledge?.warnings && dr.knowledge.warnings.length > 0 && (
+                        <div style={{ color: YELLOW, marginBottom: 4 }}>⚠️ {dr.knowledge.warnings.join(" · ")}</div>
                       )}
-                    </div>
-                  )}
 
-                  {/* Status history timeline */}
-                  {r.statusHistory && r.statusHistory.length > 1 && (
-                    <div style={{ display: "flex", gap: 2, marginTop: 3, fontSize: 7, color: TEXT_MUTED }}>
-                      {r.statusHistory.slice(0, -1).map((h, i) => (
-                        <span key={i} style={{
-                          background: "rgba(255,255,255,0.05)", padding: "0 4px", borderRadius: 2,
-                        }}>
-                          {h.status.slice(0, 4)}→
-                        </span>
-                      ))}
+                      {/* Voting block */}
+                      <div style={{ color: YELLOW, fontWeight: "bold", marginBottom: 4, marginTop: 6 }}>
+                        🗳️ Voting
+                      </div>
+                      <div style={{ marginBottom: 4 }}>
+                        <span>{dr.voting?.approved ? "✅" : "❌"} </span>
+                        <b>{dr.voting?.approved ? "Approved" : "Rejected"}</b>
+                        <span style={{ color: TEXT_MUTED }}> — conf {dr.voting?.confidence.toFixed(1)}% · {dr.voting?.votes.length}/{dr.voting?.totalVoters} agents · {dr.voting?.reason}</span>
+                      </div>
+                      {dr.voting?.votes && dr.voting.votes.length > 0 && (
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
+                          {dr.voting.votes.map(v => (
+                            <span key={v.agentId} style={{
+                              background: "rgba(255,255,255,0.05)", padding: "1px 6px", borderRadius: 4,
+                              color: v.approved ? GREEN : RED,
+                            }}>
+                              {v.agentId}: {v.approved ? "✅" : "❌"} ({v.confidence}%) "{v.reason}"
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Execution block */}
+                      <div style={{ color: "#06b6d4", fontWeight: "bold", marginBottom: 4, marginTop: 6 }}>
+                        ⚡ Execution
+                      </div>
+                      {dr.execution ? (
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 12px" }}>
+                          <span>Status <b style={{ color: dr.execution.success ? GREEN : RED }}>{dr.execution.success ? "✅ Success" : "❌ Failed"}</b></span>
+                          <span>Adapter <b style={{ color: TEXT_PRIMARY }}>{dr.execution.adapter}</b></span>
+                          <span>Profit <b style={{ color: dr.execution.profit >= 0 ? GREEN : RED }}>${dr.execution.profit.toFixed(4)}</b></span>
+                          <span>Gas <b style={{ color: TEXT_PRIMARY }}>${dr.execution.gasCost.toFixed(4)}</b></span>
+                          <span>Duration <b style={{ color: TEXT_PRIMARY }}>{dr.execution.durationMs}ms</b></span>
+                          {dr.execution.txHash && <span>Tx <b style={{ color: ACCENT, fontFamily: "monospace" }}>{dr.execution.txHash.slice(0, 16)}...</b></span>}
+                          {dr.execution.errorMsg && <span style={{ color: RED, gridColumn: "span 2" }}>❌ {dr.execution.errorMsg}</span>}
+                        </div>
+                      ) : (
+                        <div style={{ color: TEXT_MUTED }}>Não executado</div>
+                      )}
+
+                      {/* Status history */}
+                      {r.statusHistory && r.statusHistory.length > 1 && (
+                        <div style={{ marginTop: 6 }}>
+                          <div style={{ color: TEXT_MUTED, fontWeight: "bold", marginBottom: 2, fontSize: 8 }}>🔄 Pipeline</div>
+                          <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
+                            {r.statusHistory.map((h, i) => (
+                              <span key={i} style={{
+                                background: "rgba(255,255,255,0.05)", padding: "1px 4px", borderRadius: 3,
+                                fontSize: 8, color: TEXT_MUTED,
+                              }}>
+                                {h.status.slice(0, 4)} {i < r.statusHistory!.length - 1 ? "→" : ""}
+                              </span>
+                            ))}
+                            <span style={{ color: TEXT_MUTED, fontSize: 8 }}>{dr.durationMs}ms</span>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

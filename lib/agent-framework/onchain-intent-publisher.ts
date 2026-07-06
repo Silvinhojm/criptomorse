@@ -128,6 +128,8 @@ export class OnChainIntentPublisher {
   list(...args: Parameters<IntentPublisher["list"]>): IntentRecord[] { return this.publisher.list(...args) }
   getStats() { return this.publisher.getStats() }
   subscribe(cb: (record: IntentRecord) => void): () => void { return this.publisher.subscribe(cb) }
-  recordVote(id: string, vote: { agentId: string; approved: boolean; confidence: number; reason: string }): boolean { return this.publisher.recordVote(id, vote) }
+  recordVote(id: string, vote: { agentId: string; approved: boolean; confidence: number; reputationWeight?: number; knowledgeWeight?: number; reason: string }): boolean { return this.publisher.recordVote(id, vote) }
+  recordResult(id: string, result: { success: boolean; profit: number; txHash?: string; errorMsg?: string }): boolean { return this.publisher.recordResult(id, result) }
   updateStatus(id: string, status: import("./intent-types").IntentStatus): boolean { return this.publisher.updateStatus(id, status) }
+  setDecisionReport(id: string, report: import("./decision-report").DecisionReport): boolean { return this.publisher.setDecisionReport(id, report) }
 }

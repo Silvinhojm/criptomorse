@@ -71,7 +71,7 @@ export default function AMMPoolCirBTC() {
 
     async function fetchSwaps() {
       try {
-        const res = await fetch(`https://testnet.arcscan.app/api/v2/addresses/${POOL_ADDR}/transactions?filter=to%7Cfrom&limit=5`)
+        const res = await fetch(`/api/arcscan-proxy?path=/addresses/${POOL_ADDR}/transactions?filter=to%7Cfrom&limit=5`)
         if (res.ok) {
           const data = await res.json()
           if (data.items) {
@@ -89,7 +89,7 @@ export default function AMMPoolCirBTC() {
           }
         }
       } catch {
-        /* ArcScan pode retornar 422 — fallback silencioso */
+        /* erro silencioso */
       }
       setSwaps([])
     }
