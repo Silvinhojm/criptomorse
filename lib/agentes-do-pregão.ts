@@ -490,8 +490,10 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
 
   // 🔌 Framework: Configura TradingAdapter como executor do Coordinator
   // O Coordinator vira o entry point real; o Pregão vira dependência interna do adapter
+  // IMPORTANTE: TradingAdapter chama injetarSinal (rota interna), NÃO receberOK.
+  // Chamar receberOK criaria ciclo infinito (receberOK → Coordinator → TradingAdapter → receberOK → ...)
   const tradingAdapter = new TradingAdapter((signal) => {
-    originalReceberOK(signal)
+    pregão.injetarSinal(signal)
   })
   frameworkCoordinator.setExecutor(tradingAdapter)
   const _frameworkReady = true

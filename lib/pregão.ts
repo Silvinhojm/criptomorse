@@ -267,6 +267,30 @@ class Pregão {
     this.limparExpirados()
   }
 
+  /** Rota interna — usada pelo TradingAdapter para injetar sinais
+   *  sem passar pelo ponto de interceptação pública (receberOK).
+   *  Chamar receberOK de dentro de um adapter criaria ciclo infinito. */
+  injetarSinal(signal: OkSignal) {
+    signal.confianca = Math.min(100, Math.max(0, signal.confianca ?? 0))
+    if (isNaN(signal.confianca)) signal.confianca = 0
+
+    if (this._redeAtiva && signal.rede !== this._redeAtiva) {
+      this.log(`🚫 Sinal ignorado: ${signal.pregueiro} → ${signal.par} na ${signal.rede} (rede ativa: ${this._redeAtiva})`)
+      return
+    }
+
+    const chave = `${signal.rede}:${signal.par}`
+    if (!this.oks.has(chave)) this.oks.set(chave, new Map())
+    const porPar = this.oks.get(chave)!
+    if (!porPar.has(signal.pregueiro)) porPar.set(signal.pregueiro, [])
+    porPar.get(signal.pregueiro)!.push(signal)
+
+    this.log(`📢 OK injetado via TradingAdapter: ${signal.pregueiro} → ${signal.par} na ${signal.rede} (${signal.confianca}%)`)
+
+    this.verificarOrdem(chave, signal)
+    this.limparExpirados()
+  }
+
   private verificarOrdem(chave: string, signal: OkSignal) {
     const [rede, par] = chave.split(":")
     const porPar = this.oks.get(chave)
