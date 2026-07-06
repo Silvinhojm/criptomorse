@@ -1216,26 +1216,48 @@ Propósito da análise:
 - **Fase 4**: Audit registrar KnowledgeReport (off-chain)
 - **Fase 5**: Publicar hash do KnowledgeReport on-chain via `OnChainIntentPublisher` (on-chain — este é o passo que gera eventos no ERC-8183)
 
-## Session Summary (07/07/2026) — Fase 2: Knowledge pré-consulta de agentes
+## Session Summary (07/07/2026) — Fase 3: Voting ponderado + Audit knowledgeModifier + Fase 4 prep
 
 ### What's Changed
 
-1. **`lib/agentes-do-pregão.ts:542-576`** — Adicionado `frameworkKnowledge.query()` no wrapper de `receberOK`:
-   - Consulta executada ANTES de cada Intent ser encaminhada ao pregão
-   - Se `knowledge.canTrade === false`, a Intent é bloqueada (🚫 no log + recommendation)
-   - Se `knowledge.confidenceModifier` não for zero, ajusta a confiança do sinal:
-     - modifier negativo (ex: -35%): reduz a confiança original proporcionalmente
-     - modifier positivo (ex: +12%): aumenta a confiança
-   - Logs `[KNOWLEDGE] 📉/📈` com o ajuste visível
-   - Try/catch protege contra indisponibilidade do Knowledge Service
-   - Wrapper async para aguardar a consulta antes de prosseguir
+1. **Fase 3 — Voting com confidenceModifier como peso** (`lib/agent-framework/voting.ts`):
+   - `VoteRecord` agora carrega `reputationWeight` e `knowledgeWeight`
+   - `recordVote()` defaults para `1.0` nos novos campos (compatibilidade retroativa)
+   - `resolve()` usa fórmula ponderada: `sum( (confidence/100) × repWeight × knowWeight ) / numVotes × 100`
+   - `rejected` warnings silenciados (TS lint)
+
+2. **Coordinator com pesos integrados** (`lib/agent-framework/coordinator.ts`):
+   - Importa `frameworkReputation` de `./singletons`
+   - `resolveConsensus()`: para cada voto, lê `frameworkReputation.getScore(agentId) / 100` como `reputationWeight` e `proposal.params.knowledgeModifier` como `knowledgeWeight`
+   - Fórmula: `weightedConf = (confidence/100) × repWeight × knowledgeWeight`
+   - `runCycle()`: passa `reputationWeight` e `knowledgeWeight` ao `Voting.recordVote()`
+   - Audit registra `knowledgeModifier` quando disponível no proposal
+
+3. **Fase 4 prep — Audit com conhecimento**:
+   - `IAudit.ts` + `audit.ts`: `AuditEntry` ganha campos opcionais `knowledgeModifier`, `knowledgeWarnings`, `knowledgeReport`
+   - `Audit.createEntry()` lê `knowledgeWarnings` de `proposal.params`
+   - `coordinator.ts` extrai `knowledgeModifier` do proposal e passa ao `Audit.createEntry()`
+
+4. **IntentRecord com conhecimento** (`lib/agent-framework/intent-types.ts`):
+   - `AgentIntent` ganha `knowledgeModifier?`, `knowledgeReport?`, `knowledgeWarnings?`
+   - `IntentRecord.votes[]` ganha `reputationWeight` e `knowledgeWeight`
+
+5. **IntentPublisher compatível** (`lib/agent-framework/intent-publisher.ts`):
+   - `recordVote()` aceita `reputationWeight?` e `knowledgeWeight?`, defaults para `1.0`
 
 ### Arquivos Modificados
 | Arquivo | Mudança |
 |---------|---------|
-| `lib/agentes-do-pregão.ts` | +import frameworkKnowledge, +knowledge check no wrapper receberOK |
+| `lib/agent-framework/voting.ts` | VoteRecord com repWeight/knowWeight; resolve() com fórmula ponderada |
+| `lib/agent-framework/coordinator.ts` | +import frameworkReputation; resolveConsensus com pesos; Audit com knowledgeModifier |
+| `lib/agent-framework/IAudit.ts` | AuditEntry com knowledgeModifier/knowledgeWarnings/knowledgeReport |
+| `lib/agent-framework/audit.ts` | createEntry aceita knowledgeModifier; lê knowledgeWarnings de proposal.params |
+| `lib/agent-framework/intent-types.ts` | AgentIntent + IntentRecord com campos de conhecimento |
+| `lib/agent-framework/intent-publisher.ts` | recordVote aceita repWeight/knowWeight opcionais |
 
 ### Current State
 - **Build**: limpo (zero erros TS)
-- **Fase 2**: ✅ Concluída — todo agente consulta `frameworkKnowledge.query()` antes de gerar Intent
-- **Próximo**: Fase 3 — Voting usar `confidenceModifier` como peso
+- **Fase 2**: ✅ Concluída — agentes consultam Knowledge Service antes de gerar Intent
+- **Fase 3**: ✅ Concluída — votos ponderados por reputação do agente + conhecimento do framework
+- **Fase 4 (Audit)**: ⏳ Preparado — AuditEntry aceita knowledgeModifier/knowledgeWarnings; Coordinator já registra
+- **Próximo**: Fase 4 — Registrar KnowledgeReport completo no Audit; Fase 5 — Publicar hash on-chain
