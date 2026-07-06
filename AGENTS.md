@@ -1184,3 +1184,58 @@ Aplicação consumia memória do navegador após horas rodando ciclos contínuos
 - **KnowledgeService**: 6 fontes, cache TTL, 4 scores, riskScore, confidenceModifier, recommendations
 - **Polygon**: $48.22 USDC, $15.72 POL
 - **Arc Testnet**: sistema rodando ao vivo
+
+### Pendente para Auditoria Técnica (solicitação do desenvolvedor)
+
+O desenvolvedor solicita que, quando as Fases 2-5 estiverem completas (Knowledge → Intent → Voting → Audit → On-chain), seja enviado para análise:
+
+1. **Endereço dos contratos principais** — Coordinator, AgentIdentity (ERC-8004), ERC-8183, OnChainIntentPublisher
+2. **Link ArcScan** com eventos disponíveis
+3. **ABI ou código** dos contratos
+
+Propósito da análise:
+- Verificar se os contratos estão sendo realmente utilizados (eventos on-chain)
+- Identificar gargalos de gas nas interações
+- Avaliar se a blockchain reflete corretamente a arquitetura do framework
+- Determinar se o projeto demonstra uso relevante da infraestrutura da rede Arc
+
+#### Contratos já deployados (visão parcial)
+| Contrato | Endereço | Explorer |
+|----------|----------|----------|
+| AgentIdentity (ERC-8004) — Arc | `0xd2a801e60a0ab36da3fb17d4a7654b494ba8326b` | [ArcScan](https://testnet.arcscan.app/address/0xd2a801e60a0ab36da3fb17d4a7654b494ba8326b) |
+| AgentIdentity (ERC-8004) — Base | `0xaeb95e2532a73a097e03584cb244eeca9b5609a5` | [BaseScan](https://basescan.org/address/0xaeb95e2532a73a097e03584cb244eeca9b5609a5) |
+| AgenticCommerce (ERC-8183) — Arc v1 | `0x319227cf1de5c61d11313af8226a8f5309fa70d9` | [ArcScan](https://testnet.arcscan.app/address/0x319227cf1de5c61d11313af8226a8f5309fa70d9) |
+| AgenticCommerce (ERC-8183) — Arc v2 | `0x0747EEf0706327138c69792bF28Cd525089e4583` | [ArcScan](https://testnet.arcscan.app/address/0x0747EEf0706327138c69792bF28Cd525089e4583) |
+| AgenticCommerce (ERC-8183) — Polygon | `0x0747EEf0706327138c69792bF28Cd525089e4583` | [PolygonScan](https://polygonscan.com/address/0x0747EEf0706327138c69792bF28Cd525089e4583) |
+| AgenticCommerce (ERC-8183) — Ethereum | `0x0747EEf0706327138c69792bF28Cd525089e4583` | [Etherscan](https://etherscan.io/address/0x0747EEf0706327138c69792bF28Cd525089e4583) |
+| AMM USDC/EURC — Arc | `0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb` | [ArcScan](https://testnet.arcscan.app/address/0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb) |
+
+#### O que falta para a auditoria
+- ~~**Fase 2**: Agents consultarem `frameworkKnowledge.query()` antes de gerar Intents~~ ✅ CONCLUÍDA
+- **Fase 3**: Voting usar `confidenceModifier` como peso (off-chain)
+- **Fase 4**: Audit registrar KnowledgeReport (off-chain)
+- **Fase 5**: Publicar hash do KnowledgeReport on-chain via `OnChainIntentPublisher` (on-chain — este é o passo que gera eventos no ERC-8183)
+
+## Session Summary (07/07/2026) — Fase 2: Knowledge pré-consulta de agentes
+
+### What's Changed
+
+1. **`lib/agentes-do-pregão.ts:542-576`** — Adicionado `frameworkKnowledge.query()` no wrapper de `receberOK`:
+   - Consulta executada ANTES de cada Intent ser encaminhada ao pregão
+   - Se `knowledge.canTrade === false`, a Intent é bloqueada (🚫 no log + recommendation)
+   - Se `knowledge.confidenceModifier` não for zero, ajusta a confiança do sinal:
+     - modifier negativo (ex: -35%): reduz a confiança original proporcionalmente
+     - modifier positivo (ex: +12%): aumenta a confiança
+   - Logs `[KNOWLEDGE] 📉/📈` com o ajuste visível
+   - Try/catch protege contra indisponibilidade do Knowledge Service
+   - Wrapper async para aguardar a consulta antes de prosseguir
+
+### Arquivos Modificados
+| Arquivo | Mudança |
+|---------|---------|
+| `lib/agentes-do-pregão.ts` | +import frameworkKnowledge, +knowledge check no wrapper receberOK |
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Fase 2**: ✅ Concluída — todo agente consulta `frameworkKnowledge.query()` antes de gerar Intent
+- **Próximo**: Fase 3 — Voting usar `confidenceModifier` como peso

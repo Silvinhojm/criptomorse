@@ -17,6 +17,7 @@ import { COIN_IDS, TOKENS_WITH_FEED } from "./coin-ids"
 import { stablePairScanner } from "./stable-pair-scanner"
 import { stableMR } from "./stable-mr"
 import { timingOptimizer } from "./timing-optimizer"
+import { frameworkKnowledge } from "./agent-framework/singletons"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 
@@ -492,7 +493,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   let votes: AgentPairVote[] = []
   let allUniqueAgents = new Set<string>()
   try {
-  pregão.receberOK = (signal) => {
+  pregão.receberOK = async (signal) => {
     if (signal.pregueiro.startsWith("Agente:")) {
       const nomeRobo = signal.pregueiro.replace("Agente:", "")
       if (isArc) {
@@ -537,6 +538,43 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         pregão.adicionarLog(`[APRENDIZADO] ${nomeRobo} → ${signal.par} — executando na testnet (lab mode)`)
       }
     }
+
+    // 🧠 Fase 2: Knowledge Service — consulta antes de executar
+    // O framework pergunta: "este par tem liquidez? rota? gas aceitável? mercado favorável?"
+    // Se a resposta for negativa, reduz a confiança ou bloqueia a ordem.
+    if (signal.toToken && signal.fromToken && signal.direcao) {
+      try {
+        const knowledge = await frameworkKnowledge.query({
+          pair: { from: signal.fromToken, to: signal.toToken },
+          network: signal.rede,
+          action: signal.direcao === "buy" ? "BUY" : "SELL",
+          agent: signal.pregueiro,
+          amount: BigInt(Math.round((signal.amountUsd || 5) * 1_000_000)),
+        })
+
+        if (!knowledge.canTrade) {
+          const why = knowledge.warnings.join("; ") || knowledge.reason || "condições desfavoráveis"
+          pregão.adicionarLog(`[KNOWLEDGE] 🚫 ${signal.pregueiro} → ${signal.par} bloqueado: ${why}`)
+          if (knowledge.recommendations.length > 0) {
+            pregão.adicionarLog(`[KNOWLEDGE] 💡 ${signal.pregueiro} → ${knowledge.recommendations[0]}`)
+          }
+          return
+        }
+
+        if (knowledge.confidenceModifier !== 0) {
+          const originalConf = signal.confianca
+          const adjusted = Math.round(originalConf * (1 + knowledge.confidenceModifier / 100))
+          signal.confianca = Math.max(1, Math.min(100, adjusted))
+          if (Math.abs(knowledge.confidenceModifier) >= 10) {
+            const sign = knowledge.confidenceModifier > 0 ? "+" : ""
+            pregão.adicionarLog(`[KNOWLEDGE] ${knowledge.confidenceModifier > 0 ? "📈" : "📉"} ${signal.pregueiro} → ${signal.par} confiança ${originalConf}% → ${signal.confianca}% (mod ${sign}${knowledge.confidenceModifier}%)`)
+          }
+        }
+      } catch {
+        // Knowledge Service indisponível — permite a ordem seguir sem modificação
+      }
+    }
+
     originalReceberOK(signal)  // mainnet: registra aprendizado + encaminha ao pregão
   }
 
