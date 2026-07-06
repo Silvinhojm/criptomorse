@@ -5,6 +5,8 @@ export interface VoteRecord {
   proposalId: string
   approved: boolean
   confidence: number
+  reputationWeight: number
+  knowledgeWeight: number
   reason: string
   timestamp: number
 }
@@ -30,7 +32,15 @@ export class Voting {
   }
 
   recordVote(vote: VoteRecord): void {
-    this.votes.push(vote)
+    this.votes.push({
+      ...vote,
+      reputationWeight: vote.reputationWeight ?? 1.0,
+      knowledgeWeight: vote.knowledgeWeight ?? 1.0,
+    })
+  }
+
+  computeWeightedConfidence(confidence: number, repWeight: number, knowWeight: number): number {
+    return (confidence / 100) * repWeight * knowWeight
   }
 
   resolve(proposal: AgentProposal): VoteResult {
@@ -49,7 +59,11 @@ export class Voting {
     const approved = relevant.filter(v => v.approved)
     const rejected = relevant.filter(v => !v.approved)
 
-    const avgConfidence = approved.reduce((s, v) => s + v.confidence, 0) / Math.max(1, approved.length)
+    const weightedSum = approved.reduce((s, v) => {
+      return s + this.computeWeightedConfidence(v.confidence, v.reputationWeight, v.knowledgeWeight)
+    }, 0)
+
+    const avgConfidence = (weightedSum / Math.max(1, approved.length)) * 100
 
     const hasEnoughVotes = approved.length >= this.minVotes
     const hasEnoughConf = avgConfidence >= this.minConfidence
@@ -60,7 +74,7 @@ export class Voting {
         approved: true,
         confidence: avgConfidence,
         votes: relevant,
-        reason: `Approved: ${approved.length}/${relevant.length} votes, ${avgConfidence.toFixed(1)}% confidence`,
+        reason: `Approved: ${approved.length}/${relevant.length} votes, ${avgConfidence.toFixed(1)}% effective confidence (weighted: rep × know)`,
       }
     }
 
@@ -68,7 +82,7 @@ export class Voting {
     if (!hasEnoughVotes) {
       reason = `Not enough votes: ${approved.length} approved (min: ${this.minVotes})`
     } else {
-      reason = `Confidence too low: ${avgConfidence.toFixed(1)}% (min: ${this.minConfidence}%)`
+      reason = `Weighted confidence too low: ${avgConfidence.toFixed(1)}% (min: ${this.minConfidence}%)`
     }
 
     return {

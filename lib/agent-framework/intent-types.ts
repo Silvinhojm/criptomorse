@@ -4,6 +4,16 @@ export interface AgentIntent {
   action: string
   params: Record<string, unknown>
   confidence: number
+  knowledgeModifier?: number
+  knowledgeReport?: {
+    liquidity: number
+    gasScore: number
+    routeScore: number
+    marketScore: number
+    riskScore: number
+    expectedValue: number
+  }
+  knowledgeWarnings?: string[]
   signature?: string
   timestamp: number
 }
@@ -13,7 +23,7 @@ export type IntentStatus = "pending" | "voting" | "approved" | "rejected" | "exe
 export interface IntentRecord {
   intent: AgentIntent
   status: IntentStatus
-  votes: { agentId: string; approved: boolean; confidence: number; reason: string }[]
+  votes: { agentId: string; approved: boolean; confidence: number; reputationWeight: number; knowledgeWeight: number; reason: string }[]
   result?: { success: boolean; profit: number; txHash?: string; errorMsg?: string }
   createdAt: number
   resolvedAt?: number

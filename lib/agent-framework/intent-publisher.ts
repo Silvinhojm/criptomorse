@@ -58,10 +58,14 @@ export class IntentPublisher implements IIntentPublisher {
     return true
   }
 
-  recordVote(id: string, vote: { agentId: string; approved: boolean; confidence: number; reason: string }): boolean {
+  recordVote(id: string, vote: { agentId: string; approved: boolean; confidence: number; reputationWeight?: number; knowledgeWeight?: number; reason: string }): boolean {
     const record = this.records.get(id)
     if (!record) return false
-    record.votes.push(vote)
+    record.votes.push({
+      ...vote,
+      reputationWeight: vote.reputationWeight ?? 1.0,
+      knowledgeWeight: vote.knowledgeWeight ?? 1.0,
+    })
     this._notify(record)
     return true
   }

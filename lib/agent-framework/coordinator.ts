@@ -5,6 +5,7 @@ import type { ISafetyGuard } from "./ISafetyGuard"
 import type { IAudit } from "./IAudit"
 import { Voting, type VoteResult } from "./voting"
 import { Audit } from "./audit"
+import { frameworkReputation } from "./singletons"
 
 export { type ConsensusResult, type CycleReport }
 
@@ -106,10 +107,19 @@ export class Coordinator implements ICoordinator {
     const sellVotes = votes.filter(v => !v.approved)
     const holdVotes = votes.filter(v => !v.approved)
 
+    const knowledgeModifier = (proposal.params?.knowledgeModifier as number | undefined) ?? 0
+    const knowledgeWeight = 1 + knowledgeModifier / 100
+
+    const weightedConf = (v: AgentVote): number => {
+      const repScore = frameworkReputation.getScore(v.agentId)
+      const repWeight = Math.max(0.1, Math.min(1.0, repScore / 100))
+      return (v.confidence / 100) * repWeight * knowledgeWeight
+    }
+
     const total = votes.length || 1
-    const buyScore = buyVotes.reduce((s, v) => s + v.confidence, 0) / total
-    const sellScore = sellVotes.reduce((s, v) => s + v.confidence, 0) / total
-    const holdScore = holdVotes.reduce((s, v) => s + v.confidence, 0) / total
+    const buyScore = buyVotes.reduce((s, v) => s + weightedConf(v) * 100, 0) / total
+    const sellScore = sellVotes.reduce((s, v) => s + weightedConf(v) * 100, 0) / total
+    const holdScore = holdVotes.reduce((s, v) => s + weightedConf(v) * 100, 0) / total
 
     let action: string
     let winningScore: number
@@ -188,12 +198,17 @@ export class Coordinator implements ICoordinator {
       try {
         // Collect votes
         const votes = await this.collectVotes(proposal)
+        const knowledgeMod = (proposal.params?.knowledgeModifier as number | undefined) ?? 0
         for (const v of votes) {
+          const repScore = frameworkReputation.getScore(v.agentId)
+          const repWeight = Math.max(0.1, Math.min(1.0, repScore / 100))
           this.voting.recordVote({
             agentId: v.agentId,
             proposalId: proposal.id,
             approved: v.approved,
             confidence: v.confidence,
+            reputationWeight: repWeight,
+            knowledgeWeight: 1 + knowledgeMod / 100,
             reason: v.reason,
             timestamp: v.timestamp,
           })
@@ -210,6 +225,7 @@ export class Coordinator implements ICoordinator {
 
           // Audit
           if (this.audit_) {
+            const knowledgeMod = (proposal.params?.knowledgeModifier as number | undefined)
             this.audit_.record(Audit.createEntry({
               agentId: proposal.agentId,
               action: proposal.action,
@@ -218,6 +234,7 @@ export class Coordinator implements ICoordinator {
               approved: consensus.approved,
               confidence: consensus.confidence,
               voters: votes.length,
+              knowledgeModifier: knowledgeMod,
             }))
           }
 

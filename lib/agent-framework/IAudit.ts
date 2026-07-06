@@ -9,6 +9,16 @@ export interface AuditEntry {
   proposal: AgentProposal
   result: ExecutionResult | null
   consensus: { approved: boolean; confidence: number; voters: number }
+  knowledgeModifier?: number
+  knowledgeReport?: {
+    liquidity: number
+    gasScore: number
+    routeScore: number
+    marketScore: number
+    riskScore: number
+    expectedValue: number
+  }
+  knowledgeWarnings?: string[]
   tags: string[]
 }
 

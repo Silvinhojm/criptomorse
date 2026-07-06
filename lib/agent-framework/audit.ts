@@ -76,8 +76,10 @@ export class Audit implements IAudit {
     approved: boolean
     confidence: number
     voters: number
+    knowledgeModifier?: number
     tags?: string[]
   }): AuditEntry {
+    const knowMod = params.knowledgeModifier
     return {
       id: `audit_${++nextId}_${Date.now()}`,
       timestamp: Date.now(),
@@ -90,6 +92,8 @@ export class Audit implements IAudit {
         confidence: params.confidence,
         voters: params.voters,
       },
+      knowledgeModifier: knowMod,
+      knowledgeWarnings: (params.proposal.params?.knowledgeWarnings as string[] | undefined) ?? undefined,
       tags: params.tags ?? [],
     }
   }
