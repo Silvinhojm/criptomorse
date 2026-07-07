@@ -1,3 +1,77 @@
+## Session Summary (07/07/2026 noite) — Fase 5: On-chain proof
+
+### What's Changed
+
+1. **DecisionAnchor.sol** (`contracts/DecisionAnchor.sol`) — contrato minimalista de âncora de hash:
+   - `anchor(bytes32 hash, string metadataURI)` → emite `ReportAnchored(uint256, bytes32, address, string)`
+   - Deployado em `0x7813e04338dc9d6b7676843a52152c57438cc7b2` na Arc testnet
+   - 1 tx = ~50-70k gas, sem USDC, sem budget, sem funding
+   - Apenas 6 campos leves on-chain: `decisionReportHash`, `intentId`, `agentId`, `action`, `status`, `timestamp`
+   - Relatório completo (Knowledge scores, votos, execução) permanece off-chain no `DecisionReport`
+
+2. **OnChainIntentPublisher.anchorDecision()** (`onchain-intent-publisher.ts`):
+   - Serializa metadados leves, calcula `keccak256()`, chama `anchor(hash, metadataURI)` on-chain
+   - Se `configure(privateKey)` foi chamado: envia tx on-chain real via Arc RPC
+   - Se não configurado: loga hash como fallback off-chain
+   - `pendingProofs` map + `retryPendingProofs()` — retentado a cada ciclo (max 5 tentativas)
+
+3. **Coordinator** (`coordinator.ts`):
+   - `submitProposal()`: após execução + audit + feedback, chama `anchorDecision()` fire-and-forget
+   - `runCycle()`: retry de proofs pendentes no início de cada ciclo via `(this.intentPublisher_ as any).retryPendingProofs()`
+   - Audit entry criado com `onChainStatus: "pending"` e atualizado via `audit.updateEntry()` após confirmação
+
+4. **Audit integrado**:
+   - `IAudit.ts`: `AuditEntry` ganha `onChainHash`, `onChainTx`, `onChainStatus`
+   - `IAudit.updateEntry(id, updates)` — atualiza audit retroativamente
+   - `Audit.createEntry()` aceita on-chain params
+
+5. **DecisionReport** (`decision-report.ts`): ganha `onChainHash`, `onChainTx`, `onChainStatus` ("pending" | "confirmed" | "failed" | "skipped")
+
+6. **ERC-8183 address** atualizado de v1 (`0x3192...`) para v2 (`0x0747...`)
+   - `frameworkCoordinator` agora passa `intentPublisher: frameworkIntents`
+
+### Arquivos Criados
+| Arquivo | Descrição |
+|---------|-----------|
+| `contracts/DecisionAnchor.sol` | Contrato minimalista de âncora (48 linhas) |
+| `lib/decision-anchor-abi.ts` | ABI do DecisionAnchor (42 linhas) |
+| `scripts/deployDecisionAnchorArc.js` | Script de deploy na Arc testnet (60 linhas) |
+
+### Arquivos Modificados
+| Arquivo | Mudança |
+|---------|---------|
+| `lib/agent-framework/onchain-intent-publisher.ts` | +anchorDecision(), retryPendingProofs(), lightweight metadata, pendingProofs map |
+| `lib/agent-framework/coordinator.ts` | +on-chain proof call, retry em runCycle(), audit update após confirmação |
+| `lib/agent-framework/IAudit.ts` | AuditEntry com onChainHash/Tx/Status, +updateEntry() |
+| `lib/agent-framework/audit.ts` | +updateEntry(), createEntry aceita on-chain params |
+| `lib/agent-framework/decision-report.ts` | +onChainHash, onChainTx, onChainStatus |
+| `lib/agent-framework/intent-types.ts` | anchorDecision retorna { hash } |
+| `lib/agent-framework/intent-publisher.ts` | anchorDecision() lightweight metadata |
+| `lib/agent-framework/singletons.ts` | Coordinator com intentPublisher |
+| `.env.local` | DECISION_ANCHOR_ADDRESS + ERC8183 v2 |
+
+### Current State
+- **Build**: limpo (zero erros TS)
+- **Commit**: `ea25d61` — `Fase 5 refinada: lightweight on-chain proof + retry + audit tracking`
+- **Deploy Vercel**: ✅ `https://criptomorse.vercel.app`
+- **Fase 1**: ✅ Coordinator como entry point único
+- **Fase 2**: ✅ Knowledge Service
+- **Fase 3**: ✅ Voting ponderado (reputação + conhecimento)
+- **Fase 4**: ✅ Audit com knowledgeModifier
+- **Fase 5**: ✅ On-chain proof via DecisionAnchor (lightweight metadata, retry, audit integrado)
+- **Próximo**: Fase 6 (Policy Engine expansão) → Fase 7-12 (ver ROADMAP.md)
+
+### Para ativar transações reais
+```ts
+import { frameworkIntents } from "@/lib/agent-framework"
+frameworkIntents.configure("0x...private_key_da_wallet_0x77f5...")
+```
+
+Após configurar, cada execução bem-sucedida gera tx no `DecisionAnchor`:
+```
+[ONCHAIN] 🔗 Decision anchored: intent_xxx → tx:0xabc... block:50487516 hash:0xdef...
+```
+
 ## Session Summary (07/07/2026) — Fase 1: Coordinator como núcleo + Roadmap Estratégico
 
 ### What's Changed
@@ -1363,9 +1437,11 @@ O TradingAdapter (`trading-adapter.ts:54`) agora chama `pregão.injetarSinal(sig
 
 ### Current State
 - **Build**: limpo (zero erros TS)
-- **Commit**: `10f5c80` — `Fix recrusão infinita: TradingAdapter usa injetarSinal() em vez de receberOK()`
-- **Deploy Vercel**: ✅ `https://criptomorse.vercel.app` — build compilou, deploy aliado
+- **Commit**: `ea25d61` — `Fase 5 refinada: lightweight on-chain proof + retry + audit tracking`
+- **Deploy Vercel**: ✅ `https://criptomorse.vercel.app`
 - **Fase 1**: ✅ Completa — Coordinator é entry point único, Pregão é dependência interna, TradingAdapter usa rota interna
-- **Fase 2**: ✅ Concluída
-- **Fase 3**: ✅ Concluída
-- **Próximo**: Fase 4 (Audit completo) → Fase 5 (On-chain proof) → Fase 6 (Policy Engine)
+- **Fase 2**: ✅ Knowledge Service
+- **Fase 3**: ✅ Voting ponderado (reputação + conhecimento)
+- **Fase 4**: ✅ Audit com knowledgeModifier
+- **Fase 5**: ✅ On-chain proof via DecisionAnchor
+- **Próximo**: Fase 6 (Policy Engine expansão) → Fase 7-12 (ver ROADMAP.md)
