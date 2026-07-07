@@ -12,6 +12,8 @@ export class OnChainIntentPublisher {
   private publisher: IntentPublisher
   private signer: ethers.Wallet | null = null
   private jobMap = new Map<string, string>() // intentId → onChainJobId
+  private pendingProofs = new Map<string, { report: DecisionReport; retries: number }>()
+  readonly MAX_RETRIES = 5
   onChainEnabled = false
 
   constructor(publisher: IntentPublisher) {
@@ -29,6 +31,28 @@ export class OnChainIntentPublisher {
       this.onChainEnabled = false
       return false
     }
+  }
+
+  getPendingCount(): number {
+    return this.pendingProofs.size
+  }
+
+  async retryPendingProofs(): Promise<number> {
+    let resolved = 0
+    for (const [id, entry] of this.pendingProofs) {
+      const result = await this.anchorDecision(id, entry.report)
+      if (result) {
+        this.pendingProofs.delete(id)
+        resolved++
+      } else {
+        entry.retries++
+        if (entry.retries >= this.MAX_RETRIES) {
+          console.warn(`[ONCHAIN] ⏭️ Desistindo de ancorar ${id} após ${this.MAX_RETRIES} tentativas`)
+          this.pendingProofs.delete(id)
+        }
+      }
+    }
+    return resolved
   }
 
   async publish(intent: AgentIntent, onChain = false): Promise<string> {
@@ -121,54 +145,44 @@ export class OnChainIntentPublisher {
     }
   }
 
-  async anchorDecision(id: string, report: DecisionReport): Promise<{ txHash: string; blockNumber: number } | null> {
+  async anchorDecision(id: string, report: DecisionReport): Promise<{ txHash: string; blockNumber: number; hash: string } | null> {
     try {
-      const reportJson = JSON.stringify({
-        id: report.id,
+      // Apenas metadados leves on-chain — o relatório completo fica off-chain no DecisionReport
+      const lightweightMeta = JSON.stringify({
+        decisionReportHash: "",
         intentId: report.intentId,
         agentId: report.agentId,
         action: report.action,
-        knowledge: report.knowledge ? {
-          liquidity: report.knowledge.liquidity,
-          gasScore: report.knowledge.gasScore,
-          routeScore: report.knowledge.routeScore,
-          marketScore: report.knowledge.marketScore,
-          riskScore: report.knowledge.riskScore,
-          confidenceModifier: report.knowledge.confidenceModifier,
-          expectedValue: report.knowledge.expectedValue,
-        } : undefined,
-        voting: report.voting ? {
-          approved: report.voting.approved,
-          confidence: report.voting.confidence,
-          totalVoters: report.voting.totalVoters,
-          reason: report.voting.reason,
-        } : undefined,
-        execution: report.execution ? {
-          success: report.execution.success,
-          profit: report.execution.profit,
-          gasCost: report.execution.gasCost,
-          durationMs: report.execution.durationMs,
-          txHash: report.execution.txHash,
-          adapter: report.execution.adapter,
-        } : undefined,
+        status: report.execution?.success ? "COMPLETED" : "FAILED",
+        executionTxHash: report.execution?.txHash ?? "",
+        timestamp: report.createdAt,
       })
-      const hash = ethers.solidityPackedKeccak256(["string"], [reportJson])
+      const hash = ethers.solidityPackedKeccak256(["string"], [lightweightMeta])
 
       if (this.onChainEnabled && this.signer) {
+        const metaWithHash = JSON.stringify({
+          decisionReportHash: hash,
+          intentId: report.intentId,
+          agentId: report.agentId,
+          action: report.action,
+          status: report.execution?.success ? "COMPLETED" : "FAILED",
+          executionTxHash: report.execution?.txHash ?? "",
+          timestamp: report.createdAt,
+        })
         const contract = new ethers.Contract(DECISION_ANCHOR_ADDRESS, DECISION_ANCHOR_ABI, this.signer)
-        const tx = await contract.anchor(hash, reportJson, { gasLimit: 100000 })
+        const tx = await contract.anchor(hash, metaWithHash, { gasLimit: 100000 })
         const receipt = await tx.wait()
         if (!receipt || receipt.status === 0) throw new Error("anchor revertido")
 
-        console.log(`[ONCHAIN] 🔗 Decision anchored: ${id} → tx:${tx.hash} block:${receipt.blockNumber}`)
-        return { txHash: tx.hash, blockNumber: receipt.blockNumber }
+        console.log(`[ONCHAIN] 🔗 Decision anchored: ${id} → tx:${tx.hash} block:${receipt.blockNumber} hash:${hash.slice(0, 18)}...`)
+        return { txHash: tx.hash, blockNumber: receipt.blockNumber, hash }
       }
 
-      const fallbackHash = ethers.solidityPackedKeccak256(["string"], [reportJson])
-      console.log(`[ONCHAIN] 📝 Off-chain anchor (not configured): ${id} → hash=${fallbackHash}`)
+      console.log(`[ONCHAIN] 📝 Off-chain anchor (not configured): ${id} → hash=${hash.slice(0, 18)}...`)
       return null
     } catch (e) {
-      console.warn("[ONCHAIN] Erro ao ancorar decisao:", e)
+      console.warn(`[ONCHAIN] ⏳ Anchor falhou para ${id} — marcando como pending (retry ${(this.pendingProofs.get(id)?.retries ?? 0) + 1}/${this.MAX_RETRIES})`, e)
+      this.pendingProofs.set(id, { report, retries: (this.pendingProofs.get(id)?.retries ?? 0) })
       return null
     }
   }

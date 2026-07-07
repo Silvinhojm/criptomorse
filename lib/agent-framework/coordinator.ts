@@ -262,6 +262,7 @@ export class Coordinator implements ICoordinator {
         result: executionResult, approved: consensus.approved,
         confidence: consensus.confidence, voters: this.agents.size,
         knowledgeModifier: knowledgeMod,
+        onChainStatus: "pending",
       })
       this.audit_.record(entry)
       auditId = entry.id
@@ -285,9 +286,14 @@ export class Coordinator implements ICoordinator {
     if (executionResult.success && this.intentPublisher_?.anchorDecision) {
       this.intentPublisher_.anchorDecision(intentId, dp).then(result => {
         if (result) {
-          if (dp.execution) dp.execution.txHash = result.txHash
+          dp.onChainHash = result.hash
+          dp.onChainTx = result.txHash
+          dp.onChainStatus = "confirmed"
+          if (this.audit_ && auditId) {
+            this.audit_.updateEntry(auditId, { onChainHash: result.hash, onChainTx: result.txHash, onChainStatus: "confirmed" })
+          }
           this._saveDecisionReport(intentId, dp)
-          console.log(`[${this.name}] 🔗 On-chain proof: tx:${result.txHash} block:${result.blockNumber}`)
+          console.log(`[${this.name}] 🔗 On-chain proof: tx:${result.txHash} block:${result.blockNumber} hash:${result.hash.slice(0, 18)}...`)
         }
       }).catch(() => {})
     }
@@ -409,6 +415,14 @@ export class Coordinator implements ICoordinator {
       return report
     }
 
+    // Retry pending on-chain proofs
+    if (this.intentPublisher_?.anchorDecision && "retryPendingProofs" in this.intentPublisher_) {
+      const resolved = await (this.intentPublisher_ as any).retryPendingProofs()
+      if (resolved > 0) {
+        console.log(`[${this.name}] 🔗 Retry resolved ${resolved} pending on-chain proofs`)
+      }
+    }
+
     // Collect proposals
     const proposals = await this.collectProposals({})
     report.proposalsSubmitted = proposals.length
@@ -492,6 +506,7 @@ export class Coordinator implements ICoordinator {
               params: proposal.params ?? {},
               createdAt: Date.now(),
               resolvedAt: Date.now(),
+              onChainStatus: "pending",
               execution: {
                 success: result.success,
                 profit: result.profit ?? 0,
@@ -503,6 +518,9 @@ export class Coordinator implements ICoordinator {
             }
             this.intentPublisher_.anchorDecision(cycleIntentId, dp).then(anchorResult => {
               if (anchorResult) {
+                dp.onChainHash = anchorResult.hash
+                dp.onChainTx = anchorResult.txHash
+                dp.onChainStatus = "confirmed"
                 console.log(`[${this.name}] 🔗 On-chain proof (cycle): tx:${anchorResult.txHash} block:${anchorResult.blockNumber}`)
               }
             }).catch(() => {})

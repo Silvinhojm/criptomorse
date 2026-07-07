@@ -96,9 +96,16 @@ export class IntentPublisher implements IIntentPublisher {
     return true
   }
 
-  async anchorDecision(id: string, report: DecisionReport): Promise<{ txHash: string; blockNumber: number } | null> {
-    const hash = ethers.solidityPackedKeccak256(["string"], [JSON.stringify(report)])
-    console.log(`[IntentPublisher] 📝 Off-chain anchor: ${id} → hash=${hash}`)
+  async anchorDecision(id: string, report: DecisionReport): Promise<{ txHash: string; blockNumber: number; hash: string } | null> {
+    const lightweightMeta = JSON.stringify({
+      intentId: report.intentId,
+      agentId: report.agentId,
+      action: report.action,
+      status: report.execution?.success ? "COMPLETED" : "FAILED",
+      timestamp: report.createdAt,
+    })
+    const hash = ethers.solidityPackedKeccak256(["string"], [lightweightMeta])
+    console.log(`[IntentPublisher] 📝 Off-chain anchor: ${id} → hash=${hash.slice(0, 18)}...`)
     return null
   }
 

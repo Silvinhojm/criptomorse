@@ -41,6 +41,13 @@ export interface DecisionReport {
   auditId?: string
   dedupSkipped?: boolean
 
+  /** Hash on-chain da decisão (keccak256 do report JSON) */
+  onChainHash?: string
+  /** Tx hash da transação de âncora on-chain */
+  onChainTx?: string
+  /** Status da prova on-chain: pending | confirmed | failed | skipped */
+  onChainStatus?: "pending" | "confirmed" | "failed" | "skipped"
+
   createdAt: number
   resolvedAt?: number
   durationMs?: number

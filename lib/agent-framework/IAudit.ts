@@ -19,6 +19,9 @@ export interface AuditEntry {
     expectedValue: number
   }
   knowledgeWarnings?: string[]
+  onChainHash?: string
+  onChainTx?: string
+  onChainStatus?: "pending" | "confirmed" | "failed" | "skipped"
   tags: string[]
 }
 
@@ -36,6 +39,7 @@ export interface AuditReport {
 export interface IAudit {
   readonly name: string
   record(entry: AuditEntry): void
+  updateEntry(id: string, updates: Partial<Pick<AuditEntry, "onChainHash" | "onChainTx" | "onChainStatus">>): boolean
   getRecent(count: number): AuditEntry[]
   getByAgent(agentId: string, limit?: number): AuditEntry[]
   getReport(since: number): AuditReport

@@ -23,6 +23,15 @@ export class Audit implements IAudit {
     }
   }
 
+  updateEntry(id: string, updates: Partial<Pick<AuditEntry, "onChainHash" | "onChainTx" | "onChainStatus">>): boolean {
+    const entry = this.entries.find(e => e.id === id)
+    if (!entry) return false
+    if (updates.onChainHash !== undefined) entry.onChainHash = updates.onChainHash
+    if (updates.onChainTx !== undefined) entry.onChainTx = updates.onChainTx
+    if (updates.onChainStatus !== undefined) entry.onChainStatus = updates.onChainStatus
+    return true
+  }
+
   getRecent(count: number): AuditEntry[] {
     return this.entries.slice(-count).reverse()
   }
@@ -77,6 +86,9 @@ export class Audit implements IAudit {
     confidence: number
     voters: number
     knowledgeModifier?: number
+    onChainHash?: string
+    onChainTx?: string
+    onChainStatus?: "pending" | "confirmed" | "failed" | "skipped"
     tags?: string[]
   }): AuditEntry {
     const knowMod = params.knowledgeModifier
@@ -94,6 +106,9 @@ export class Audit implements IAudit {
       },
       knowledgeModifier: knowMod,
       knowledgeWarnings: (params.proposal.params?.knowledgeWarnings as string[] | undefined) ?? undefined,
+      onChainHash: params.onChainHash,
+      onChainTx: params.onChainTx,
+      onChainStatus: params.onChainStatus,
       tags: params.tags ?? [],
     }
   }
