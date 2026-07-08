@@ -27,4 +27,6 @@ export { PolicyEngine, type PolicyRule, type PolicyEngineConfig } from "./policy
 export type { KnowledgeRequest, KnowledgeReport } from "./knowledge-types"
 export { KnowledgeService } from "./knowledge-service"
 export type { DecisionReport } from "./decision-report"
-export { frameworkReputation, frameworkAudit, frameworkIntents, frameworkKnowledge, frameworkPolicy, frameworkCoordinator } from "./singletons"
+export { SettlementRegistry } from "./settlement-registry"
+export type { SettlementRecord, SettlementSource, SettlementStatus, SettlementUpdate } from "./settlement-registry"
+export { frameworkReputation, frameworkAudit, frameworkIntents, frameworkKnowledge, frameworkPolicy, frameworkSettlementRegistry, frameworkCoordinator } from "./singletons"
