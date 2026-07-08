@@ -2,13 +2,14 @@
 // Trading automatico multi-par com votacao entre agentes,
 // gerenciamento de posicoes (trailing stop), e relatorio do contador
 
-import { realSwap, NETWORKS, TRADING_PAIRS, GAS_COST_ESTIMATE, type NetworkKey, type TokenSymbol, type SwapResult } from "./real-swap-executor";
-import { getCircuitBreakerState, blockIfPanicked, recordTradeResult } from "./circuit-breaker";
+import { realSwap, NETWORKS, TRADING_PAIRS, GAS_COST_ESTIMATE, type NetworkKey, type TokenSymbol } from "./real-swap-executor";
+import { getCircuitBreakerState, blockIfPanicked } from "./circuit-breaker";
 import { saveTradeHistory, loadTradeHistory } from "./persistence";
 import { positionManager, type OpenPosition } from "./position-manager";
 import { accountant, type TradeReport } from "./accountant";
 import { agentVoting, type AgentVote } from "./agent-voting";
 import { COIN_IDS } from "./coin-ids";
+import { submeterSinalAoCoordinator } from "./pregão";
 
 export interface TradeOrder {
   id: string;
@@ -169,35 +170,19 @@ class TradingNanopaymentSystem {
         const decision = await positionManager.staircaseUpdate(pos.id, price);
 
         if (decision === "close") {
-          console.log(`Fechando posicao ${pos.boughtToken} automaticamente...`);
-          // Vender o token volatil de volta para USDC
-          const result = await realSwap.executeSwap(
-            pos.boughtToken as TokenSymbol,
-            "USDC",
-            pos.amountBought,
-          );
-
-          if (result.success) {
-            positionManager.closePosition(pos.id, price);
-            const profit = (price - pos.entryPrice) * pos.amountBought;
-            accountant.addReport({
-              id: `close_${pos.id}`,
-              agentName: "PositionManager",
-              action: "sell",
-              fromToken: pos.boughtToken,
-              toToken: "USDC",
-              amount: pos.amountBought,
-              toAmount: result.toAmount,
-              profit,
-              profitPercent: pos.currentProfitPercent,
-              entryPrice: pos.entryPrice,
-              exitPrice: price,
-              status: "completed",
-              duration: Date.now() - pos.entryTimestamp,
-              timestamp: Date.now(),
-              networkKey: pos.networkKey,
-            });
-          }
+          console.log(`Solicitando fechamento via Coordinator: ${pos.boughtToken} -> USDC`);
+          await submeterSinalAoCoordinator({
+            pregueiro: "TradingNanopayments:PositionManager",
+            rede: pos.networkKey,
+            par: `${pos.boughtToken}→USDC`,
+            confianca: 75,
+            timestamp: Date.now(),
+            fromToken: pos.boughtToken,
+            toToken: "USDC",
+            amountUsd: pos.amountBought * price,
+            direcao: "sell",
+            precoNoPalpite: price,
+          });
         }
       } catch (err) {
         console.warn(`Erro no monitoramento de ${pos.boughtToken}:`, err);
@@ -290,80 +275,56 @@ class TradingNanopaymentSystem {
       return null;
     }
 
-    let result: SwapResult;
     let chosenPair: { from: TokenSymbol; to: TokenSymbol; label: string } | null = null;
 
     if (agent.strategy === "best_pair") {
-      result = await realSwap.executeSmartSwap(agent.maxAmount, (msg) => log(msg));
+      chosenPair = await this.findBestPairForAgent(agent);
+      if (!chosenPair) { log(`Sem saldo para pares`); return null; }
+      log(`Par escolhido: ${chosenPair.label}`);
     } else {
       const pair = await this.findBestPairForAgent(agent);
       if (!pair) { log(`Sem saldo para pares`); return null; }
       chosenPair = pair;
       log(`Par escolhido: ${pair.label}`);
-      result = await realSwap.executeSwap(pair.from, pair.to, agent.maxAmount, (msg) => log(msg));
     }
 
-    const actionType: "BUY" | "SELL" | "HOLD" = result.success ? result.action : "HOLD";
+    const accepted = await submeterSinalAoCoordinator({
+      pregueiro: `TradingNanopayments:${agent.name}`,
+      rede: this.currentNetwork,
+      par: chosenPair.label,
+      confianca: 70,
+      timestamp: Date.now(),
+      fromToken: chosenPair.from,
+      toToken: chosenPair.to,
+      amountUsd: agent.maxAmount,
+      direcao: STABLES.has(chosenPair.to) && !STABLES.has(chosenPair.from) ? "sell" : "buy",
+    });
+
+    const actionType: "BUY" | "SELL" | "HOLD" = accepted
+      ? (STABLES.has(chosenPair.to) && !STABLES.has(chosenPair.from) ? "SELL" : "BUY")
+      : "HOLD";
 
     const order: TradeOrder = {
       id: `${agent.name}_${Date.now()}`,
-      fromToken: result.fromToken,
-      toToken: result.toToken,
-      amount: result.fromAmount,
-      toAmount: result.toAmount,
+      fromToken: chosenPair.from,
+      toToken: chosenPair.to,
+      amount: agent.maxAmount,
+      toAmount: 0,
       type: actionType,
-      status: result.success ? "completed" : "failed",
-      timestamp: result.timestamp,
-      profit: result.profit ?? 0,
-      profitPercent: result.fromAmount > 0 ? ((result.profit ?? 0) / result.fromAmount) * 100 : 0,
-      txHash: result.txHash || undefined,
-      explorerUrl: result.explorerUrl || undefined,
+      status: accepted ? "pending" : "failed",
+      timestamp: Date.now(),
+      profit: 0,
+      profitPercent: 0,
       agentName: agent.name,
       networkKey: this.currentNetwork,
     };
     this.orders.push(order);
     await saveTradeHistory(this.orders);
 
-    // Registrar no contador
-    const entryPrice = result.fromAmount > 0 ? result.fromAmount / result.toAmount : 1;
-    const reportAction: "buy" | "sell" | "hold" = actionType === "BUY" ? "buy" : actionType === "SELL" ? "sell" : "hold";
-    accountant.addReport({
-      id: order.id,
-      agentName: agent.name,
-      action: reportAction,
-      fromToken: result.fromToken,
-      toToken: result.toToken,
-      amount: result.fromAmount,
-      toAmount: result.toAmount,
-      profit: result.profit ?? 0,
-      profitPercent: order.profitPercent,
-      entryPrice,
-      exitPrice: result.toAmount > 0 ? result.toAmount / result.fromAmount : 1,
-      status: result.success ? "completed" : "failed",
-      duration: 0,
-      timestamp: Date.now(),
-      networkKey: this.currentNetwork,
-    });
-
-    // Se comprou token volatil, abrir posicao com trailing stop
-    if (result.success && chosenPair && !STABLES.has(chosenPair.to) && STABLES.has(chosenPair.from)) {
-      const boughtPrice = await getTokenPrice(chosenPair.to);
-      positionManager.openPosition(
-        this.currentNetwork,
-        chosenPair.to,
-        chosenPair.from,
-        result.toAmount,
-        result.fromAmount,
-        boughtPrice
-      );
-      log(`Posicao aberta: ${result.toAmount.toFixed(6)} ${chosenPair.to} @ $${boughtPrice.toFixed(4)}`);
-    }
-
-    if (result.success) {
-      log(`Trade confirmado! Lucro: $${(result.profit ?? 0).toFixed(6)}`);
-      recordTradeResult(result.profit ?? 0);
+    if (accepted) {
+      log(`Proposta enviada ao Coordinator: ${chosenPair.from}→${chosenPair.to} $${agent.maxAmount}`);
     } else {
-      log(`Trade falhou: ${result.message}`);
+      log(`Coordinator rejeitou a proposta: ${chosenPair.from}→${chosenPair.to}`);
     }
 
     return order;

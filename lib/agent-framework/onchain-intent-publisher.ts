@@ -18,6 +18,24 @@ export class OnChainIntentPublisher {
 
   constructor(publisher: IntentPublisher) {
     this.publisher = publisher
+    this.autoConfigureFromEnv()
+  }
+
+  /** Lê PRIVATE_KEY do .env e auto-configura (server-side apenas) */
+  autoConfigureFromEnv(): boolean {
+    try {
+      if (typeof process === "undefined" || typeof window !== "undefined") {
+        return false // só roda no servidor Node.js
+      }
+      const pk = (process.env as any).PRIVATE_KEY as string | undefined
+      if (!pk) {
+        console.log("[ONCHAIN] PRIVATE_KEY não definida — fallback off-chain")
+        return false
+      }
+      return this.configure(pk)
+    } catch {
+      return false
+    }
   }
 
   configure(privateKey: string): boolean {
@@ -147,8 +165,7 @@ export class OnChainIntentPublisher {
 
   async anchorDecision(id: string, report: DecisionReport): Promise<{ txHash: string; blockNumber: number; hash: string } | null> {
     try {
-      // Apenas metadados leves on-chain — o relatório completo fica off-chain no DecisionReport
-      const lightweightMeta = JSON.stringify({
+      const baseMeta = {
         decisionReportHash: "",
         intentId: report.intentId,
         agentId: report.agentId,
@@ -156,21 +173,14 @@ export class OnChainIntentPublisher {
         status: report.execution?.success ? "COMPLETED" : "FAILED",
         executionTxHash: report.execution?.txHash ?? "",
         timestamp: report.createdAt,
-      })
-      const hash = ethers.solidityPackedKeccak256(["string"], [lightweightMeta])
+      }
+      const hash = ethers.solidityPackedKeccak256(["string"], [JSON.stringify(baseMeta)])
+      const metaWithHash = JSON.stringify({ ...baseMeta, decisionReportHash: hash })
 
       if (this.onChainEnabled && this.signer) {
-        const metaWithHash = JSON.stringify({
-          decisionReportHash: hash,
-          intentId: report.intentId,
-          agentId: report.agentId,
-          action: report.action,
-          status: report.execution?.success ? "COMPLETED" : "FAILED",
-          executionTxHash: report.execution?.txHash ?? "",
-          timestamp: report.createdAt,
-        })
+        // Server-side: assina direto com ethers
         const contract = new ethers.Contract(DECISION_ANCHOR_ADDRESS, DECISION_ANCHOR_ABI, this.signer)
-        const tx = await contract.anchor(hash, metaWithHash, { gasLimit: 100000 })
+        const tx = await contract.anchor(hash, metaWithHash, { gasLimit: 200000 })
         const receipt = await tx.wait()
         if (!receipt || receipt.status === 0) throw new Error("anchor revertido")
 
@@ -178,8 +188,19 @@ export class OnChainIntentPublisher {
         return { txHash: tx.hash, blockNumber: receipt.blockNumber, hash }
       }
 
-      console.log(`[ONCHAIN] 📝 Off-chain anchor (not configured): ${id} → hash=${hash.slice(0, 18)}...`)
-      return null
+      // Browser: delega para API route server-side
+      const res = await fetch("/api/anchor-decision", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hash, metadataURI: metaWithHash }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))
+        throw new Error(err.error || `HTTP ${res.status}`)
+      }
+      const data = await res.json()
+      console.log(`[ONCHAIN] 🔗 Decision anchored via API: ${id} → tx:${data.txHash} block:${data.blockNumber} hash:${hash.slice(0, 18)}...`)
+      return data
     } catch (e) {
       console.warn(`[ONCHAIN] ⏳ Anchor falhou para ${id} — marcando como pending (retry ${(this.pendingProofs.get(id)?.retries ?? 0) + 1}/${this.MAX_RETRIES})`, e)
       this.pendingProofs.set(id, { report, retries: (this.pendingProofs.get(id)?.retries ?? 0) })

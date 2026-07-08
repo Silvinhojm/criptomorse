@@ -7,7 +7,7 @@ import type { IIntentPublisher, IntentStatus } from "./intent-types"
 import type { DecisionReport } from "./decision-report"
 import { Voting, type VoteResult } from "./voting"
 import { Audit } from "./audit"
-import { frameworkReputation } from "./singletons"
+import { frameworkReputation, frameworkKnowledge } from "./singletons"
 import { IntentDeduplicator } from "./intent-deduplicator"
 import { PolicyEngine, type PolicyEngineConfig } from "./policy-engine"
 
@@ -36,7 +36,7 @@ export class Coordinator implements ICoordinator {
   private cycleCount = 0
   private minAgents: number
   readonly MIN_AGREEING_AGENTS = 2
-  readonly WEIGHTED_CONFIDENCE_THRESHOLD = 25
+  readonly WEIGHTED_CONFIDENCE_THRESHOLD = 15
   readonly deduplicator: IntentDeduplicator
   private intentPublisher_: IIntentPublisher | null
   readonly policyEngine: PolicyEngine
@@ -48,7 +48,7 @@ export class Coordinator implements ICoordinator {
     this.executor_ = config.executor ?? null
     this.safetyGuard_ = config.safetyGuard ?? null
     this.audit_ = config.audit ?? null
-    this.deduplicator = new IntentDeduplicator(config.dedupWindowMs ?? 30_000)
+    this.deduplicator = new IntentDeduplicator(config.dedupWindowMs ?? 120_000)
     this.intentPublisher_ = config.intentPublisher ?? null
     this.policyEngine = config.policyEngine ?? new PolicyEngine()
   }
@@ -105,6 +105,7 @@ export class Coordinator implements ICoordinator {
       params: proposal.params ?? {},
       createdAt: startTime,
     }
+    const settlementCorrelationId = intentId
 
     if (this.safetyGuard_ && this.safetyGuard_.isOpen()) {
       dp.voting = { votes: [], totalVoters: 0, approved: false, confidence: 0, reason: "Safety guard open", weightedConfidence: 0, minAgentsRequired: this.MIN_AGREEING_AGENTS }
@@ -138,12 +139,64 @@ export class Coordinator implements ICoordinator {
       }
     }
 
+    proposal.params.intentId = intentId
+    proposal.params.correlationId = settlementCorrelationId
+    proposal.params.settlementCorrelationId = settlementCorrelationId
+    proposal.params.proposalId = proposal.id
+    proposal.params.decisionReportId = dp.id
+
     this._transitionIntent(intentId, "CREATED")
     console.log(`[${this.name}] 📋 Intent #${intentId} — ${proposal.agentId} → ${proposal.action}`)
 
     // ── Knowledge stage ──
-    const knowledgeMod = (proposal.params?.knowledgeModifier as number | undefined) ?? 0
-    const kr = proposal.params?.knowledgeReport as Record<string, number> | undefined
+    let knowledgeMod = (proposal.params?.knowledgeModifier as number | undefined) ?? 0
+    const agentKr = proposal.params?.knowledgeReport
+    let kr: Record<string, number> | undefined = agentKr as Record<string, number> | undefined
+    let canTrade = true
+
+    if (kr) {
+      dp.knowledgeStatus = "provided"
+      canTrade = (proposal.params?.knowledgeReport as any)?.canTrade ?? true
+    } else {
+      // No agent-provided knowledge — query canonical Knowledge Service
+      const fromToken = proposal.params?.fromToken as string | undefined
+      const toToken = proposal.params?.toToken as string | undefined
+      const network = proposal.params?.rede as string | undefined
+      if (fromToken && toToken && network) {
+        try {
+          const action = proposal.action?.toUpperCase() === "SELL" ? "SELL" : "BUY"
+          const report = await frameworkKnowledge.query({
+            pair: { from: fromToken, to: toToken },
+            network,
+            action,
+            agent: proposal.agentId,
+            amount: typeof proposal.params?.amountUsd === "number"
+              ? BigInt(Math.round(proposal.params.amountUsd * 100))
+              : 0n,
+          })
+          dp.knowledgeStatus = "queried"
+          canTrade = report.canTrade
+          knowledgeMod = report.confidenceModifier
+          proposal.params.knowledgeModifier = knowledgeMod
+          proposal.params.knowledgeWarnings = report.warnings
+          kr = {
+            liquidity: report.liquidity,
+            gasScore: report.gasScore,
+            routeScore: report.routeScore,
+            marketScore: report.marketScore,
+            riskScore: report.riskScore,
+            expectedValue: report.expectedValue,
+          }
+        } catch (e) {
+          dp.knowledgeStatus = "failed"
+          dp.knowledgeError = (e as Error).message
+          console.warn(`[${this.name}] ⚠️ Knowledge Service unavailable:`, (e as Error).message)
+        }
+      } else {
+        dp.knowledgeStatus = "unavailable"
+      }
+    }
+
     if (kr) {
       dp.knowledge = {
         liquidity: kr.liquidity ?? 0,
@@ -156,10 +209,58 @@ export class Coordinator implements ICoordinator {
         warnings: (proposal.params?.knowledgeWarnings as string[]) ?? [],
         recommendations: [],
       }
-      const warnings = proposal.params?.knowledgeWarnings as string[] | undefined
-      console.log(`[${this.name}] 📊 Knowledge — 💧${kr.liquidity} ⛽${kr.gasScore} 🛣️${kr.routeScore} 📊${kr.marketScore} ⚠️${kr.riskScore} 📈${((kr.expectedValue ?? 0) * 100).toFixed(2)}% modifier ${knowledgeMod >= 0 ? "+" : ""}${knowledgeMod.toFixed(0)}%${warnings?.length ? ` ⚠️ ${warnings.join(", ")}` : ""}`)
+      console.log(`[${this.name}] 📊 Knowledge — 💧${dp.knowledge.liquidity} ⛽${dp.knowledge.gasScore} 🛣️${dp.knowledge.routeScore} 📊${dp.knowledge.marketScore} ⚠️${dp.knowledge.riskScore} modifier ${knowledgeMod >= 0 ? "+" : ""}${knowledgeMod.toFixed(0)}%`)
     }
+
+    // ── canTrade gate ──
+    if (dp.knowledge && !canTrade) {
+      dp.rejectedBy = "knowledge"
+      this._transitionIntent(intentId, "REJECTED")
+      dp.resolvedAt = Date.now()
+      dp.durationMs = dp.resolvedAt - startTime
+      this._saveDecisionReport(intentId, dp)
+      console.log(`[${this.name}] 🛑 Knowledge rejected: canTrade=false`)
+      return {
+        consensus: {
+          approved: false, action: proposal.action, confidence: 0,
+          agentVotes: [], tiebreaker: "",
+          reason: "Knowledge Service rejected proposal: canTrade=false",
+        },
+      }
+    }
+
     this._transitionIntent(intentId, "KNOWLEDGE_VALIDATED")
+
+    // ── Pre-vote policy check ──
+    const preVotePolicy = this._checkPreVotePolicy(proposal)
+    if (!preVotePolicy.allowed) {
+      dp.rejectedBy = "policy"
+      this._transitionIntent(intentId, "REJECTED")
+      dp.resolvedAt = Date.now()
+      dp.durationMs = dp.resolvedAt - startTime
+      this._saveDecisionReport(intentId, dp)
+      if (this.audit_) {
+        this.audit_.record(Audit.createEntry({
+          agentId: proposal.agentId, action: proposal.action, proposal,
+          result: null, approved: false, confidence: 0, voters: 0,
+          tags: ["policy_rejection", "pre_vote"],
+        }))
+      }
+      console.log(`[${this.name}] 🛑 Policy rejected (pre-vote): ${preVotePolicy.reason}`)
+      return {
+        consensus: {
+          approved: false, action: proposal.action, confidence: 0,
+          agentVotes: [], tiebreaker: "",
+          reason: preVotePolicy.reason,
+        },
+      }
+    }
+
+    // apply knowledge override policy
+    if (!this.policyEngine.isAllowed("allowKnowledgeOverride", proposal.params?.rede as string | undefined)) {
+      knowledgeMod = 0
+      proposal.params.knowledgeModifier = 0
+    }
 
     let hasEnoughConsensus = false
     let consensus: ConsensusResult
@@ -169,10 +270,11 @@ export class Coordinator implements ICoordinator {
     if (this.agents.size > 0) {
       this._transitionIntent(intentId, "VOTING")
       console.log(`[${this.name}] 🗳️ Voting — ${this.agents.size} agents, knowledgeWeight ${(1 + knowledgeMod / 100).toFixed(2)}`)
+      this.voting.clearVotes(proposal.id)
       const votes = await this.collectVotes(proposal)
       for (const v of votes) {
         const repScore = frameworkReputation.getScore(v.agentId)
-        const repWeight = Math.max(0.1, Math.min(1.0, repScore / 100))
+        const repWeight = Math.max(0.5, Math.min(1.0, repScore / 100))
         this.voting.recordVote({
           agentId: v.agentId, proposalId: proposal.id,
           approved: v.approved, confidence: v.confidence,
@@ -182,17 +284,20 @@ export class Coordinator implements ICoordinator {
         })
         allVotes.push({ agentId: v.agentId, approved: v.approved, confidence: v.confidence, reason: v.reason })
       }
-      consensus = this.resolveConsensus(proposal, votes)
+      const voteResult = this.voting.resolve(proposal)
+      consensus = this.mapVoteResultToConsensus(proposal, voteResult)
       hasEnoughConsensus = consensus.approved
       const agreed = allVotes.filter(v => v.approved).length
       console.log(`[${this.name}] 🗳️ Result — ${agreed}/${allVotes.length} approve → ${consensus.approved ? "✅" : "❌"} ${consensus.reason}`)
     } else {
-      hasEnoughConsensus = true
-      consensus = {
-        approved: true, action: proposal.action, confidence: proposal.confidence,
-        agentVotes: [], tiebreaker: "", reason: "No voting agents — direct execution",
-      }
-      console.log(`[${this.name}] 🗳️ No agents — direct execution (conf ${proposal.confidence}%)`)
+      this.voting.clearVotes(proposal.id)
+      const voteResult = this.voting.resolve(proposal)
+      consensus = this.mapVoteResultToConsensus(proposal, {
+        ...voteResult,
+        reason: "Voting rejected: no voting agents available",
+      })
+      hasEnoughConsensus = false
+      console.log(`[${this.name}] Voting rejected: no voting agents available`)
     }
 
     dp.voting = {
@@ -220,7 +325,38 @@ export class Coordinator implements ICoordinator {
       dp.durationMs = dp.resolvedAt - startTime
       this._saveDecisionReport(intentId, dp)
       console.log(`[${this.name}] ❌ Rejected — no executor configured`)
-      return { ...consensus, approved: false, reason: "No executor configured" } as unknown as SubmissionResult
+      return {
+        consensus: {
+          ...consensus,
+          approved: false,
+          reason: "No executor configured",
+        },
+      }
+    }
+
+    // ── Pre-execution policy check ──
+    const preExecPolicy = this._checkPreExecPolicy(proposal)
+    if (!preExecPolicy.allowed) {
+      dp.rejectedBy = "policy"
+      this._transitionIntent(intentId, "REJECTED")
+      dp.resolvedAt = Date.now()
+      dp.durationMs = dp.resolvedAt - startTime
+      this._saveDecisionReport(intentId, dp)
+      if (this.audit_) {
+        this.audit_.record(Audit.createEntry({
+          agentId: proposal.agentId, action: proposal.action, proposal,
+          result: null, approved: false, confidence: 0, voters: 0,
+          tags: ["policy_rejection", "pre_exec"],
+        }))
+      }
+      console.log(`[${this.name}] 🛑 Policy rejected (pre-exec): ${preExecPolicy.reason}`)
+      return {
+        consensus: {
+          ...consensus,
+          approved: false,
+          reason: preExecPolicy.reason,
+        },
+      }
     }
 
     const canExec = this.executor_.canExecute(proposal)
@@ -230,7 +366,13 @@ export class Coordinator implements ICoordinator {
       dp.durationMs = dp.resolvedAt - startTime
       this._saveDecisionReport(intentId, dp)
       console.log(`[${this.name}] ❌ Rejected — ${canExec.reason}`)
-      return { ...consensus, approved: false, reason: canExec.reason } as unknown as SubmissionResult
+      return {
+        consensus: {
+          ...consensus,
+          approved: false,
+          reason: canExec.reason,
+        },
+      }
     }
 
     // ── Execution stage ──
@@ -240,6 +382,7 @@ export class Coordinator implements ICoordinator {
     console.log(`[${this.name}] ⚡ Executing — ${proposal.action} via ${this.executor_.name}`)
     const executionResult = await this.executor_.execute(proposal)
     const execDuration = Date.now() - execStart
+    const isProvisionalDispatch = executionResult.isProvisional === true || executionResult.settlementStatus === "dispatched" || executionResult.details?.isProvisional === true || executionResult.details?.settlementStatus === "dispatched"
 
     dp.execution = {
       success: executionResult.success,
@@ -249,10 +392,29 @@ export class Coordinator implements ICoordinator {
       txHash: executionResult.txHash,
       errorMsg: executionResult.errorMsg,
       adapter: this.executor_.name,
+      correlationId: executionResult.correlationId ?? settlementCorrelationId,
+      intentId: executionResult.intentId ?? intentId,
+      proposalId: executionResult.proposalId ?? proposal.id,
+      decisionReportId: executionResult.decisionReportId ?? dp.id,
+      ordemId: executionResult.ordemId,
+      dispatchStatus: executionResult.dispatchStatus,
+      settlementStatus: executionResult.settlementStatus,
+      isProvisional: executionResult.isProvisional,
     }
 
-    this._transitionIntent(intentId, executionResult.success ? "COMPLETED" : "FAILED")
-    console.log(`[${this.name}] ${executionResult.success ? "✅" : "❌"} Executed — ${execDuration}ms profit $${(executionResult.profit ?? 0).toFixed(4)}${executionResult.txHash ? ` tx:${executionResult.txHash.slice(0, 14)}` : ""}`)
+    // Phase 2e.1: dispatch accepted by an adapter is not verified settlement.
+    // IntentStatus has no PENDING_SETTLEMENT yet, so EXECUTING remains the closest non-final state.
+    if (isProvisionalDispatch && executionResult.success) {
+      this._transitionIntent(intentId, "EXECUTING")
+      dp.onChainStatus = "skipped"
+    } else {
+      this._transitionIntent(intentId, executionResult.success ? "COMPLETED" : "FAILED")
+    }
+    if (isProvisionalDispatch && executionResult.success) {
+      console.log(`[${this.name}] Dispatched - settlement pending (${execDuration}ms) correlation:${settlementCorrelationId}`)
+    } else {
+      console.log(`[${this.name}] ${executionResult.success ? "✅" : "❌"} Executed — ${execDuration}ms profit $${(executionResult.profit ?? 0).toFixed(4)}${executionResult.txHash ? ` tx:${executionResult.txHash.slice(0, 14)}` : ""}`)
+    }
 
     // ── Audit stage ──
     let auditId: string | undefined
@@ -262,7 +424,7 @@ export class Coordinator implements ICoordinator {
         result: executionResult, approved: consensus.approved,
         confidence: consensus.confidence, voters: this.agents.size,
         knowledgeModifier: knowledgeMod,
-        onChainStatus: "pending",
+        onChainStatus: isProvisionalDispatch ? "skipped" : "pending",
       })
       this.audit_.record(entry)
       auditId = entry.id
@@ -270,12 +432,14 @@ export class Coordinator implements ICoordinator {
     }
 
     // ── Feedback ──
-    for (const agent of this.agents.values()) {
-      agent.onFeedback({
-        success: executionResult.success,
-        profit: executionResult.profit ?? 0,
-        reason: executionResult.errorMsg,
-      })
+    if (!isProvisionalDispatch) {
+      for (const agent of this.agents.values()) {
+        agent.onFeedback({
+          success: executionResult.success,
+          profit: executionResult.profit ?? 0,
+          reason: executionResult.errorMsg,
+        })
+      }
     }
 
     dp.resolvedAt = Date.now()
@@ -283,7 +447,7 @@ export class Coordinator implements ICoordinator {
     this._saveDecisionReport(intentId, dp)
 
     // ── On-chain proof ──
-    if (executionResult.success && this.intentPublisher_?.anchorDecision) {
+    if (executionResult.success && !isProvisionalDispatch && this.intentPublisher_?.anchorDecision) {
       this.intentPublisher_.anchorDecision(intentId, dp).then(result => {
         if (result) {
           dp.onChainHash = result.hash
@@ -327,74 +491,19 @@ export class Coordinator implements ICoordinator {
     return votes
   }
 
-  private resolveConsensus(proposal: AgentProposal, votes: AgentVote[]): ConsensusResult {
-    const buyVotes = votes.filter(v => v.approved)
-    const sellVotes = votes.filter(v => !v.approved)
-    const holdVotes = votes.filter(v => !v.approved)
-
-    const knowledgeModifier = (proposal.params?.knowledgeModifier as number | undefined) ?? 0
-    const knowledgeWeight = 1 + knowledgeModifier / 100
-
-    const weightedConf = (v: AgentVote): number => {
-      const repScore = frameworkReputation.getScore(v.agentId)
-      const repWeight = Math.max(0.1, Math.min(1.0, repScore / 100))
-      return (v.confidence / 100) * repWeight * knowledgeWeight
-    }
-
-    const total = votes.length || 1
-    const buyScore = buyVotes.reduce((s, v) => s + weightedConf(v) * 100, 0) / total
-    const sellScore = sellVotes.reduce((s, v) => s + weightedConf(v) * 100, 0) / total
-    const holdScore = holdVotes.reduce((s, v) => s + weightedConf(v) * 100, 0) / total
-
-    let action: string
-    let winningScore: number
-    let agreeingVotes: AgentVote[]
-
-    if (buyScore >= sellScore && buyScore >= holdScore) {
-      action = "buy"
-      winningScore = buyScore
-      agreeingVotes = buyVotes
-    } else if (sellScore >= buyScore && sellScore >= holdScore) {
-      action = "sell"
-      winningScore = sellScore
-      agreeingVotes = sellVotes
-    } else {
-      action = "hold"
-      winningScore = holdScore
-      agreeingVotes = holdVotes
-    }
-
-    const hasEnoughAgents = agreeingVotes.length >= this.MIN_AGREEING_AGENTS
-    const hasEnoughConf = winningScore >= this.WEIGHTED_CONFIDENCE_THRESHOLD
-    const isNotHold = action !== "hold"
-
-    let approved = false
-    let reason = ""
-    let tiebreaker = ""
-
-    if (!isNotHold) {
-      reason = `Hold won (${holdScore.toFixed(1)}% vs buy ${buyScore.toFixed(1)}% sell ${sellScore.toFixed(1)}%)`
-    } else if (!hasEnoughAgents) {
-      reason = `Only ${agreeingVotes.length} agents agree on ${action} (min: ${this.MIN_AGREEING_AGENTS})`
-    } else if (!hasEnoughConf) {
-      reason = `Confidence too low: ${winningScore.toFixed(1)}% (min: ${this.WEIGHTED_CONFIDENCE_THRESHOLD}%)`
-    } else {
-      approved = true
-      reason = `${action.toUpperCase()} approved: ${agreeingVotes.length}/${votes.length} agents, ${winningScore.toFixed(1)}% confidence`
-    }
-
+  private mapVoteResultToConsensus(proposal: AgentProposal, voteResult: VoteResult): ConsensusResult {
     return {
-      approved,
-      action,
-      confidence: winningScore,
-      agentVotes: votes.map(v => ({
+      approved: voteResult.approved,
+      action: proposal.action,
+      confidence: voteResult.confidence,
+      agentVotes: voteResult.votes.map(v => ({
         agentId: v.agentId,
         approved: v.approved,
         confidence: v.confidence,
         reason: v.reason,
       })),
-      tiebreaker,
-      reason,
+      tiebreaker: "",
+      reason: voteResult.reason,
     }
   }
 
@@ -429,6 +538,7 @@ export class Coordinator implements ICoordinator {
 
     for (const proposal of proposals) {
       const cycleIntentId = `intent_${proposal.agentId}_${Date.now()}`
+      const cycleDecisionReportId = `decision_cycle_${this.cycleCount}_${proposal.agentId}_${Date.now()}`
       try {
         // Dedup check
         const dup = this.deduplicator.isDuplicate(proposal.agentId, proposal.action, proposal.params)
@@ -438,16 +548,73 @@ export class Coordinator implements ICoordinator {
           }
           continue
         }
+        proposal.params.intentId = cycleIntentId
+        proposal.params.correlationId = cycleIntentId
+        proposal.params.settlementCorrelationId = cycleIntentId
+        proposal.params.proposalId = proposal.id
+        proposal.params.decisionReportId = cycleDecisionReportId
         this._transitionIntent(cycleIntentId, "CREATED")
+
+        // ── Knowledge enforcement ──
+        let knowledgeMod = (proposal.params?.knowledgeModifier as number | undefined) ?? 0
+        if (!proposal.params?.knowledgeReport) {
+          const fromToken = proposal.params?.fromToken as string | undefined
+          const toToken = proposal.params?.toToken as string | undefined
+          const network = proposal.params?.rede as string | undefined
+          if (fromToken && toToken && network) {
+            try {
+              const action = proposal.action?.toUpperCase() === "SELL" ? "SELL" : "BUY"
+              const report = await frameworkKnowledge.query({
+                pair: { from: fromToken, to: toToken },
+                network, action,
+                agent: proposal.agentId,
+                amount: typeof proposal.params?.amountUsd === "number"
+                  ? BigInt(Math.round(proposal.params.amountUsd * 100))
+                  : 0n,
+              })
+              knowledgeMod = report.confidenceModifier
+              proposal.params.knowledgeModifier = knowledgeMod
+              proposal.params.knowledgeWarnings = report.warnings
+              proposal.params.knowledgeCanTrade = report.canTrade
+            } catch (e) {
+              console.warn(`[${this.name}] ⚠️ Knowledge Service unavailable in cycle:`, (e as Error).message)
+            }
+          }
+        }
+
+        // ── canTrade gate ──
+        if (proposal.params?.knowledgeCanTrade === false) {
+          this._transitionIntent(cycleIntentId, "REJECTED")
+          console.warn(`[${this.name}] 🛑 Knowledge rejected in cycle: canTrade=false`)
+          report.errors++
+          continue
+        }
+
+        // ── Pre-vote policy check ──
+        const preVotePolicy = this._checkPreVotePolicy(proposal)
+        if (!preVotePolicy.allowed) {
+          this._transitionIntent(cycleIntentId, "REJECTED")
+          if (this.audit_) {
+            this.audit_.record(Audit.createEntry({
+              agentId: proposal.agentId, action: proposal.action, proposal,
+              result: null, approved: false, confidence: 0, voters: 0,
+              tags: ["policy_rejection", "pre_vote"],
+            }))
+          }
+          console.warn(`[${this.name}] 🛑 Policy rejected in cycle (pre-vote): ${preVotePolicy.reason}`)
+          report.errors++
+          continue
+        }
+
         this._transitionIntent(cycleIntentId, "KNOWLEDGE_VALIDATED")
         this._transitionIntent(cycleIntentId, "VOTING")
 
         // Collect votes
+        this.voting.clearVotes(proposal.id)
         const votes = await this.collectVotes(proposal)
-        const knowledgeMod = (proposal.params?.knowledgeModifier as number | undefined) ?? 0
         for (const v of votes) {
           const repScore = frameworkReputation.getScore(v.agentId)
-          const repWeight = Math.max(0.1, Math.min(1.0, repScore / 100))
+          const repWeight = Math.max(0.5, Math.min(1.0, repScore / 100))
           this.voting.recordVote({
             agentId: v.agentId,
             proposalId: proposal.id,
@@ -461,16 +628,39 @@ export class Coordinator implements ICoordinator {
         }
 
         // Resolve consensus
-        const consensus = this.resolveConsensus(proposal, votes)
+        const voteResult = this.voting.resolve(proposal)
+        const consensus = this.mapVoteResultToConsensus(proposal, voteResult)
         report.consensusReached++
 
         if (consensus.approved && this.executor_) {
+          // ── Pre-execution policy check ──
+          const preExecPolicy = this._checkPreExecPolicy(proposal)
+          if (!preExecPolicy.allowed) {
+            this._transitionIntent(cycleIntentId, "REJECTED")
+            if (this.audit_) {
+              this.audit_.record(Audit.createEntry({
+                agentId: proposal.agentId, action: proposal.action, proposal,
+                result: null, approved: false, confidence: 0, voters: 0,
+                tags: ["policy_rejection", "pre_exec"],
+              }))
+            }
+            console.warn(`[${this.name}] 🛑 Policy rejected in cycle (pre-exec): ${preExecPolicy.reason}`)
+            report.errors++
+            continue
+          }
+
           this._transitionIntent(cycleIntentId, "APPROVED")
           this._transitionIntent(cycleIntentId, "EXECUTING")
 
           // Execute
           const result = await this.executor_.execute(proposal)
-          this._transitionIntent(cycleIntentId, result.success ? "COMPLETED" : "FAILED")
+          const isProvisionalDispatch = result.isProvisional === true || result.settlementStatus === "dispatched" || result.details?.isProvisional === true || result.details?.settlementStatus === "dispatched"
+          if (isProvisionalDispatch && result.success) {
+            // IntentStatus has no PENDING_SETTLEMENT yet; keep cycle intents non-final while settlement is pending.
+            this._transitionIntent(cycleIntentId, "EXECUTING")
+          } else {
+            this._transitionIntent(cycleIntentId, result.success ? "COMPLETED" : "FAILED")
+          }
           report.executionsDispatched++
 
           // Audit
@@ -488,18 +678,20 @@ export class Coordinator implements ICoordinator {
           }
 
           // Feedback to agents
-          for (const agent of this.agents.values()) {
-            agent.onFeedback({
-              success: result.success,
-              profit: result.profit ?? 0,
-              reason: result.errorMsg,
-            })
+          if (!isProvisionalDispatch) {
+            for (const agent of this.agents.values()) {
+              agent.onFeedback({
+                success: result.success,
+                profit: result.profit ?? 0,
+                reason: result.errorMsg,
+              })
+            }
           }
 
           // On-chain proof
-          if (result.success && this.intentPublisher_?.anchorDecision) {
+          if (result.success && !isProvisionalDispatch && this.intentPublisher_?.anchorDecision) {
             const dp: DecisionReport = {
-              id: `decision_cycle_${this.cycleCount}_${proposal.agentId}`,
+              id: cycleDecisionReportId,
               intentId: cycleIntentId,
               agentId: proposal.agentId,
               action: proposal.action,
@@ -514,6 +706,14 @@ export class Coordinator implements ICoordinator {
                 durationMs: 0,
                 txHash: result.txHash,
                 adapter: this.executor_?.name ?? "unknown",
+                correlationId: result.correlationId ?? cycleIntentId,
+                intentId: result.intentId ?? cycleIntentId,
+                proposalId: result.proposalId ?? proposal.id,
+                decisionReportId: result.decisionReportId ?? cycleDecisionReportId,
+                ordemId: result.ordemId,
+                dispatchStatus: result.dispatchStatus,
+                settlementStatus: result.settlementStatus,
+                isProvisional: result.isProvisional,
               },
             }
             this.intentPublisher_.anchorDecision(cycleIntentId, dp).then(anchorResult => {
@@ -576,5 +776,43 @@ export class Coordinator implements ICoordinator {
         /* falha silenciosa — intent publisher é opcional */
       })
     }
+  }
+
+  // ── Policy checks ──
+
+  private _checkPreVotePolicy(proposal: AgentProposal): { allowed: boolean; reason: string } {
+    const network = proposal.params?.rede as string | undefined
+
+    if (this.policyEngine.isAllowed("requireMinimumConfidence", network)) {
+      if (proposal.confidence < 10) {
+        return { allowed: false, reason: `Confiança muito baixa: ${proposal.confidence}% (mín: 10%)` }
+      }
+    }
+
+    return { allowed: true, reason: "" }
+  }
+
+  private _checkPreExecPolicy(proposal: AgentProposal): { allowed: boolean; reason: string } {
+    const network = proposal.params?.rede as string | undefined
+
+    if (!this.policyEngine.isAllowed("allowSyntheticRoutes", network)) {
+      const fromToken = proposal.params?.fromToken as string | undefined
+      const toToken = proposal.params?.toToken as string | undefined
+      if (fromToken && toToken) {
+        const stables = new Set(["USDC", "USDT", "DAI", "EURC"])
+        if (stables.has(fromToken.toUpperCase()) && stables.has(toToken.toUpperCase())) {
+          return { allowed: false, reason: `Rotas sintéticas bloqueadas em ${network ?? "default"}` }
+        }
+      }
+    }
+
+    if (!this.policyEngine.isAllowed("allowDirectStressTransactions", network)) {
+      const isDirect = proposal.params?.directTx === true
+      if (isDirect) {
+        return { allowed: false, reason: `Transações diretas bloqueadas em ${network ?? "default"}` }
+      }
+    }
+
+    return { allowed: true, reason: "" }
   }
 }

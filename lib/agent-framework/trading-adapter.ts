@@ -14,6 +14,14 @@ export interface TradeSignal {
   precoNoPalpite?: number
   poolAddress?: string
   dex?: string
+  metadata?: {
+    correlationId?: string
+    settlementCorrelationId?: string
+    intentId?: string
+    proposalId?: string
+    decisionReportId?: string
+    adapter?: "trading"
+  }
 }
 
 export class TradingAdapter implements IExecutor {
@@ -36,6 +44,10 @@ export class TradingAdapter implements IExecutor {
 
   async execute(proposal: AgentProposal): Promise<ExecutionResult> {
     try {
+      const correlationId = proposal.params.correlationId as string | undefined
+      const intentId = proposal.params.intentId as string | undefined
+      const proposalId = proposal.params.proposalId as string | undefined || proposal.id
+      const decisionReportId = proposal.params.decisionReportId as string | undefined
       const signal: TradeSignal = {
         pregueiro: proposal.params.pregueiro as string || proposal.agentId,
         rede: proposal.params.rede as string,
@@ -49,6 +61,14 @@ export class TradingAdapter implements IExecutor {
         precoNoPalpite: proposal.params.precoNoPalpite as number | undefined,
         poolAddress: proposal.params.poolAddress as string | undefined,
         dex: proposal.params.dex as string | undefined,
+        metadata: {
+          correlationId,
+          settlementCorrelationId: correlationId,
+          intentId,
+          proposalId,
+          decisionReportId,
+          adapter: "trading",
+        },
       }
 
       this.executeTrade(signal)
@@ -57,12 +77,32 @@ export class TradingAdapter implements IExecutor {
         success: true,
         action: proposal.action,
         profit: 0,
+        gasCost: 0,
+        correlationId,
+        intentId,
+        proposalId,
+        decisionReportId,
+        dispatchStatus: "dispatched",
+        settlementStatus: "dispatched",
+        isProvisional: true,
+        details: {
+          correlationId,
+          intentId,
+          proposalId,
+          decisionReportId,
+          dispatchStatus: "dispatched",
+          settlementStatus: "dispatched",
+          isProvisional: true,
+        },
       }
     } catch (e) {
       return {
         success: false,
         action: proposal.action,
         errorMsg: e instanceof Error ? e.message : String(e),
+        dispatchStatus: "failed",
+        settlementStatus: "failed",
+        isProvisional: false,
       }
     }
   }

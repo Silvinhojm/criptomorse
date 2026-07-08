@@ -3,6 +3,8 @@ import { NextResponse } from "next/server"
 import { ethers } from "ethers"
 import { NonceManager } from "@/lib/nonce-manager"
 
+// Stress/test-only route. It is intentionally outside the ArcFlow autonomous
+// Coordinator lifecycle and must not be used by runtime agents.
 const ARC_RPC_URL = "https://rpc.testnet.arc.io"
 const LI_FI_API = "https://li.quest/v1/quote"
 const USDC_ARC = "0x3600000000000000000000000000000000000000"

@@ -6,6 +6,9 @@ import { jobRobot } from './job-robot'
 import { narrador } from './narrator'
 import { escolaRobos } from './escola-robos'
 
+// Arc testnet job/stress/demo controller. Temporarily outside the TradingAdapter
+// lifecycle; production autonomous job behavior should become a future
+// Job/Testnet Adapter instead of bypassing Coordinator.
 export interface SwapReport {
   pair: string
   amountIn: string

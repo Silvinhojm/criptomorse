@@ -1,6 +1,9 @@
 import { ethers } from "ethers";
 import { NonceManager } from "@/lib/nonce-manager";
 
+// Manual/admin server execution utility only. Autonomous ArcFlow runtime
+// decisions must not call this route directly; they must submit through
+// Coordinator.submitProposal() and execute through an Adapter.
 const NETWORKS = {
   polygon: {
     chainId: 137, rpc: "https://polygon.publicnode.com",
@@ -107,6 +110,7 @@ export async function POST(req) {
 
     return Response.json({
       success: true,
+      manualOnly: true,
       txHash: tx.hash,
       explorerUrl,
       fromToken,

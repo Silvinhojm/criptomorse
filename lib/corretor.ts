@@ -47,37 +47,36 @@ class Corretor {
     const toKey = ordem.toToken as TokenSymbol
     const redeKey = ordem.rede as NetworkKey
 
-    // 🔒 CapitalController: verifica se pode executar
-    const ccId = `agentes:${ordem.par}:${redeKey}:${Date.now()}`
-    const approval = capitalController.request({
-      id: ccId, strategy: 'agentes',
-      pair: ordem.par, network: redeKey,
-      amountUSD: valorTrade, score: 50,
-      estimatedProfit: 0, requestedAt: Date.now(),
-    })
-    if (!approval.authorized) {
-      this.log(`⏳ Capital ocupado — ordem ${ordem.id} na fila (${approval.reason})`)
-      pregão.atualizarOrdem(ordem.id, { status: "preparando" })
-      return
-    }
-
-    pregão.atualizarOrdem(ordem.id, { status: "executando" })
-
-    if (blockIfPanicked()) {
-      this.log(`🚨 Circuit breaker ativo — ordem ${ordem.id} bloqueada`)
-      pregão.atualizarOrdem(ordem.id, { status: "falhou" })
-      capitalController.unlock(ordem.par.split('→')[1] + ':' + redeKey)
-      return
-    }
-
-    // 🔥 Multi-chain: alterna rede se necessário (CCTP bridge + auto-gas no executeSwap)
-    const currentNet = realSwap.getNetworkKey()
-    if (currentNet !== redeKey) {
-      this.log(`🔀 Alternando rede: ${currentNet} → ${redeKey}`)
-      await realSwap.switchNetwork(redeKey)
-    }
-
     try {
+      // 🔒 CapitalController: verifica se pode executar
+      const ccId = `agentes:${ordem.par}:${redeKey}:${Date.now()}`
+      const approval = capitalController.request({
+        id: ccId, strategy: 'agentes',
+        pair: ordem.par, network: redeKey,
+        amountUSD: valorTrade, score: 50,
+        estimatedProfit: 0, requestedAt: Date.now(),
+      })
+      if (!approval.authorized) {
+        this.log(`⏳ Capital ocupado — ordem ${ordem.id} na fila (${approval.reason})`)
+        pregão.atualizarOrdem(ordem.id, { status: "preparando" })
+        return
+      }
+
+      pregão.atualizarOrdem(ordem.id, { status: "executando" })
+
+      if (blockIfPanicked()) {
+        this.log(`🚨 Circuit breaker ativo — ordem ${ordem.id} bloqueada`)
+        pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+        return
+      }
+
+      // 🔥 Multi-chain: alterna rede se necessário (CCTP bridge + auto-gas no executeSwap)
+      const currentNet = realSwap.getNetworkKey()
+      if (currentNet !== redeKey) {
+        this.log(`🔀 Alternando rede: ${currentNet} → ${redeKey}`)
+        await realSwap.switchNetwork(redeKey)
+      }
+
       this.log(`💱 Executando: ${ordem.fromToken}→${ordem.toToken} $${valorTrade.toFixed(2)}`)
 
       const resultado = await realSwap.executeSwap(fromKey, toKey, valorTrade, (msg) => this.log(msg), ordem.id)
@@ -211,7 +210,9 @@ class Corretor {
       this.log(`❌ Erro na execução: ${err.message}`)
       pregão.atualizarOrdem(ordem.id, { status: "falhou" })
     } finally {
-      capitalController.unlock(ordem.par.split('→')[1] + ':' + redeKey)
+      const unlockKey = ordem.par.split('→')[1] + ':' + redeKey
+      this.log(`🔓 Unlock: ${unlockKey} (finally)`)
+      capitalController.unlock(unlockKey)
     }
   }
 

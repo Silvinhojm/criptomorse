@@ -346,6 +346,9 @@ function SwapBridgeModal({
   currentNetwork: Network;
   onComplete?: () => void;
 }) {
+  // External manual swap/bridge flow. This opens third-party user-directed
+  // LI.FI/Jumper routes and is intentionally outside ArcFlow autonomous
+  // Coordinator lifecycle.
   const [mode, setMode] = useState<"swap" | "bridge">("swap");
   const [fromToken, setFromToken] = useState("USDC");
   const [toToken, setToToken] = useState("USDC");

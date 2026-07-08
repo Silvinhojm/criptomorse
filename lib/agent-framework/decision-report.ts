@@ -36,6 +36,14 @@ export interface DecisionReport {
     txHash?: string
     errorMsg?: string
     adapter: string
+    correlationId?: string
+    intentId?: string
+    proposalId?: string
+    decisionReportId?: string
+    ordemId?: string
+    dispatchStatus?: "dispatched" | "failed"
+    settlementStatus?: "dispatched" | "submitted" | "confirmed" | "failed" | "settled" | "reconciled"
+    isProvisional?: boolean
   }
 
   auditId?: string
@@ -47,6 +55,14 @@ export interface DecisionReport {
   onChainTx?: string
   /** Status da prova on-chain: pending | confirmed | failed | skipped */
   onChainStatus?: "pending" | "confirmed" | "failed" | "skipped"
+
+  /** Quem rejeitou a proposta (ex: "policy", "knowledge", "safety", "executor") */
+  rejectedBy?: string
+
+  /** Status da avaliação Knowledge: provided | queried | failed | unavailable */
+  knowledgeStatus?: "provided" | "queried" | "failed" | "unavailable"
+  /** Mensagem de erro quando knowledgeStatus = "failed" */
+  knowledgeError?: string
 
   createdAt: number
   resolvedAt?: number

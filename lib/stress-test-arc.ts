@@ -5,6 +5,8 @@ import { ethers } from "ethers"
 import { NonceManager } from "./nonce-manager"
 import { realSwap } from "./real-swap-executor"
 
+// Stress/test-only utility. It is intentionally outside the ArcFlow
+// autonomous Coordinator lifecycle and must not be used by runtime agents.
 export interface StressTestResult {
   operation: string
   txHash: string

@@ -12,6 +12,9 @@ import { JOB_PROOF_BYTECODE, JOB_PROOF_ABI } from './contracts'
 import { NonceManager } from "./nonce-manager"
 import { hasSellRoute } from './route-verifier'
 
+// Arc testnet job/stress/demo utility. Temporarily outside the TradingAdapter
+// lifecycle; production autonomous job behavior should become a future
+// Job/Testnet Adapter instead of bypassing Coordinator.
 const ARC_RPC = 'https://rpc.testnet.arc.network'
 const ARC_CHAIN_ID = 5042002
 

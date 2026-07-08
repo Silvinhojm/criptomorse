@@ -52,7 +52,7 @@ export const NETWORKS = {
     rpcUrl: "https://rpc.testnet.arc.network",
     explorer: "https://testnet.arcscan.app",
     isTestnet: true,
-    nativeSymbol: "ARC",
+    nativeSymbol: "USDC",
     tokens: {
       USDC: "0x3600000000000000000000000000000000000000",
       EURC: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
@@ -154,9 +154,9 @@ export const TRADING_PAIRS: Record<NetworkKey, Array<{ from: TokenSymbol; to: To
   arc: [
     { from: "USDC",    to: "EURC",    label: "USDC→EURC" },
     { from: "EURC",    to: "USDC",    label: "EURC→USDC" },
-    { from: "USDC",    to: "cirBTC",  label: "USDC→cirBTC" },
+    // cirBTC: BUY bloqueado (pool USDC/cirBTC com liquidez simbólica — anti-pattern "walled garden")
+    // SELL permitido apenas com validação forte de liquidez real (ver agentes-do-pregão.ts receberOK)
     { from: "cirBTC",  to: "USDC",    label: "cirBTC→USDC" },
-    { from: "EURC",    to: "cirBTC",  label: "EURC→cirBTC" },
     { from: "cirBTC",  to: "EURC",    label: "cirBTC→EURC" },
   ],
   base: [
@@ -725,7 +725,9 @@ class RealSwapExecutor {
       const nativePrice = await this._fetchNativePrice(net.nativeSymbol);
       this.nativeBalanceUSD = formatted * nativePrice;
       return this.nativeBalanceUSD;
-    } catch {
+    } catch (e) {
+      console.warn(`[GAS] refreshNativeBalance failed: ${(e as Error)?.message ?? e}`);
+      this.nativeBalanceWei = 0n;
       return 0;
     }
   }

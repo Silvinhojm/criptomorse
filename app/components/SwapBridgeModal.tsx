@@ -46,6 +46,10 @@ export function SwapBridgeModal({
   const [bridgeToken, setBridgeToken] = useState("USDC");
   const [txHash, setTxHash] = useState<string>("");
 
+  // Manual user wallet operation: intentionally outside the ArcFlow
+  // autonomous lifecycle. Autonomous economic decisions must submit to
+  // Coordinator.submitProposal().
+
   // 🔥 FUNÇÃO PARA SWAP DIRETO VIA API LI.FI
   const handleSwapDirect = async () => {
     const amount = parseFloat(swapAmount);

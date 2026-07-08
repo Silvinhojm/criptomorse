@@ -261,6 +261,8 @@ class Arqueiro {
   // ─── Public API ───
 
   get shadowMode(): boolean { return this._shadowMode }
+  // Guardrail: disabling shadow mode may expose timing scores to TradingAdapter
+  // internals, but Arqueiro must never execute, approve, or bypass Coordinator.
   setShadowMode(v: boolean): void { this._shadowMode = v }
 
   getScore(pair: string, network: string): number {
@@ -295,6 +297,9 @@ class Arqueiro {
   }
 
   start(): void {
+    // Browser-only guard: Arqueiro is a shadow observer and must not start
+    // timers during build, static generation, or server-side rendering.
+    if (typeof window === "undefined") return
     if (this.timer) return
     console.log("[ARQUEIRO] 🏹 Iniciado (shadow mode)")
     this.timer = setInterval(async () => {

@@ -1,6 +1,8 @@
 import { ethers } from "ethers";
 import { NonceManager } from "@/lib/nonce-manager";
 
+// Manual/admin signing utility only. Autonomous ArcFlow runtime decisions
+// must not call this route directly; they must enter through Coordinator.
 const NETWORK_RPCS = {
   137: "https://polygon.publicnode.com",
   8453: "https://mainnet.base.org",

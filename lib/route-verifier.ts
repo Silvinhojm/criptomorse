@@ -134,6 +134,8 @@ export async function checkRouteViaMulticall(
   provider: ethers.Provider,
   chainId: number,
   buyToken: string,
+  minReserve0?: bigint,
+  minReserve1?: bigint,
 ): Promise<{ hasRoute: boolean; poolAddress?: string }> {
   const pools = KNOWN_POOLS[chainId]
   if (!pools || pools.length === 0) {
@@ -162,7 +164,9 @@ export async function checkRouteViaMulticall(
         )
         const reserve0 = decoded[0] as bigint
         const reserve1 = decoded[1] as bigint
-        if (reserve0 > 0n && reserve1 > 0n) {
+        const r0Min = minReserve0 ?? 1n
+        const r1Min = minReserve1 ?? 1n
+        if (reserve0 >= r0Min && reserve1 >= r1Min) {
           return { hasRoute: true, poolAddress: relevant[i].address }
         }
       }

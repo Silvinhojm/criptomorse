@@ -6,6 +6,265 @@
 
 ---
 
+## 0. Current Architecture - Canonical Framework View
+
+`PROJECT_VISION.md` is the canonical architecture source of truth. Historical sections below are preserved for operational context, but when they describe Pregão as the center of the system they should be read as historical implementation notes for the TradingAdapter, not as the current architectural target.
+
+ArcFlow is an autonomous agent coordination framework for Arc Testnet. It is not a trading bot. Trading is the first Adapter and the first proof domain.
+
+Canonical lifecycle:
+
+```text
+Identity
+  -> Knowledge Service
+  -> Intent
+  -> Coordinator
+  -> Policy Engine
+  -> Voting Engine
+  -> Adapter
+  -> Execution
+  -> Audit
+  -> Decision Report
+  -> DecisionAnchor
+```
+
+The Coordinator is the only public entry point. Agents, UI, SDKs, and external callers submit intents or proposals to the Coordinator. No new feature should call Pregão, Trading, Corretor, or any other domain module directly as a public entry point.
+
+The Knowledge Service is the only official source of context. It consolidates liquidity, routes, gas, market state, historical performance, and reputation into a KnowledgeReport. Agents and adapters must not query external data sources directly when that knowledge belongs in the framework.
+
+The Policy Engine owns global rules: gas thresholds, congestion, operating windows, liquidity minimums, economic mode, learning mode, and other system-wide constraints. Agents make local proposals; they do not own global policy.
+
+The Voting Engine resolves agent input using confidence, reputation, and Knowledge-derived confidence modifiers. Voting must remain explainable and auditable.
+
+Adapters encapsulate domains. TradingAdapter is the first Adapter. Pregão is internal TradingAdapter machinery: an order book / consensus helper / execution engine detail used by the trading domain. Future domains must be implemented as Adapters rather than added to framework core.
+
+Audit, Decision Reports, and DecisionAnchor make every coordinated decision explainable and verifiable. The off-chain report contains the full decision context; DecisionAnchor stores the Decision Report hash plus compact metadata.
+
+### Public vs Internal Boundary
+
+Correct:
+
+```text
+Agent or UI
+  -> Coordinator
+  -> Knowledge Service
+  -> Policy Engine
+  -> Voting Engine
+  -> Adapter
+  -> internal domain machinery
+  -> Audit / Decision Report / DecisionAnchor
+```
+
+Trading-specific internal path:
+
+```text
+Coordinator
+  -> TradingAdapter
+  -> Pregão internal method
+  -> Corretor / execution internals
+```
+
+Incorrect:
+
+```text
+Agent or UI
+  -> Pregão directly
+```
+
+### Post-Phase 1b Runtime Checkpoint
+
+Phase 1 is accepted:
+
+- Legacy Pregao entry paths now route autonomous economic signals through the Coordinator.
+- `pregao.receberOK()` is a compatibility wrapper.
+- `pregao.injetarSinal()` is the TradingAdapter-internal hook.
+- TradingAdapter calls `pregao.injetarSinal()`, not `pregao.receberOK()`, avoiding a `receberOK -> Coordinator -> TradingAdapter -> receberOK` loop.
+
+Phase 1b is accepted:
+
+- `RealAutomatedTrader` autonomous decisions now submit through the Coordinator.
+- `TradingNanopayments` autonomous decisions now submit through the Coordinator.
+- Manual/test/admin/demo paths are classified and allowed outside the autonomous lifecycle for now.
+
+Phase 2a is accepted:
+
+- Knowledge Service is enforced inside Coordinator.
+- `knowledgeStatus` and `knowledgeError` are persisted.
+- `KnowledgeReport.canTrade = false` blocks execution.
+- Policy Engine is enforced before voting and before execution.
+- Policy rejection blocks execution and is persisted in DecisionReport and Audit where applicable.
+
+Phase 2b is accepted:
+
+- `Voting.resolve()` is the canonical consensus authority.
+- `Coordinator.resolveConsensus()` was removed.
+- `submitProposal()` and `runCycle()` use `Voting.resolve()`.
+- Zero voting agents reject instead of executing.
+- `ConsensusResult.action` maps from `proposal.action`.
+
+Phase 2c is accepted:
+
+- Coordinator rejection paths preserve the canonical `{ consensus: ... }` `SubmissionResult` shape.
+- Adapter execution remains blocked after all rejection paths.
+- Arqueiro startup is browser/runtime guarded.
+- Arqueiro remains shadow/inert and non-executing.
+- ScoutSignal runtime was not implemented.
+
+Current valid autonomous flow:
+
+```text
+Autonomous decision
+  -> Coordinator.submitProposal()
+  -> TradingAdapter
+  -> pregao.injetarSinal()
+  -> Pregao / Corretor machinery
+```
+
+Known limitations after Phase 2c:
+
+- Pending proposal settlement is not reconciled back into all dashboards/accounting yet.
+- Coordinator/TradingAdapter currently treats dispatch to Pregao as execution success, not final on-chain settlement.
+- `job-robot` and `contratante` are demo/stress/testnet utilities for now and need a future Job/Testnet Adapter if promoted.
+- Manual/admin swap routes remain callable low-level utilities and need stronger access boundaries later.
+- DecisionReport is not fully canonical yet.
+- DecisionAnchor exists and works as a contract, but canonical hash correctness over complete finalized DecisionReports remains future work.
+- Dashboard profit is provisional until settlement reconciliation is implemented.
+
+Next architecture work should focus on:
+
+- TradingAdapter settlement correctness.
+- DecisionReport runtime correctness.
+- DecisionAnchor canonical hash correctness.
+
+### Settlement Truth Principle
+
+ArcFlow não comemora execução. ArcFlow só confia em liquidação verificada.
+
+Operational meaning:
+
+- Adapter dispatch is not settlement.
+- A transaction hash alone is not final economic truth.
+- Dashboard profit is provisional until settlement is verified.
+- Net profit must eventually account for gas, fees, slippage, failed attempts, time, and risk.
+- DecisionAnchor proves the anchored payload; it does not prove full lifecycle correctness unless the canonical finalized DecisionReport hash is complete.
+
+### Arqueiro Architecture Status
+
+Current status:
+
+- Arqueiro is a shadow/inert timing module.
+- It has no signer, no private key, and no direct execution authority.
+- It must not mutate dashboard profit.
+- It must not be activated as a Pregao confidence modulator before a ScoutSignal lifecycle exists.
+- It must not alter final confidence after Voting.
+
+Future role:
+
+- Arqueiro may become an Opportunity Scout / Pre-Intent Router.
+- It may observe, rank, and route attention.
+- It must never execute financial actions directly.
+
+Future ScoutSignal / OpportunityCandidate shape, documentation only:
+
+- `signalId`
+- `sourceAgent`
+- `timestamp`
+- `network`
+- `pair`
+- `route`
+- `opportunityType`
+- `confidence`
+- `urgency`
+- `ttlSeconds`
+- `evidence`
+- `riskFlags`
+- `recommendedAction`
+- `executionAllowed: false`
+- `dataQuality`
+
+Future scout flow:
+
+```text
+Arqueiro detects candidate opportunity
+  -> emits ScoutSignal
+  -> Knowledge Service validates
+  -> Coordinator receives proposal
+  -> Policy Engine checks
+  -> Voting Engine resolves
+  -> Adapter executes only if approved
+  -> Audit / DecisionReport records outcome
+  -> DecisionAnchor anchors only when report semantics are correct
+```
+
+## Canonical Phase Status
+
+This table is the single phase-status reference. `PROJECT_VISION.md` remains the canonical architecture source; this table only tracks implementation maturity.
+
+| Phase | Status | Meaning |
+|-------|--------|---------|
+| Phase 1 - Coordinator core | Implemented / hardening | Coordinator is the public entry point; direct domain entry points are deprecated or internal. |
+| Phase 2 - Knowledge First + Policy gates | Accepted / hardening | Knowledge Service and Policy Engine are runtime gates inside Coordinator. |
+| Phase 3 - Voting Intelligence | Accepted / hardening | `Voting.resolve()` is the canonical consensus authority. |
+| Phase 4 - Audit + Decision Reports | In progress | Every coordinated execution must produce an auditable Decision Report. |
+| Phase 5 - DecisionAnchor | Implemented / hardening | DecisionAnchor anchors the Decision Report hash plus compact metadata. |
+| Phase 6 - Policy Engine | Accepted / hardening | Policy blocks before voting and before execution; scattered rules should continue migrating there. |
+| Phase 7 - SDK | Planned | Public developer API after architecture stabilizes. |
+| Phase 8 - Adapters | In progress | TradingAdapter is first; new domains must be Adapters. |
+| Phase 9-12 - UX, live view, memory, platform | Planned | Product and platform expansion after the framework boundary is stable. |
+
+## Decision Report + DecisionAnchor Lifecycle
+
+Every decision that passes through the Coordinator must produce a Decision Report before or during execution finalization. The report is the complete off-chain explanation of the decision.
+
+Canonical DecisionAnchor payload:
+
+- `decisionHash`: canonical hash of the finalized Decision Report.
+- `metadata`: compact metadata only, such as `decisionId`, `network`, `domain`, `adapterId`, `timestamp`, and `knowledgeReportHash`.
+
+DecisionAnchor must not store the full Decision Report or full KnowledgeReport on-chain. The on-chain proof is the Decision Report hash plus compact metadata.
+
+Required Decision Report fields:
+
+- `decisionId`: stable unique identifier for the decision.
+- `timestamp`: decision creation/finalization time.
+- `network`: target network, such as Arc Testnet.
+- `domain`: adapter domain, such as `trading`.
+- `adapterId`: adapter that executed or attempted execution.
+- `actorIdentity`: submitting agent, user, or module identity.
+- `intent`: original intent/proposal payload.
+- `knowledgeReport`: Knowledge Service output used for the decision.
+- `knowledgeReportHash`: canonical hash of the KnowledgeReport.
+- `confidenceModifier`: modifier supplied by Knowledge.
+- `policyChecks`: Policy Engine rules evaluated and their pass/fail results.
+- `votes`: participating agents, confidence, reputation, weight, and vote result.
+- `consensusResult`: accepted, rejected, deferred, or failed, with reason.
+- `executionPlan`: selected adapter action before execution.
+- `executionResult`: transaction, simulation, skipped, failed, or other outcome.
+- `gas`: estimated and actual gas when available.
+- `economicResult`: profit, loss, cost, or non-financial result depending on adapter.
+- `auditTrail`: relevant events emitted during the decision lifecycle.
+- `decisionHash`: canonical hash of the finalized Decision Report.
+- `anchorMetadata`: compact metadata submitted with the anchor.
+- `anchorTxHash`: DecisionAnchor transaction hash when anchored.
+- `anchorStatus`: pending, anchored, failed, or not_required.
+
+Lifecycle:
+
+1. Agent, UI, or SDK submits an intent to the Coordinator.
+2. Coordinator obtains context from the Knowledge Service.
+3. Policy Engine evaluates global constraints.
+4. Voting Engine resolves agent input when applicable.
+5. Coordinator chooses the Adapter and records the execution plan.
+6. Adapter executes through domain-specific internals.
+7. Audit records the outcome and final metadata.
+8. Decision Report is finalized with all required fields.
+9. DecisionAnchor anchors `decisionHash` plus compact metadata on-chain.
+10. The anchored transaction hash is attached back to the Decision Report.
+
+---
+
+> Historical TradingAdapter implementation notes begin below. Sections 1 onward preserve the original trading-era implementation map and session history. They do not override the canonical architecture in `PROJECT_VISION.md` or Section 0 above. Any mention of Pregão as central should be read as internal TradingAdapter machinery.
+
 ## 1. VISÃO GERAL
 
 CriptoMorse é uma plataforma de trading automatizado multi-chain com:
@@ -1193,7 +1452,7 @@ A SalaDeAula agora tem 3 abas:
 
 ### 22.1 Propósito
 
-O Arqueiro (`lib/arqueiro.ts`) é um **modulador de tensão e timing** que não executa trades nem gera OKs. Ele observa a compressão de volatilidade de cada token volátil e alimenta o Pregão com um `tensionScore` (0-100) que modula a confiança das ordens e o score no CapitalController.
+O Arqueiro (`lib/arqueiro.ts`) é um **modulador de tensão e timing em Shadow** que não executa trades nem gera OKs. Ele observa a compressão de volatilidade de cada token volátil e mantém um `tensionScore` (0-100). O papel arquitetural futuro recomendado é **Opportunity Scout / Pre-Intent Router**: emitir candidatos observacionais para validação pelo Knowledge Service e pelo Coordinator, nunca executar diretamente nem alterar confiança final depois do Voting Engine.
 
 ### 22.2 Métrica Principal
 
@@ -3973,6 +4232,19 @@ Em 04/07/2026, o sistema passou por uma análise de consenso entre 3 IAs (DeepSe
 
 ## 56. cirBTC FALHA E CORREÇÃO (05/07/2026) — Alinhamento com whitepaper Circle
 
+### Atualização de auditoria on-chain (07/07/2026)
+
+Auditoria read-only via RPC da Arc Testnet (`https://rpc.testnet.arc.network` e `https://rpc.testnet.arc.io`) verificou o estado atual dos endereços de cirBTC:
+
+| Endereço | Estado RPC atual | Observação |
+|----------|------------------|------------|
+| `0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF` | Tem bytecode; `name()` = `Circle Wrapped Bitcoin`; `symbol()` = `cirBTC`; `decimals()` = `8` | É o contrato ERC-20 que existe no runtime atual da Arc Testnet. |
+| `0x171A4217b86A807A64eB94757Db6849fb4bDbAA0` | Sem bytecode nos RPCs testados | Não deve ser tratado como cirBTC deployado no runtime atual sem prova primária adicional da Arc/Circle. |
+
+Portanto, as notas abaixo sobre `0x171A...` como "oficial deployado" devem ser lidas como hipótese histórica/documental, não como verdade operacional do runtime atual. A fonte de verdade prática para Phase 2 deve ser verificação on-chain atual, salvo se uma fonte primária Arc/Circle provar o contrário.
+
+O antigo workaround `PRICE_DIVIDER = 10^10` também não é justificado pelos decimals atuais do ERC-20 em `0xf0C4...`, que reporta 8 decimals. Esse divisor provavelmente compensava suposições de preço/feed, não o contrato ERC-20 em si.
+
 ### Histórico da Falha
 
 Desde o início das operações na Arc Testnet (junho/2026), o sistema usava o endereço **`0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF`** para cirBTC. Este endereço:
@@ -4054,3 +4326,61 @@ A posição cirBTC "há 248h" no dashboard (comprada com token falso `0xf0C4...`
 - **DeFi on ARC**: DEX de terceiro descoberta (Factory `0x34A0b...`, Router `0x284C5A...`), pool USDC/EURC com $1.43M TVL
 - **Arqueiro**: shadow mode ativo, ciclo 60s, monitorando pares com compressão de volatilidade
 - **Backpack/Solana**: removidos — foco exclusivo Arc EVM
+
+---
+
+## 58. WALLET MAPPING — Carteiras do Projeto
+
+Todas as wallets abaixo são de propriedade do desenvolvedor (MetaMask). A distinção entre operacional principal, operacional secundária e não utilizada é relevante para auditoria técnica.
+
+| Wallet | Papel | Transações | Saldo (Arc testnet) | Observações |
+|--------|-------|-----------|---------------------|-------------|
+| `0x77f5C3A1079B86ef8490E7c5Ec1F9bcfbaAE5894` | **Operacional principal** | Dezenas de trades, deploy AgentIdentity, ERC8183 v1 | ~$48 USDC, $15 POL (Polygon) | Wallet padrão do sistema. Trading ativo, saldo principal, referência em toda documentação. |
+| `0xfa033D062d6ab8d49D611F5644d46f5380737dDA` | **Operacional secundária / deploy** | 44 txs, 50+ token transfers, 6 tokens, 7 internal txs | ~$1.011 USDC (inflado por faucet) | Deployou DecisionAnchor, 3-4 GenericAMMPair adicionais. Teve atividade real de trading (swaps via LI.FI). Saldo alto é de múltiplos claims de faucet (20 USDC + 20 EURC + 0,0001 cirBTC cada). Correspondente a `PRIVATE_KEY_STRESS` no `.env.local`. |
+| `0xAD42458a2e98E62453F4B54FA6E7511E0A303B6F` | **Não utilizada no projeto** | 0 txs enviadas, 4 transfers recebidos | ~$16 USDC | Apenas recebeu faucet/test transfers. Sem atividade de deploy ou trading. |
+
+### 58.1 Cadeia de Custódia dos Contratos
+
+| Contrato | Endereço | Deployer | Wallet de Deploy |
+|----------|----------|----------|-------------------|
+| AgentIdentity (ERC-8004) | `0xd2a801...326b` | `0x77f5C3...AE5894` | Operacional principal |
+| ERC8183 v1 (Job Marketplace) | `0x319227...70d9` | `0x77f5C3...AE5894` | Operacional principal |
+| ERC8183 v2 (AgenticCommerce oficial) | `0x0747EE...4583` | `0xcBe5B97...B620D` | **Contrato canônico ERC-8183** — deployado pela Arc Foundation, compartilhado entre múltiplos projetos. O CriptoMorse não controla este contrato, apenas interage via `createJob()`. |
+| DecisionAnchor | `0x7813e04338dc9d6b7676843a52152c57438cc7b2` | deploy via stress/deploy wallet; chamadas atuais por `0x77f5...` | Contrato tem bytecode e `totalReports() = 65`; isso prova funcionamento do contrato, não lifecycle canônico completo. |
+| GenericAMMPair USDC/EURC (documentado) | `0xA1e418...EBfb` | `0x77f5C3...AE5894` | Operacional principal |
+| GenericAMMPair adicionais (não documentados) | 0x54..., 0xAc..., 0x38... | `0xfa033D...7dDA` | Operacional secundária — pools de teste, aguardando reconciliação |
+
+### 58.2 Por que duas wallets ativas?
+
+Durante o desenvolvimento, o sistema alternou entre duas chaves privadas:
+- **PRIVATE_KEY** (main): usada para trading real e contratos principais (AgentIdentity, ERC8183 v1)
+- **PRIVATE_KEY_STRESS**: criada originalmente para isolar stress test do NonceManager (04/07/2026), mas também usada pelo `scripts/deployDecisionAnchorArc.js` (fallback `PRIVATE_KEY_STRESS || PRIVATE_KEY`) e por sessões de teste de AMM/swap
+
+Isso explica por que 0xfa03... tem swaps LI.FI reais (36,7 USDC, 21,1 EURC) e múltiplos GenericAMMPair — foi usada como wallet operacional secundária em paralelo com a principal, não apenas como wallet de deploy.
+
+### 58.3 Implicações para Auditoria
+
+- **DecisionAnchor** (`0x7813e04338dc9d6b7676843a52152c57438cc7b2`): não tem função `onlyOwner`. Qualquer wallet pode chamar `anchor()`. Auditoria on-chain em 07/07/2026 encontrou bytecode e `totalReports() = 65`, incluindo anchors de teste e anchors com metadados compactos. Isso prova que o contrato funciona e foi chamado, mas não prova que o runtime já gera DecisionReports canônicos finalizados com todos os campos obrigatórios.
+- **GenericAMMPair**: `Ownable(msg.sender)`. O pool ativo USDC/EURC (`0xA1e418...`) é owned pela wallet principal `0x77f5...`. Pools secundários/demo A/B/C são owned por `0xfa033D...`. Recomenda-se transferir ownership de qualquer pool secundário mantido para a wallet principal ou multisig antes de apresentação pública/demo.
+- **ERC8183 v2** (`0x0747EE...`): contrato canônico da Arc Foundation. O volume de 494K+ transações é compartilhado entre múltiplos projetos — o CriptoMorse é apenas um dos usuários. Filtrar txs da wallet principal (0x77f5...) para isolar atividade própria.
+
+### 58.4 Pools AMM Não Documentados (reconciliados 07/07/2026)
+
+A wallet secundária (0xfa03...) deployou 3 pools AMM adicionais além do oficial (USDC/EURC em `0xA1e418...`):
+
+| Pool | Endereço | Par | Reserves | Status | Observação |
+|------|----------|-----|----------|--------|------------|
+| **Oficial** | `0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb` | USDC / EURC | 17.28 USDC / 16 EURC | ✅ Ativo (documentado) | Deployado pela wallet principal (0x77f5...) |
+| **Pool A** | `0x8cdc84f93F6a5413667354F8fB516959D682423c` | USDC / cirBTC runtime atual (`0xf0C4...`) | 0.0 USDC / 0.0 cirBTC | ✅ Recuperada | `token0` USDC `0x3600...`; `token1` `0xf0C4...`; `paused=false`; LP owner/signer `0xfa033D...`; recovery tx `0xe7efabca39944399179263711e38ab6f385dcea087baedac122c7db86300acfd` no bloco `50639197`; `removeLiquidity(123501)` recuperou `65.03 USDC` e `0.00117965 cirBTC`; LP balance, totalLiquidity e reservas finais = `0`. |
+| **Pool B** | `0x3851fFee5fca74f86D0a4e66e4DaC832950A08F2` | USDC / **fake cirBTC** (`0xf0C4...`) | 0 / 0 | 🔴 Nunca usada | Mesmo par da Pool A, sem liquidez adicionada. Teste descartado. |
+| **Pool C** | `0x54B607f069D62468b20a0281976f6114Fe80d997` | USDC / **outro cirBTC** (`0x3120d73D...`) | 39.99 USDC / 15.028 tokens | 🔴 Token alternativo | Token1 (`0x3120d73D...`) tem mesmo nome "Circle Wrapped Bitcoin (cirBTC)" e 8 decimals, mas endereço diferente do oficial (`0x171A42...`). Criado pela mesma wallet. AMM com ABI diferente (usdcAmount/eurcAmount). |
+
+**Decisão atualizada (07/07/2026):** Abandonar Pool B (zero liquidez). A classificação anterior de Pool A como "unrecoverable" foi corrigida após simulação read-only e recuperação bem-sucedida: `removeLiquidity(123501)` foi executado pela stress/deploy wallet `0xfa033D...`, não pela main wallet, na tx `0xe7efabca39944399179263711e38ab6f385dcea087baedac122c7db86300acfd`, recuperando `65.03 USDC` e `0.00117965 cirBTC`, queimando `123501` LP. Estado final: LP balance `0`, totalLiquidity `0`, reservas `0.0 USDC / 0.0 cirBTC`, pool `paused=false`. Pool C pode ser investigada se `0x3120d73D...` tiver utilidade, mas é pool secundário/demo e ownership continua em `0xfa033D...`.
+
+### 58.5 Próximos passos
+
+1. ✅ `PRIVATE_KEY` configurada — wallet principal ativa
+2. ✅ `autoConfigureFromEnv()` implementado — DecisionAnchor contract funcional (`totalReports() = 65` em 07/07/2026), mas lifecycle canônico runtime ainda incompleto
+3. ⏳ Transferir ownership dos GenericAMMPair secundários de 0xfa03... para 0x77f5... se mantidos
+4. ⏳ Decidir destino dos 3 pools AMM não documentados (ver seção 58.4)
+5. ⏳ Documentar transações próprias no ERC8183 v2 filtrando por wallet 0x77f5...

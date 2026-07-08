@@ -42,6 +42,14 @@ export interface OkSignal {
   precoNoPalpite?: number
   poolAddress?: string
   dex?: string
+  metadata?: {
+    correlationId?: string
+    settlementCorrelationId?: string
+    intentId?: string
+    proposalId?: string
+    decisionReportId?: string
+    adapter?: "trading"
+  }
 }
 
 export interface OrdemExecucao {
@@ -56,6 +64,7 @@ export interface OrdemExecucao {
   status: "preparando" | "pronto" | "executando" | "concluido" | "falhou"
   amountUsd?: number
   errorMsg?: string
+  metadata?: OkSignal["metadata"]
   resultado?: {
     txHash: string
     explorerUrl: string
@@ -79,6 +88,21 @@ type OkIndex = Map<string, Map<string, OkSignal[]>>
 
 import { batchExecutor } from "./batch-executor";
 import { recordRouteFailure, hasSellRoute } from "./route-verifier";
+import { frameworkCoordinator } from "./agent-framework/singletons";
+import { TradingAdapter } from "./agent-framework/trading-adapter";
+import type { AgentProposal } from "./agent-framework/IAgent";
+
+let tradingAdapterConfigured = false
+
+function ensureTradingAdapterConfigured(pregao: { injetarSinal(signal: OkSignal): void }) {
+  if (tradingAdapterConfigured) return
+  const tradingAdapter = new TradingAdapter((signal) => {
+    pregao.injetarSinal(signal)
+  })
+  frameworkCoordinator.setExecutor(tradingAdapter)
+  tradingAdapterConfigured = true
+}
+
 class Pregão {
   private oks: OkIndex = new Map()
   private ordens: OrdemExecucao[] = []
@@ -140,8 +164,8 @@ class Pregão {
       this._loadOrdens()
       this._loadStats()
       this._loadPackageResults()
+      arqueiro.start()
     }
-    if (typeof setInterval !== "undefined") arqueiro.start()
   }
 
   private _loadPackageResults(): void {
@@ -241,6 +265,35 @@ class Pregão {
   }
 
   receberOK(signal: OkSignal) {
+    void this.submeterSinalAoCoordinator(signal)
+  }
+
+  async submeterSinalAoCoordinator(signal: OkSignal): Promise<boolean> {
+    ensureTradingAdapterConfigured(this)
+
+    const proposal: AgentProposal = {
+      id: `prop_${signal.pregueiro}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      agentId: signal.pregueiro,
+      action: signal.direcao === "sell" ? "SELL" : "BUY",
+      params: signal as unknown as Record<string, unknown>,
+      confidence: signal.confianca,
+      timestamp: Date.now(),
+    }
+
+    try {
+      const result = await frameworkCoordinator.submitProposal(proposal)
+      if (!result.consensus.approved) {
+        this.log(`[FRAMEWORK] Sinal rejeitado pelo Coordinator: ${signal.pregueiro} -> ${signal.par} (${result.consensus.reason})`)
+        return false
+      }
+      return true
+    } catch (err: any) {
+      this.log(`[FRAMEWORK] Erro ao submeter sinal ao Coordinator: ${signal.pregueiro} -> ${signal.par} (${err?.message ?? err})`)
+      return false
+    }
+  }
+
+  private registrarSinalInterno(signal: OkSignal, origem: "recebido" | "injetado") {
     // Sanitizar confianca antes de processar
     signal.confianca = Math.min(100, Math.max(0, signal.confianca ?? 0))
     if (isNaN(signal.confianca)) signal.confianca = 0
@@ -261,7 +314,8 @@ class Pregão {
     }
     porPar.get(signal.pregueiro)!.push(signal)
 
-    this.log(`📢 OK recebido: ${signal.pregueiro} → ${signal.par} na ${signal.rede} (${signal.confianca}%)`)
+    const label = origem === "injetado" ? "OK injetado via TradingAdapter" : "OK recebido"
+    this.log(`📢 ${label}: ${signal.pregueiro} → ${signal.par} na ${signal.rede} (${signal.confianca}%)`)
 
     this.verificarOrdem(chave, signal)
     this.limparExpirados()
@@ -271,24 +325,7 @@ class Pregão {
    *  sem passar pelo ponto de interceptação pública (receberOK).
    *  Chamar receberOK de dentro de um adapter criaria ciclo infinito. */
   injetarSinal(signal: OkSignal) {
-    signal.confianca = Math.min(100, Math.max(0, signal.confianca ?? 0))
-    if (isNaN(signal.confianca)) signal.confianca = 0
-
-    if (this._redeAtiva && signal.rede !== this._redeAtiva) {
-      this.log(`🚫 Sinal ignorado: ${signal.pregueiro} → ${signal.par} na ${signal.rede} (rede ativa: ${this._redeAtiva})`)
-      return
-    }
-
-    const chave = `${signal.rede}:${signal.par}`
-    if (!this.oks.has(chave)) this.oks.set(chave, new Map())
-    const porPar = this.oks.get(chave)!
-    if (!porPar.has(signal.pregueiro)) porPar.set(signal.pregueiro, [])
-    porPar.get(signal.pregueiro)!.push(signal)
-
-    this.log(`📢 OK injetado via TradingAdapter: ${signal.pregueiro} → ${signal.par} na ${signal.rede} (${signal.confianca}%)`)
-
-    this.verificarOrdem(chave, signal)
-    this.limparExpirados()
+    this.registrarSinalInterno(signal, "injetado")
   }
 
   private verificarOrdem(chave: string, signal: OkSignal) {
@@ -468,6 +505,7 @@ class Pregão {
       confiancaMedia,
       timestamp: Date.now(),
       amountUsd: participantes[0].sinal.amountUsd,
+      metadata: participantes[0].sinal.metadata,
       status: "preparando"
     }
 
@@ -1083,3 +1121,7 @@ class Pregão {
 }
 
 export const pregão = new Pregão()
+
+export function submeterSinalAoCoordinator(signal: OkSignal): Promise<boolean> {
+  return pregão.submeterSinalAoCoordinator(signal)
+}

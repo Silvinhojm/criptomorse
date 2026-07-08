@@ -14,33 +14,118 @@
 
 ArcFlow é um **ARC Agent Coordination Framework** — uma infraestrutura completa para coordenação de agentes autônomos baseada em conhecimento compartilhado. Cada agente consulta uma **camada central de cognição (Knowledge Service)** antes de decidir, garantindo que todas as decisões sejam informadas por um contexto consistente de liquidez, rotas, gas, reputação e histórico.
 
-O sistema opera em 6 camadas: **Identity → Knowledge → Intent → Voting → Coordinator → Execution**, com **Audit** e **On-chain Proof** como camadas transversais. Originalmente construído para trading algorítmico multi-chain, o framework evoluiu para suportar qualquer tipo de agente autônomo que precise coordenar ações com base em conhecimento coletivo.
+O ciclo canônico do framework é **Identity → Knowledge Service → Intent → Coordinator → Policy Engine → Voting Engine → Adapter → Execution → Audit → Decision Report → DecisionAnchor**. `PROJECT_VISION.md` é a fonte canônica de arquitetura; se uma seção histórica divergir, ela deve ser lida como nota de implementação antiga.
 
 ---
 
 ## Arquitetura
 
-### ARC Agent Framework (visão conceitual)
+### Current Architecture (Canonical)
 
+`PROJECT_VISION.md` is the canonical architecture source of truth.
+
+ArcFlow is an autonomous agent coordination framework for Arc Testnet, not a trading bot. Trading is the first Adapter and the first proof domain.
+
+The Coordinator is the only public entry point. UI, SDKs, agents, and external callers submit intents or proposals to the Coordinator. Pregão is internal TradingAdapter machinery and must not be treated as the architectural center.
+
+```text
+Identity
+  -> Knowledge Service
+  -> Intent
+  -> Coordinator
+  -> Policy Engine
+  -> Voting Engine
+  -> Adapter
+  -> Execution
+  -> Audit
+  -> Decision Report
+  -> DecisionAnchor
 ```
-          Identity       Knowledge       Reputation
-              │               │               │
-              └───────┬───────┴───────┬───────┘
-                      │               │
-                   Intent          Voting
-                      │               │
-                      └───────┬───────┘
-                              │
-                         Coordinator
-                              │
-                         Execution
-                              │
-                            Audit
-                              │
-                       On-chain Proof
+
+Framework responsibilities:
+
+- **Knowledge Service**: official source of context for liquidity, routes, gas, market state, history, and reputation.
+- **Policy Engine**: owner of global rules such as gas limits, congestion, operating windows, liquidity minimums, and learning/economic modes.
+- **Voting Engine**: consensus layer using confidence, reputation, and Knowledge confidence modifiers.
+- **Coordinator**: public orchestration layer that receives intents and routes the full decision lifecycle.
+- **Adapters**: domain implementations. `TradingAdapter` is first; future domains must be new Adapters.
+- **Audit / Decision Reports**: complete off-chain explanation of every decision.
+- **DecisionAnchor**: on-chain proof layer for the Decision Report hash plus compact metadata.
+
+Trading-specific internals:
+
+```text
+Coordinator
+  -> TradingAdapter
+  -> Pregão internal machinery
+  -> Corretor / execution internals
+```
+
+Historical sections in this README and in `ARCFLOW.md` may describe the original trading implementation. Those notes are preserved for context, but current and future architecture must follow the Coordinator-first framework boundary above.
+
+### Current Runtime Checkpoint After Phase 2c
+
+Phase 1 is accepted: legacy Pregao entry paths for autonomous economic signals now route through the Coordinator. `pregao.receberOK()` is a compatibility wrapper, while `pregao.injetarSinal()` is the TradingAdapter-internal hook.
+
+Phase 1b is accepted: `RealAutomatedTrader` and `TradingNanopayments` autonomous decisions now submit through the Coordinator. Manual, test, admin, and demo paths are classified and may remain outside the autonomous lifecycle for now.
+
+Phase 2a is accepted: Knowledge Service and Policy Engine are enforced as runtime gates inside Coordinator.
+
+Phase 2b is accepted: `Voting.resolve()` is the canonical consensus authority.
+
+Phase 2c is accepted: Coordinator rejection returns preserve the canonical `{ consensus: ... }` shape, and Arqueiro startup is browser/runtime guarded while remaining shadow/inert and non-executing.
+
+Current valid autonomous flow:
+
+```text
+Autonomous decision
+  -> Coordinator.submitProposal()
+  -> TradingAdapter
+  -> pregao.injetarSinal()
+  -> Pregao / Corretor machinery
+```
+
+Settlement principle:
+
+```text
+ArcFlow não comemora execução.
+ArcFlow só confia em liquidação verificada.
+```
+
+Known limitations after Phase 2c:
+
+- Pending proposal settlement is not reconciled back into all dashboards/accounting yet.
+- Coordinator/TradingAdapter currently treats dispatch to Pregao as execution success, not final on-chain settlement.
+- `job-robot` and `contratante` are demo/stress/testnet utilities for now and need a future Job/Testnet Adapter if promoted.
+- Manual/admin swap routes remain callable low-level utilities and need stronger access boundaries later.
+- DecisionReport is not fully canonical yet.
+- DecisionAnchor exists and works as a contract, but canonical hash correctness over complete finalized DecisionReports remains future work.
+- Dashboard profit is provisional until settlement reconciliation is implemented.
+
+Next architecture work should focus on TradingAdapter settlement correctness, DecisionReport runtime correctness, and DecisionAnchor canonical hash correctness.
+
+### ARC Agent Framework (canonical conceptual view)
+
+This diagram mirrors the lifecycle in `PROJECT_VISION.md`:
+
+```text
+Identity
+  -> Knowledge Service
+  -> Intent
+  -> Coordinator
+  -> Policy Engine
+  -> Voting Engine
+  -> Adapter
+  -> Execution
+  -> Audit
+  -> Decision Report
+  -> DecisionAnchor
 ```
 
 ### ARC Agent Framework (visão implementada)
+
+> Historical TradingAdapter implementation note: the following section documents the original trading-era implementation. It is preserved for context and does not override `PROJECT_VISION.md`. Pregão in this section means internal TradingAdapter machinery, not the public entry point.
+
 
 ```
 KnowledgeService.query() ←──────────────┬──────────────┐
@@ -55,7 +140,7 @@ KnowledgeService.query() ←──────────────┬──�
                                     Intent (AgentIntent)
                                         │
                                         ▼
-                                 Pregão → Escriturário
+                                 Coordinator -> TradingAdapter -> Pregão interno -> Escriturario
                                         │
                                         ▼
                               Capital Controller
@@ -72,7 +157,7 @@ KnowledgeService.query() ←──────────────┬──�
 | Módulo | Descrição |
 |--------|-----------|
 | **Knowledge Service** | SSOT de cognição compartilhada. Agrega 6 fontes (liquidez, rota, gas, mercado, histórico, reputação) em um `KnowledgeReport` padronizado com 4 scores, riskScore, confidenceModifier e recomendações acionáveis. Cache híbrido memória+localStorage com TTLs. |
-| **Pregão** | Livro de ordens central, matching de OKs, formação de consenso. Modulado por Arqueiro e filtrado por Knowledge Service. |
+| **Pregão** | Internal TradingAdapter machinery: trading-domain order book / consensus helper used behind the Coordinator. It is not the public architectural center. |
 | **Escriturário** | Valida saldo, dimensiona valor, previne concorrência de par |
 | **Corretor** | Executa swaps via DEX direto (SushiSwap/Uniswap) + LI.FI aggregator |
 | **Professor** | Avalia acertos/erros, ajusta parâmetros por agente, cache em localStorage. Circuit breaker por agente+par com recovery. |
@@ -90,7 +175,7 @@ KnowledgeService.query() ←──────────────┬──�
 | **Circuit Breaker** | Proteção contra perdas consecutivas (3 strikes) + route circuit breaker por par (5 falhas → 30min cooldown) |
 | **Gas Price Oracle** | Custo de gas em USD com fallback multi-RPC |
 | **Pair Price Feed** | Preços em tempo real via Chainlink (Polygon) + Pyth (Arc) + SoSoValue |
-| **Arqueiro** | Modulador de tensão/timing: detecta compressão de volatilidade via pseudo-ATR + squeeze Bollinger/Keltner. TensionScore (0-100) modula confiança das ordens no Pregão. 3 fases de rollout (Shadow → Validação → Ativo). |
+| **Arqueiro** | Shadow timing/scout module: detects volatility compression via pseudo-ATR + Bollinger/Keltner squeeze. Current `getScore()` is inert in Shadow. Future role should be Opportunity Scout / Pre-Intent Router that emits candidates for Knowledge/Coordinator validation, not an executor or post-vote confidence authority. |
 | **Batch Executor** | Execução em lote com contrato próprio (`BatchExecutor.sol`), pré-simulação via `eth_call` antes de gastar gas, e cálculo local de AMM. Acumula 8s/10 ordens, lock único no CapitalController. |
 | **Route Verifier** | Verifica se um token tem rota de venda antes de permitir a compra. Usa Multicall3 para batch de reservas de pools, calcula output local via `x*y=k`. Bloqueia cirBTC/mcirBTC na Arc testnet. |
 | **ICircuitBreaker** | Interface unificada para health-check: `RouteCircuitBreaker` (5 falhas → 20min cooldown) + `FinancialCircuitBreaker` (delega ao pânico financeiro existente). |
@@ -158,6 +243,8 @@ Cada agente tem parâmetros individuais (confiança mínima, threshold de entrad
 
 ## Estratégias de Trading
 
+> Historical / internal TradingAdapter note: the following trading strategy sections describe the first Adapter implementation. References to Pregão, strategy execution, or trading modules are TradingAdapter internals and do not define ArcFlow core architecture.
+
 ### StableMR (Mean Reversion)
 Mean-reversion em pares EURC/USDC com SMA rolante de 12 amostras. Threshold de 0.10% (2σ do spread típico DEX). DEX fee de 0.3% aceita como custo de entrada — o lucro vem da reversão. Amount dinâmico: `max($12, |dev| × 5000)`. Fallback automático V2 quando V3 sem pools.
 
@@ -177,10 +264,12 @@ Seleção de pares na Arc Testnet via ArcBandit com algoritmo bandit de múltipl
 
 ## Sistema de Aprendizado
 
+> Historical / internal TradingAdapter note: this learning flow documents the trading-era adapter behavior. References to Pregão below mean internal TradingAdapter machinery, not the public ArcFlow entry point.
+
 ```
 Voto do agente com preço atual
     ↓
-Pregão registra palpite (par, direção, preço, confiança)
+TradingAdapter internal Pregão machinery registra palpite (par, direção, preço, confiança)
     ↓
 5 minutos depois → Professor consulta preço atual
     ↓
@@ -191,7 +280,7 @@ Escola de Robôs atualiza ranking → streak acumula → promoção
 ```
 
 **Critérios de promoção**: 50+ avaliações · 60%+ acerto · 500+ pontos.
-Agentes promovidos têm suas ordens aceitas diretamente pelo Pregão sem exigir segundo voto concordando.
+Agentes promovidos têm suas ordens aceitas via TradingAdapter internal Pregão machinery sem exigir segundo voto concordando.
 
 O Professor tem trava de segurança: streak por par (não contamina outros pares), cap de 10 ajustes consecutivos por par, e early exit ao atingir o teto (conf.min 55%, entrada 1.50%).
 
@@ -298,7 +387,7 @@ arcflow/
 │   │   ├── SafetyGuard (circuit breaker)
 │   │   ├── ResourceManager (alocação)
 │   │   └── interface files (IAgent, ICoordinator, IExecutor, etc.)
-│   ├── pregão.ts         # Orquestrador central
+│   ├── pregão.ts         # Internal TradingAdapter machinery
 │   ├── stable-mr.ts      # Mean reversion para stablecoins
 │   ├── modo-grão.ts      # Batch trading com PiFilter
 │   ├── oscillation-hunter.ts
@@ -316,39 +405,99 @@ arcflow/
 
 ---
 
+
+### Decision Report + DecisionAnchor Lifecycle
+
+Every decision that passes through the Coordinator must produce a Decision Report before or during execution finalization. The report is the complete off-chain explanation of the decision.
+
+Canonical DecisionAnchor payload:
+
+- `decisionHash`: canonical hash of the finalized Decision Report.
+- `metadata`: compact metadata only, such as `decisionId`, `network`, `domain`, `adapterId`, `timestamp`, and `knowledgeReportHash`.
+
+DecisionAnchor must not store the full Decision Report or full KnowledgeReport on-chain. The on-chain proof is the Decision Report hash plus compact metadata.
+
+Required Decision Report fields:
+
+- `decisionId`: stable unique identifier for the decision.
+- `timestamp`: decision creation/finalization time.
+- `network`: target network, such as Arc Testnet.
+- `domain`: adapter domain, such as `trading`.
+- `adapterId`: adapter that executed or attempted execution.
+- `actorIdentity`: submitting agent, user, or module identity.
+- `intent`: original intent/proposal payload.
+- `knowledgeReport`: Knowledge Service output used for the decision.
+- `knowledgeReportHash`: canonical hash of the KnowledgeReport.
+- `confidenceModifier`: modifier supplied by Knowledge.
+- `policyChecks`: Policy Engine rules evaluated and their pass/fail results.
+- `votes`: participating agents, confidence, reputation, weight, and vote result.
+- `consensusResult`: accepted, rejected, deferred, or failed, with reason.
+- `executionPlan`: selected adapter action before execution.
+- `executionResult`: transaction, simulation, skipped, failed, or other outcome.
+- `gas`: estimated and actual gas when available.
+- `economicResult`: profit, loss, cost, or non-financial result depending on adapter.
+- `auditTrail`: relevant events emitted during the decision lifecycle.
+- `decisionHash`: canonical hash of the finalized Decision Report.
+- `anchorMetadata`: compact metadata submitted with the anchor.
+- `anchorTxHash`: DecisionAnchor transaction hash when anchored.
+- `anchorStatus`: pending, anchored, failed, or not_required.
+
+Lifecycle:
+
+1. Agent, UI, or SDK submits an intent to the Coordinator.
+2. Coordinator obtains context from the Knowledge Service.
+3. Policy Engine evaluates global constraints.
+4. Voting Engine resolves agent input when applicable.
+5. Coordinator chooses the Adapter and records the execution plan.
+6. Adapter executes through domain-specific internals.
+7. Audit records the outcome and final metadata.
+8. Decision Report is finalized with all required fields.
+9. DecisionAnchor anchors `decisionHash` plus compact metadata on-chain.
+10. The anchored transaction hash is attached back to the Decision Report.
+
 ## Roadmap
 
-### ✅ Concluído
-- [x] Sistema multi-agente com consenso e aprendizado
-- [x] ERC-8004 AgentIdentity deployado (Arc + Base)
-- [x] ERC-8183 Job Marketplace deployado (Arc, Base, Polygon, Ethereum)
-- [x] AMM próprio USDC/EURC na Arc Testnet
-- [x] PiFilter Gaussiano para scalping de stablecoins
-- [x] Sistema de treinamento autônomo (ArcTraining)
-- [x] Contract Registry com dashboard on-chain
-- [x] Batch Executor com pré-simulação eth_call + contrato próprio
-- [x] RouteVerifier: verificação de rota de venda via Multicall3 antes de comprar
-- [x] ICircuitBreaker: interface unificada (rota + financeiro)
-- [x] Intent Protocol (off-chain + on-chain ERC-8183)
-- [x] OnChainIntentPublisher com auto-sign na Arc testnet
-- [x] Framework Dashboard com métricas de agente
-- [x] **Knowledge Service — Camada de Cognição Compartilhada** (SSOT com 6 fontes, 4 scores, riskScore, confidenceModifier, recomendações)
+`PROJECT_VISION.md` is the source of truth for architecture. `docs/ROADMAP.md` is the source of truth for phase sequencing.
 
-### 🔄 Em Andamento
-- [ ] **Knowledge → Fase 2**: Integrar `frameworkKnowledge.query()` em agentes antes de gerarem Intents
-- [ ] **Knowledge → Fase 3**: Voting usar `confidenceModifier` como peso
-- [ ] **Knowledge → Fase 4**: Audit registrar KnowledgeReport junto com cada decisão
+## Canonical Phase Status
 
-### 🔮 Planejado
-- [ ] **Knowledge → Fase 5**: Publicar hash do KnowledgeReport on-chain com a Intent
-- [ ] **Knowledge → Fase 6 (Memory Service)**: Aprender padrões, sequências de falhas, correlações entre ativos
-- [ ] Migração para Arc Mainnet (aguardando lançamento — verão 2026)
-- [ ] Integração x402 para micropagamentos entre agentes
-- [ ] Arc Privacy Sector para estratégias confidenciais
-- [ ] Agente FX Arbitrage: spread StableFX vs AMM público
-- [ ] Unified Balance (Circle API plano pago)
+This table is the single phase-status reference. `PROJECT_VISION.md` remains the canonical architecture source; this table only tracks implementation maturity.
+
+| Phase | Status | Meaning |
+|-------|--------|---------|
+| Phase 1 - Coordinator core | Implemented / hardening | Coordinator is the public entry point; direct domain entry points are deprecated or internal. |
+| Phase 2 - Knowledge First + Policy gates | Accepted / hardening | Knowledge Service and Policy Engine are runtime gates inside Coordinator. |
+| Phase 3 - Voting Intelligence | Accepted / hardening | `Voting.resolve()` is the canonical consensus authority. |
+| Phase 4 - Audit + Decision Reports | In progress | Every coordinated execution must produce an auditable Decision Report. |
+| Phase 5 - DecisionAnchor | Implemented / hardening | DecisionAnchor anchors the Decision Report hash plus compact metadata. |
+| Phase 6 - Policy Engine | Accepted / hardening | Policy blocks before voting and before execution; scattered rules should continue migrating there. |
+| Phase 7 - SDK | Planned | Public developer API after architecture stabilizes. |
+| Phase 8 - Adapters | In progress | TradingAdapter is first; new domains must be Adapters. |
+| Phase 9-12 - UX, live view, memory, platform | Planned | Product and platform expansion after the framework boundary is stable. |
+
+### Operational Work Already Implemented
+
+- Multi-agent system with consensus and learning.
+- ERC-8004 AgentIdentity deployed on Arc and Base.
+- ERC-8183 job marketplace / AgenticCommerce integrations.
+- Arc Testnet AMM and training infrastructure.
+- Intent publishing and on-chain publishing support.
+- Knowledge Service as the official shared cognition layer.
+- TradingAdapter as the first domain Adapter.
+- DecisionAnchor support for Decision Report hash plus compact metadata.
+
+### Planned Platform Work
+
+- Expand Policy Engine coverage and migrate scattered global rules into it.
+- Harden Decision Reports and anchor metadata.
+- Build SDK and third-party Adapter surface.
+- Add future Adapters such as Lending, Governance, Monitoring, Job Marketplace, and Automation.
 
 ---
+
+## Project Vision
+
+See [PROJECT_VISION.md](PROJECT_VISION.md) for the canonical framework vision and architecture boundary.
 
 ## Documentação
 
@@ -359,15 +508,15 @@ arcflow/
 ### ARC Agent Framework — Pilares
 
 ```
-  Knowledge     — SSOT de cognição compartilhada (Fase 1 ✅, Fases 2-6 em roadmap)
+  Knowledge     — SSOT de cognição compartilhada (Phase 2 implemented; see phase status table)
   Identity      — ERC-8004 AgentIdentity on-chain
   Reputation    — Score, winRate, streak, level por agente
   Intent        — Protocolo off-chain + on-chain (ERC-8183)
   Voting        — Votação ponderada por confiança + conhecimento
-  Coordinator   — Consenso FIFO com score
-  Execution     — Corretor + DEX direto + LI.FI
+  Coordinator   — public orchestration entry point
+  Adapter/Execution — TradingAdapter -> internal Pregão -> Corretor / DEX / LI.FI
   Audit         — Trail completo com lucro/gas/agentes
-  On-chain      — Hash de prova on-chain (Fase 5)
+  DecisionAnchor — Decision Report hash + compact metadata
 ```
 
 ---

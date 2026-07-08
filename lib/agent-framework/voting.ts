@@ -57,24 +57,23 @@ export class Voting {
     }
 
     const approved = relevant.filter(v => v.approved)
-    const rejected = relevant.filter(v => !v.approved)
 
     const weightedSum = approved.reduce((s, v) => {
       return s + this.computeWeightedConfidence(v.confidence, v.reputationWeight, v.knowledgeWeight)
     }, 0)
 
-    const avgConfidence = (weightedSum / Math.max(1, approved.length)) * 100
+    const weightedConfidence = (weightedSum / Math.max(1, relevant.length)) * 100
 
     const hasEnoughVotes = approved.length >= this.minVotes
-    const hasEnoughConf = avgConfidence >= this.minConfidence
+    const hasEnoughConf = weightedConfidence >= this.minConfidence
 
     if (hasEnoughVotes && hasEnoughConf) {
       return {
         proposalId: proposal.id,
         approved: true,
-        confidence: avgConfidence,
+        confidence: weightedConfidence,
         votes: relevant,
-        reason: `Approved: ${approved.length}/${relevant.length} votes, ${avgConfidence.toFixed(1)}% effective confidence (weighted: rep × know)`,
+        reason: `Approved: ${approved.length}/${relevant.length} votes, ${weightedConfidence.toFixed(1)}% effective confidence (weighted by reputation and knowledge, diluted by total voters)`,
       }
     }
 
@@ -82,13 +81,13 @@ export class Voting {
     if (!hasEnoughVotes) {
       reason = `Not enough votes: ${approved.length} approved (min: ${this.minVotes})`
     } else {
-      reason = `Weighted confidence too low: ${avgConfidence.toFixed(1)}% (min: ${this.minConfidence}%)`
+      reason = `Weighted confidence too low: ${weightedConfidence.toFixed(1)}% (min: ${this.minConfidence}%)`
     }
 
     return {
       proposalId: proposal.id,
       approved: false,
-      confidence: avgConfidence,
+      confidence: weightedConfidence,
       votes: relevant,
       reason,
     }

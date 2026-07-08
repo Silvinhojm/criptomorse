@@ -19,7 +19,12 @@ import { stableMR } from "./stable-mr"
 import { timingOptimizer } from "./timing-optimizer"
 import { frameworkKnowledge, frameworkCoordinator } from "./agent-framework/singletons"
 import { TradingAdapter } from "./agent-framework/trading-adapter"
+import { FrameworkAgent } from "./agent-framework/framework-agent-wrapper"
+import type { AgentEvalResult } from "./agent-framework/framework-agent-wrapper"
 import type { AgentProposal } from "./agent-framework/IAgent"
+import { ethers } from "ethers"
+import { checkRouteViaMulticall } from "./route-verifier"
+import { MIN_POOL_RESERVE, DEFAULT_MIN_RESERVE, toRawUnits } from "./config/market-thresholds"
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "EURC"])
 
@@ -264,10 +269,10 @@ export const AGENTE_CORES = [
 export const AGENTE_PARES: Record<string, string[]> = {
   "USDC→EURC": ["Technical", "ArbitrageHunter", "MarketMaker", "Synthesis", "Quantum", "TrendFollower", "MeanReversion"],
   "EURC→USDC": ["Technical", "ArbitrageHunter", "MarketMaker", "Synthesis", "Quantum", "TrendFollower", "MeanReversion"],
-  "USDC→cirBTC": ["BTCTrader", "Liquidator", "MomentumTrader", "Synthesis", "Technical", "TrendFollower", "Quantum"],
+  // cirBTC: BUY bloqueado (pool USDC/cirBTC com liquidez simbólica — anti-pattern "walled garden")
+  // SELL permitido apenas com validação forte de liquidez real (ver receberOK)
   "cirBTC→USDC": ["BTCTrader", "Liquidator", "MomentumTrader", "Synthesis", "Technical", "TrendFollower", "Quantum"],
 
-  "EURC→cirBTC": ["ArbitrageHunter", "MarketMaker", "BTCTrader", "Synthesis", "Technical"],
   "cirBTC→EURC": ["ArbitrageHunter", "MarketMaker", "BTCTrader", "Synthesis", "Technical"],
 
   "USDC→USDT": ["ArbitrageHunter", "MarketMaker", "Synthesis"],
@@ -292,6 +297,39 @@ function agentAssigned(agentName: string, pairLabel: string): boolean {
     return defaultAgents.includes(agentName)
   }
   return pairs.includes(agentName)
+}
+
+let _agentsRegistered = false
+function createAgentEvaluator(agentName: string): (pair: string, network: string, action?: string) => AgentEvalResult | null {
+  return (pair, _network, action) => {
+    if (!agentAssigned(agentName, pair)) return null
+    const params = parametrosRobos.get(agentName)
+    const direction = action === "sell" ? "sell" : "buy"
+    const confidence = Math.max(params.confiancaMinima, 60)
+    return {
+      confidence,
+      action: direction,
+      reason: `${agentName} avalia ${pair} (conf:${confidence}%)`,
+    }
+  }
+}
+function registerFrameworkAgentsOnce(): void {
+  if (_agentsRegistered) return
+  _agentsRegistered = true
+  for (const { nome } of AGENTES_NOMES) {
+    const agent = new FrameworkAgent({
+      agentId: `Agente:${nome}`,
+      name: nome,
+      version: "1.0",
+      level: 1,
+      canExecuteSolo: false,
+      maxAmountUSD: 20,
+      evaluatePair: createAgentEvaluator(nome),
+      cooldownMs: 60_000,
+    })
+    frameworkCoordinator.registerAgent(agent)
+  }
+  console.log(`[FRAMEWORK] 🧠 ${AGENTES_NOMES.length} agentes registrados no Coordinator`)
 }
 
 const priceFetchCache = new Map<string, { price: number; ts: number }>()
@@ -496,6 +534,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     pregão.injetarSinal(signal)
   })
   frameworkCoordinator.setExecutor(tradingAdapter)
+  registerFrameworkAgentsOnce()
   const _frameworkReady = true
 
   interface AgreedPairCandidates {
@@ -585,6 +624,23 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         }
       } catch {
         // Knowledge Service indisponível — permite a ordem seguir sem modificação
+      }
+    }
+
+    // 🛡️ Validação forte: cirBTC sell na Arc requer pool com liquidez real (> $10 USDC)
+    if (signal.rede === "arc" && signal.fromToken === "cirBTC" && signal.direcao === "sell") {
+      try {
+        const arcProvider = new ethers.JsonRpcProvider(NETWORKS.arc.rpcUrl)
+        const minReserveHuman = MIN_POOL_RESERVE[signal.rede]?.[signal.fromToken] ?? DEFAULT_MIN_RESERVE
+        const minReserveRaw = toRawUnits(minReserveHuman, 6) // USDC (token0 da pool) tem 6 decimais
+        const route = await checkRouteViaMulticall(arcProvider, NETWORKS.arc.chainId, NETWORKS.arc.tokens.cirBTC, minReserveRaw)
+        if (!route.hasRoute) {
+          pregão.adicionarLog(`[ROUTE] 🛑 ${signal.pregueiro} → ${signal.par} bloqueado: pool USDC/cirBTC sem liquidez real na Arc`)
+          return
+        }
+      } catch {
+        pregão.adicionarLog(`[ROUTE] ⚠️ ${signal.pregueiro} → ${signal.par} — erro verificando liquidez, bloqueando por segurança`)
+        return
       }
     }
 

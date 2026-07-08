@@ -5,11 +5,11 @@
 import { realSwap, isStable, type NetworkKey, type TokenSymbol } from "./real-swap-executor";
 import { blockIfPanicked } from "./circuit-breaker";
 import { saveTradeHistory, loadTradeHistory, saveTraderState, loadTraderState } from "./persistence";
-import { positionManager } from "./position-manager";
 import { feeMonetization } from "./fee-monetization";
 import { transactionMemos } from "./transaction-memos";
 import { arcMicroTrader } from "./arc-micro-trader";
 import { ethers } from "ethers";
+import { submeterSinalAoCoordinator } from "./pregão";
 
 export interface TradeRecord {
   id: string;
@@ -144,61 +144,21 @@ class RealAutomatedTrader {
     const isTestnet = realSwap.isTestnet();
     if (best && (isStable(best.pair.to) && isStable(best.pair.from))) {
       this.log(`Melhor par: ${best.pair.label} | lucro esperado: $${best.expectedProfit.toFixed(4)} via ${best.route}`);
-      const result = await this._executeSwap(best.pair.from, best.pair.to, adjustedTrade.netAmount);
-      const profit = (result.profit ?? 0) - (isTestnet ? 0 : adjustedTrade.fee);
-      if (result.success) {
-        this.log(`Trade concluido! Lucro: $${profit.toFixed(4)} (fee: $${adjustedTrade.fee.toFixed(4)})`);
-        const memo = transactionMemos.createTradeMemo(id, 'RealTrader', { pair: best.pair.label, fee: adjustedTrade.fee.toFixed(4) });
-        this.log(`📝 Memo: ${memo.hex.slice(0, 30)}...`);
-      } else { this.log(`Trade falhou: ${result.message}`); }
-      this.totalProfit += profit;
       this.lastAction = `${best.pair.from}->${best.pair.to} $${adjustedTrade.netAmount}`;
-      const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: adjustedTrade.netAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: `${result.message} | fee: $${adjustedTrade.fee.toFixed(4)}`, timestamp, confirmed: result.confirmed, networkKey: this.networkKey };
-      this.tradeHistory.push(record); this._persist(); this.notifyTrade(record);
-      return record;
+      if (!isTestnet) transactionMemos.createTradeMemo(id, 'RealTrader', { pair: best.pair.label, fee: adjustedTrade.fee.toFixed(4) });
+      return this._submitPendingTrade(id, "BUY", best.pair.from, best.pair.to, adjustedTrade.netAmount, timestamp, `Coordinator proposal submitted | fee: $${adjustedTrade.fee.toFixed(4)}`);
     }
 
     if (best && !isStable(best.pair.to)) {
       this.log(`Par volatil: ${best.pair.label} — comprando e abrindo posicao`);
-      const result = await this._executeSwap(best.pair.from, best.pair.to, adjustedTrade.netAmount);
-      if (result.success) {
-        if (result.toAmount <= 0) {
-          this.log(`⚠️ Swap executou mas toAmount = ${result.toAmount} — pulando registro de posição`);
-          return { id, action: "BUY" as const, fromToken: best.pair.from, toToken: best.pair.to, fromAmount: tradeAmount, toAmount: 0, profit: 0, txHash: result.txHash, explorerUrl: result.explorerUrl, message: "toAmount zero", timestamp, confirmed: false, networkKey: this.networkKey };
-        }
-        const volatileToken = best.pair.to;
-        const paidToken = best.pair.from;
-        const currentPrice = result.toAmount > 0
-          ? tradeAmount / result.toAmount
-          : await positionManager.fetchTokenPrice(volatileToken);
-        positionManager.openPosition(this.networkKey, volatileToken, paidToken, result.toAmount, tradeAmount, currentPrice);
-        this.log(`Posicao ${volatileToken} aberta: ${result.toAmount.toFixed(6)} @ $${currentPrice.toFixed(2)} (entrada real via swap)`);
-      }
-      const profit = 0;
-      this.totalProfit += profit;
       this.lastAction = `BUY $${tradeAmount} ${best.pair.to} (posicao)`;
-      const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: tradeAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: result.message, timestamp, confirmed: result.confirmed ?? false, networkKey: this.networkKey };
-      this.tradeHistory.push(record); this._persist(); this.notifyTrade(record);
-      return record;
+      return this._submitPendingTrade(id, "BUY", best.pair.from, best.pair.to, adjustedTrade.netAmount, timestamp, "Coordinator proposal submitted for volatile position entry");
     }
 
     if (best && !isStable(best.pair.from) && isStable(best.pair.to)) {
       this.log(`Fechando posicao: ${best.pair.from}→${best.pair.to}`);
-      const result = await this._executeSwap(best.pair.from, best.pair.to, tradeAmount);
-      const profit = result.profit ?? 0;
-      if (result.success) {
-        this.log(`Posicao fechada! Lucro: $${profit.toFixed(4)}`);
-        const pos = positionManager.getOpenPositions().find(p => p.boughtToken === best.pair.from && p.status === "open");
-        if (pos) {
-          const currentPrice = await positionManager.fetchTokenPrice(best.pair.from);
-          positionManager.closePosition(pos.id, currentPrice);
-        }
-      }
-      this.totalProfit += profit;
       this.lastAction = `CLOSE ${best.pair.from}→${best.pair.to}`;
-      const record: TradeRecord = { id, action: "SELL", fromToken: result.fromToken, toToken: result.toToken, fromAmount: tradeAmount, toAmount: result.toAmount, profit, txHash: result.txHash, explorerUrl: result.explorerUrl, message: result.message, timestamp, confirmed: result.confirmed ?? false, networkKey: this.networkKey };
-      this.tradeHistory.push(record); this._persist(); this.notifyTrade(record);
-      return record;
+      return this._submitPendingTrade(id, "SELL", best.pair.from, best.pair.to, tradeAmount, timestamp, "Coordinator proposal submitted for position close");
     }
 
     // Nenhum par viavel — fallback
@@ -218,15 +178,9 @@ class RealAutomatedTrader {
         const amount = Math.min(tradeAmount, bal * 0.95);
         if (amount < 1) continue;
         this.log(`Fallback: ${stable}→${target} ($${amount.toFixed(2)}, trailing stop)`);
-        const result = await this._executeSwap(stable, target, amount);
-        if (!result.success) continue;
-        const targetPrice = await positionManager.fetchTokenPrice(target);
-        positionManager.openPosition(this.networkKey, target, stable, result.toAmount, amount, targetPrice);
-        this.log(`Posicao ${target} aberta: ${result.toAmount.toFixed(6)} @ $${targetPrice.toFixed(2)}`);
-        const record: TradeRecord = { id, action: "BUY", fromToken: result.fromToken, toToken: result.toToken, fromAmount: amount, toAmount: result.toAmount, profit: 0, txHash: result.txHash, explorerUrl: result.explorerUrl, message: `${target} position @ $${targetPrice.toFixed(2)}`, timestamp, confirmed: result.confirmed ?? false, networkKey: this.networkKey };
-        this.tradeHistory.push(record); this._persist(); this.notifyTrade(record);
+        const record = await this._submitPendingTrade(id, "BUY", stable, target, amount, timestamp, "Coordinator proposal submitted for fallback position entry");
         bought = true;
-        break;
+        return record;
       }
       if (bought) break;
     }
@@ -245,33 +199,46 @@ class RealAutomatedTrader {
     await saveTraderState({ totalProfit: this.totalProfit, lastAction: this.lastAction });
   }
 
-  private async _executeSwap(from: string, to: string, amount: number): Promise<any> {
-    if (this.autoSignMode) {
-      this.log(`🔄 Enviando swap via servidor: ${from}→${to} $${amount}`);
-      try {
-        const res = await fetch("/api/swap/execute", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fromToken: from, toToken: to, amountUsd: amount, network: this.networkKey }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          this.log(`❌ Servidor: ${data.error || "erro"}`);
-          return { success: false, message: data.error || "Erro no servidor", fromAmount: amount, toAmount: 0, profit: 0, txHash: "", explorerUrl: "", confirmed: false };
-        }
-        this.log(`✅ Servidor: ${data.message || "swap concluido"} | TX: ${data.txHash?.slice(0, 10)}...`);
-        return {
-          success: true, txHash: data.txHash, explorerUrl: data.explorerUrl,
-          fromToken: data.fromToken || from, toToken: data.toToken || to,
-          fromAmount: amount, toAmount: data.toAmount ?? 0, confirmed: true,
-          profit: data.profit ?? 0, message: data.message || "Swap via servidor",
-        };
-      } catch (err: any) {
-        this.log(`❌ Erro ao chamar servidor: ${err.message}`);
-        return { success: false, message: err.message, fromAmount: amount, toAmount: 0, profit: 0, txHash: "", explorerUrl: "", confirmed: false };
-      }
-    }
-    return realSwap.executeSwap(from as any, to as any, amount, (m: string) => this.log(m));
+  private async _submitPendingTrade(
+    id: string,
+    action: "BUY" | "SELL",
+    from: string,
+    to: string,
+    amount: number,
+    timestamp: number,
+    message: string,
+  ): Promise<TradeRecord> {
+    const accepted = await submeterSinalAoCoordinator({
+      pregueiro: "RealAutomatedTrader",
+      rede: this.networkKey,
+      par: `${from}→${to}`,
+      confianca: 70,
+      timestamp,
+      fromToken: from,
+      toToken: to,
+      amountUsd: amount,
+      direcao: action === "SELL" ? "sell" : "buy",
+    })
+
+    const record: TradeRecord = {
+      id,
+      action: accepted ? action : "HOLD",
+      fromToken: from,
+      toToken: to,
+      fromAmount: amount,
+      toAmount: 0,
+      profit: 0,
+      txHash: "",
+      explorerUrl: "",
+      message: accepted ? `PENDING - ${message}` : "Coordinator rejected proposal",
+      timestamp,
+      confirmed: false,
+      networkKey: this.networkKey,
+    };
+    this.tradeHistory.push(record);
+    this._persist();
+    this.notifyTrade(record);
+    return record;
   }
 
   startAutomatedTrading(intervalSeconds = 30, tradeAmount = 5) {
@@ -356,31 +323,15 @@ class RealAutomatedTrader {
       return this._holdRecord(id, profitCheck.reason, timestamp);
     }
 
-    const result = await arcMicroTrader.executeMicroTrade("USDC", "EURC", tradeAmount, `auto_micro_${id}`);
-    this.totalProfit += result.profit;
-
-    if (result.success && result.profit > 0) {
-      const memoPreview = result.memoHex ? `📝 memo:${result.memoHex.slice(0, 20)}...` : '';
-      this.log(`✅ Micro-trade lucro: $${result.profit.toFixed(6)} | gas: $${result.gasUsed.toFixed(4)} | ${memoPreview}`);
-    } else {
-      this.log(`❌ Micro-trade falhou: ${result.message}`);
-    }
-
-    const record: TradeRecord = {
-      id, action: result.success ? "BUY" : "HOLD",
-      fromToken: "USDC", toToken: "EURC",
-      fromAmount: tradeAmount, toAmount: tradeAmount + result.profit,
-      profit: result.profit, txHash: result.txHash,
-      explorerUrl: result.explorerUrl,
-      message: `micro: $${result.profit.toFixed(6)} | gas $${result.gasUsed.toFixed(4)}`,
-      timestamp, confirmed: result.confirmed,
-      networkKey: this.networkKey,
-    };
-
-    this.tradeHistory.push(record);
-    this._persist();
-    this.notifyTrade(record);
-    return record;
+    return this._submitPendingTrade(
+      id,
+      "BUY",
+      "USDC",
+      "EURC",
+      tradeAmount,
+      timestamp,
+      `Coordinator proposal submitted for micro-trade | expected ${profitCheck.reason}`,
+    );
   }
 
   async startMicroTrading(intervalSeconds = 15, tradeAmount = 2) {

@@ -68,8 +68,8 @@ private detectSqueeze(ps: PairState): boolean {
   const std = Math.sqrt(variance)
   const bw = 2 * BOLLINGER_STDDEV * std / mean
 
-  // Keltner: pseudoATR longo (100 períodos)
-  const kw = 2 * KELTNER_ATR_MULT * ps.pseudoATRLong / mean
+  // Keltner: pseudoATR curto (20 períodos), mesma janela da leitura Bollinger
+  const kw = 2 * KELTNER_ATR_MULT * ps.pseudoATRShort / mean
 
   return bw < kw  // squeeze ativo
 }
@@ -162,3 +162,22 @@ verificarOrdem()                  executarPacotes()
 | 1 — Shadow | ✅ Ativo | Score retorna 0. Apenas logs. |
 | 2 — Validação | ⏳ | Score ativo. Monitorar acertos por ~7 dias. |
 | 3 — Ativo | ⏳ | Operação irrestrita. |
+
+## Alinhamento Arquitetural Futuro
+
+O papel futuro recomendado para o Arqueiro é **Opportunity Scout / Pre-Intent Router**. Ele pode observar compressão, squeeze, timing e zonas de foco, mas não deve executar, aprovar, votar ou alterar a confiança final depois do Coordinator/Voting.
+
+Fluxo alvo:
+
+```text
+Arqueiro detecta candidato
+  -> ScoutSignal / OpportunityCandidate
+  -> Knowledge Service valida contexto
+  -> Coordinator recebe proposta
+  -> Policy Engine verifica risco/gas/capital
+  -> Voting Engine resolve consenso
+  -> Adapter executa somente se aprovado
+  -> Audit / DecisionReport registra o resultado
+```
+
+Enquanto estiver em Shadow, `getScore()` retorna `0`; os dados devem ser tratados como observacionais. Qualquer ativação futura deve preservar `executionAllowed: false` nos sinais do Arqueiro e manter a execução exclusivamente no ciclo canônico do ArcFlow.

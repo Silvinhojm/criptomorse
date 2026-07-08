@@ -164,6 +164,7 @@ export function FrameworkDashboard() {
             intents.map(r => {
               const dr = r.decisionReport
               const isOpen = selectedIntent === r.intent.id
+              const executionIsProvisional = dr?.execution?.isProvisional === true || dr?.execution?.settlementStatus === "dispatched"
               return (
                 <div key={r.intent.id} style={{
                   padding: "6px 0", borderBottom: `1px solid ${BORDER}`, fontSize: 10,
@@ -240,10 +241,10 @@ export function FrameworkDashboard() {
                       </div>
                       {dr.execution ? (
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 12px" }}>
-                          <span>Status <b style={{ color: dr.execution.success ? GREEN : RED }}>{dr.execution.success ? "✅ Success" : "❌ Failed"}</b></span>
+                          <span>Status <b style={{ color: executionIsProvisional ? YELLOW : dr.execution.success ? GREEN : RED }}>{executionIsProvisional ? "Dispatched / provisional" : dr.execution.success ? "✅ Success" : "❌ Failed"}</b></span>
                           <span>Adapter <b style={{ color: TEXT_PRIMARY }}>{dr.execution.adapter}</b></span>
-                          <span>Profit <b style={{ color: dr.execution.profit >= 0 ? GREEN : RED }}>${dr.execution.profit.toFixed(4)}</b></span>
-                          <span>Gas <b style={{ color: TEXT_PRIMARY }}>${dr.execution.gasCost.toFixed(4)}</b></span>
+                          <span>Profit{executionIsProvisional ? " (provisional)" : ""} <b style={{ color: executionIsProvisional ? TEXT_MUTED : dr.execution.profit >= 0 ? GREEN : RED }}>${dr.execution.profit.toFixed(4)}</b></span>
+                          <span>Gas{executionIsProvisional ? " (provisional)" : ""} <b style={{ color: executionIsProvisional ? TEXT_MUTED : TEXT_PRIMARY }}>${dr.execution.gasCost.toFixed(4)}</b></span>
                           <span>Duration <b style={{ color: TEXT_PRIMARY }}>{dr.execution.durationMs}ms</b></span>
                           {dr.execution.txHash && <span>Tx <b style={{ color: ACCENT, fontFamily: "monospace" }}>{dr.execution.txHash.slice(0, 16)}...</b></span>}
                           {dr.execution.errorMsg && <span style={{ color: RED, gridColumn: "span 2" }}>❌ {dr.execution.errorMsg}</span>}

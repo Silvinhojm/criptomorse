@@ -5,6 +5,8 @@
 
 ---
 
+> Historical implementation note: this document preserves the trading-era construction plan and migration notes. It is not the canonical architecture source. `PROJECT_VISION.md` is canonical. Any mention of Pregão as central means internal TradingAdapter machinery in the current architecture.
+
 ## 1. IDENTIDADE DO PROJETO
 
 ### O que é
@@ -49,7 +51,7 @@ arcflow/
 │   ├── api/                      ← API routes (proxies)
 │   └── page.tsx                  ← Página principal
 ├── lib/                          ← Core (será extraído)
-│   ├── pregão.ts                 ← Orquestrador central (1040 linhas)
+│   ├── pregão.ts                 ← internal TradingAdapter machinery (historically central; 1040 linhas)
 │   ├── agentes-do-pregão.ts      ← 13 agentes + votação
 │   ├── professor.ts              ← Aprendizado e recalibração
 │   ├── capital-controller.ts     ← 1 agente por vez

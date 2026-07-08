@@ -8,6 +8,14 @@ export interface ExecutionResult {
   profit?: number
   errorMsg?: string
   gasCost?: number
+  correlationId?: string
+  intentId?: string
+  proposalId?: string
+  decisionReportId?: string
+  ordemId?: string
+  dispatchStatus?: "dispatched" | "failed"
+  settlementStatus?: "dispatched" | "submitted" | "confirmed" | "failed" | "settled" | "reconciled"
+  isProvisional?: boolean
   details?: Record<string, unknown>
 }
 
