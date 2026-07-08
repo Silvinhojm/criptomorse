@@ -7,7 +7,7 @@ import type { IIntentPublisher, IntentStatus } from "./intent-types"
 import type { DecisionReport } from "./decision-report"
 import { Voting, type VoteResult } from "./voting"
 import { Audit } from "./audit"
-import { frameworkReputation, frameworkKnowledge } from "./singletons"
+import { frameworkReputation, frameworkKnowledge, frameworkSettlementRegistry } from "./singletons"
 import { IntentDeduplicator } from "./intent-deduplicator"
 import { PolicyEngine, type PolicyEngineConfig } from "./policy-engine"
 
@@ -409,6 +409,22 @@ export class Coordinator implements ICoordinator {
     if (isProvisionalDispatch && executionResult.success) {
       this._transitionIntent(intentId, "EXECUTING")
       dp.onChainStatus = "skipped"
+      this._registerPendingSettlement({
+        correlationId: executionResult.correlationId ?? settlementCorrelationId,
+        intentId: executionResult.intentId ?? intentId,
+        proposalId: executionResult.proposalId ?? proposal.id,
+        decisionReportId: executionResult.decisionReportId ?? dp.id,
+        ordemId: executionResult.ordemId,
+        fromToken: proposal.params?.fromToken as string | undefined,
+        toToken: proposal.params?.toToken as string | undefined,
+        timestamp: Date.now(),
+        isTradingAdapter: this.executor_.name === "TradingAdapter",
+        isSuccessful: executionResult.success === true,
+        isAcceptedDispatch: executionResult.dispatchStatus === "dispatched",
+        isDispatchedSettlement: executionResult.settlementStatus === "dispatched",
+        isProvisional: executionResult.isProvisional === true,
+        synthetic: executionResult.details?.synthetic === true,
+      })
     } else {
       this._transitionIntent(intentId, executionResult.success ? "COMPLETED" : "FAILED")
     }
@@ -662,6 +678,22 @@ export class Coordinator implements ICoordinator {
           if (isProvisionalDispatch && result.success) {
             // IntentStatus has no PENDING_SETTLEMENT yet; keep cycle intents non-final while settlement is pending.
             this._transitionIntent(cycleIntentId, "EXECUTING")
+            this._registerPendingSettlement({
+              correlationId: result.correlationId ?? cycleIntentId,
+              intentId: result.intentId ?? cycleIntentId,
+              proposalId: result.proposalId ?? proposal.id,
+              decisionReportId: result.decisionReportId ?? cycleDecisionReportId,
+              ordemId: result.ordemId,
+              fromToken: proposal.params?.fromToken as string | undefined,
+              toToken: proposal.params?.toToken as string | undefined,
+              timestamp: Date.now(),
+              isTradingAdapter: this.executor_.name === "TradingAdapter",
+              isSuccessful: result.success === true,
+              isAcceptedDispatch: result.dispatchStatus === "dispatched",
+              isDispatchedSettlement: result.settlementStatus === "dispatched",
+              isProvisional: result.isProvisional === true,
+              synthetic: result.details?.synthetic === true,
+            })
           } else {
             this._transitionIntent(cycleIntentId, result.success ? "COMPLETED" : "FAILED")
           }
@@ -783,6 +815,44 @@ export class Coordinator implements ICoordinator {
   }
 
   // ── Policy checks ──
+
+  private _registerPendingSettlement(args: {
+    correlationId: string
+    intentId: string
+    proposalId: string
+    decisionReportId: string
+    ordemId?: string
+    fromToken?: string
+    toToken?: string
+    timestamp: number
+    isTradingAdapter: boolean
+    isSuccessful: boolean
+    isAcceptedDispatch: boolean
+    isDispatchedSettlement: boolean
+    isProvisional: boolean
+    synthetic: boolean
+  }): void {
+    if (!args.correlationId || !args.isTradingAdapter || !args.isSuccessful || !args.isAcceptedDispatch || !args.isDispatchedSettlement || !args.isProvisional) return
+
+    const record = frameworkSettlementRegistry.registerPending({
+      settlementId: `settlement_${args.correlationId}`,
+      correlationId: args.correlationId,
+      intentId: args.intentId,
+      proposalId: args.proposalId,
+      decisionReportId: args.decisionReportId,
+      ordemId: args.ordemId,
+      adapter: "trading",
+      status: "dispatched",
+      canonicalSettlement: false,
+      synthetic: args.synthetic,
+      source: "coordinator",
+      fromToken: args.fromToken,
+      toToken: args.toToken,
+      timestamp: args.timestamp,
+    })
+
+    console.log(`[${this.name}] Settlement pending registered correlation:${record.correlationId}`)
+  }
 
   private _checkPreVotePolicy(proposal: AgentProposal): { allowed: boolean; reason: string } {
     const network = proposal.params?.rede as string | undefined
