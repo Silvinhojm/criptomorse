@@ -825,49 +825,50 @@ export default function Home() {
     <DashboardShell account={account} networkName={currentNetwork.name} isTestnet={currentNetwork.isTestnet} currentNetworkKey={currentNetworkKey} onNetworkChange={handleNetworkKeyChange} onConnect={connect}>
       <Toaster position="top-center" />
 
-      {/* Tabs de Navegação */}
-      <div className="flex gap-2 mb-4 overflow-x-auto pb-1" style={{ borderBottom: `1px solid rgba(148,163,184,0.15)` }}>
-        {[
-          { key: "send" as const, label: "✈️ Enviar" },
-          { key: "bridge" as const, label: "🔄 Bridge/Swap" },
-          { key: "jobs" as const, label: "💼 Jobs" },
-          { key: "history" as const, label: "📜 Histórico" },
-          { key: "agents" as const, label: "🤖 Robôs" },
-        ].map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)}
-            className="text-xs font-medium px-3 py-2 rounded-t-lg transition-colors whitespace-nowrap"
-            style={{
-              background: tab === t.key ? "rgba(74,158,255,0.15)" : "transparent",
-              color: tab === t.key ? "#4A9EFF" : "#94a3b8",
-              borderBottom: tab === t.key ? "2px solid #4A9EFF" : "2px solid transparent",
-            }}>
-            {t.label}
-          </button>
-        ))}
-        {account && (
-          <button onClick={connect} className="text-xs font-medium px-3 py-2 ml-auto whitespace-nowrap"
-            style={{ color: "#00D4AA" }}>
-            🟢 {short(account)}
-          </button>
-        )}
-      </div>
-
-      {/* Conteúdo das Tabs */}
-      {tab === "send" && (
-        <div className="rounded-xl p-4" style={{ background: "#1E2128", border: "1px solid rgba(148,163,184,0.15)" }}>
-          <input value={dest} onChange={e => setDest(e.target.value)} placeholder="Destino (0x...)"
-            className="w-full p-2.5 rounded-lg text-sm mb-3 outline-none"
-            style={{ background: "#0A0B0E", border: "1px solid rgba(148,163,184,0.15)", color: "#F1F5F9" }} />
-          <input value={amount} onChange={e => setAmount(e.target.value)} type="number" placeholder="Valor"
-            className="w-full p-2.5 rounded-lg text-sm mb-3 outline-none"
-            style={{ background: "#0A0B0E", border: "1px solid rgba(148,163,184,0.15)", color: "#F1F5F9" }} />
-          <button onClick={account ? send : connect} disabled={sending}
-            className="w-full py-3 rounded-xl font-semibold text-sm transition-all duration-200 hover:brightness-110"
-            style={{ background: currentNetwork.isTestnet ? "#e05a3a" : "#00D4AA", color: "#fff" }}>
-            {sending ? "Enviando..." : account ? `Transferir USDC (${currentNetwork.shortName})` : "Conectar carteira"}
-          </button>
+      <SectionMatch section="operator">
+        {/* Tabs de Navegação */}
+        <div className="flex gap-2 mb-4 overflow-x-auto pb-1" style={{ borderBottom: `1px solid rgba(148,163,184,0.15)` }}>
+          {[
+            { key: "send" as const, label: "Enviar" },
+            { key: "bridge" as const, label: "Bridge/Swap" },
+            { key: "jobs" as const, label: "Jobs" },
+            { key: "history" as const, label: "Historico" },
+            { key: "agents" as const, label: "Agentes" },
+          ].map(t => (
+            <button key={t.key} onClick={() => setTab(t.key)}
+              className="text-xs font-medium px-3 py-2 rounded-t-lg transition-colors whitespace-nowrap"
+              style={{
+                background: tab === t.key ? "rgba(74,158,255,0.15)" : "transparent",
+                color: tab === t.key ? "#4A9EFF" : "#94a3b8",
+                borderBottom: tab === t.key ? "2px solid #4A9EFF" : "2px solid transparent",
+              }}>
+              {t.label}
+            </button>
+          ))}
+          {account && (
+            <button onClick={connect} className="text-xs font-medium px-3 py-2 ml-auto whitespace-nowrap"
+              style={{ color: "#00D4AA" }}>
+              {short(account)}
+            </button>
+          )}
         </div>
-      )}
+
+        {/* Conteúdo das Tabs */}
+        {tab === "send" && (
+          <div className="rounded-xl p-4" style={{ background: "#1E2128", border: "1px solid rgba(148,163,184,0.15)" }}>
+            <input value={dest} onChange={e => setDest(e.target.value)} placeholder="Destino (0x...)"
+              className="w-full p-2.5 rounded-lg text-sm mb-3 outline-none"
+              style={{ background: "#0A0B0E", border: "1px solid rgba(148,163,184,0.15)", color: "#F1F5F9" }} />
+            <input value={amount} onChange={e => setAmount(e.target.value)} type="number" placeholder="Valor"
+              className="w-full p-2.5 rounded-lg text-sm mb-3 outline-none"
+              style={{ background: "#0A0B0E", border: "1px solid rgba(148,163,184,0.15)", color: "#F1F5F9" }} />
+            <button onClick={account ? send : connect} disabled={sending}
+              className="w-full py-3 rounded-xl font-semibold text-sm transition-all duration-200 hover:brightness-110"
+              style={{ background: currentNetwork.isTestnet ? "#e05a3a" : "#00D4AA", color: "#fff" }}>
+              {sending ? "Enviando..." : account ? `Transferir USDC (${currentNetwork.shortName})` : "Conectar carteira"}
+            </button>
+          </div>
+        )}
 
       {tab === "bridge" && (
         <div className="rounded-xl p-6 text-center" style={{ background: "#1E2128", border: "1px solid rgba(148,163,184,0.15)" }}>
@@ -904,22 +905,23 @@ export default function Home() {
 
       {tab === "agents" && account && (
         <div className="py-4 text-center text-xs" style={{ color: "#64748b" }}>
-          🤖 Robôs traders rodando nos painéis abaixo
+          Agentes operacionais aparecem nos painéis abaixo.
         </div>
       )}
+      </SectionMatch>
 
       {/* Seções de Trading */}
       {account && (
         <div className="space-y-4 mt-4">
-          <SectionMatch section="bot"><BotBank /></SectionMatch>
-          <SectionMatch section="bridge"><BridgeWidget userAddress={account} /></SectionMatch>
-          <SectionMatch section="trading"><RealAutomatedTrader account={account} currentNetwork={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} /></SectionMatch>
-          <SectionMatch section="payments"><NanopaymentDashboard agentScores={agentScores} /></SectionMatch>
-          <SectionMatch section="trading"><PregãoDashboard rede={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} /></SectionMatch>
-          <SectionMatch section="trading"><ArqueiroPanel /></SectionMatch>
-          <SectionMatch section="classroom"><SalaDeAula /></SectionMatch>
-          <SectionMatch section="faucet"><FaucetPanel rede={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} /></SectionMatch>
-          <SectionMatch section="framework"><FrameworkDashboard /></SectionMatch>
+          <SectionMatch section="operator"><BotBank /></SectionMatch>
+          <SectionMatch section="operator"><BridgeWidget userAddress={account} /></SectionMatch>
+          <SectionMatch section="operator"><RealAutomatedTrader account={account} currentNetwork={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} /></SectionMatch>
+          <SectionMatch section="operator"><NanopaymentDashboard agentScores={agentScores} /></SectionMatch>
+          <SectionMatch section="operator"><PregãoDashboard rede={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} /></SectionMatch>
+          <SectionMatch section="operator"><FaucetPanel rede={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} /></SectionMatch>
+          <SectionMatch section="debug"><ArqueiroPanel /></SectionMatch>
+          <SectionMatch section="debug"><SalaDeAula /></SectionMatch>
+          <SectionMatch section="debug"><FrameworkDashboard /></SectionMatch>
         </div>
       )}
 
