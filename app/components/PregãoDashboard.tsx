@@ -77,7 +77,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
 
   const addLog = useCallback((msg: string) => {
     setLogs(prev => [...prev.slice(-99), `[${new Date().toLocaleTimeString()}] ${msg}`])
-    if (msg.includes("✅ ORDEM CONCLUÍDA")) {
+    if (msg.includes("✅ ORDEM CONCLUÍDA") && !msg.includes("0x00000000")) {
       const m = msg.match(/ORDEM CONCLUÍDA: (\S+) \|.*Lucro: \$([-\d.]+)/)
       if (m) narrador.ordemExecutada(m[1], parseFloat(m[2]))
     } else if (msg.includes("🚫 Confiança")) {

@@ -24,11 +24,20 @@ export interface TradeSignal {
   }
 }
 
+export interface TradeDispatchResult {
+  accepted: boolean
+  orderCreated?: boolean
+  ordemId?: string
+  reason?: string
+}
+
+type TradeExecutor = (signal: TradeSignal) => TradeDispatchResult | void
+
 export class TradingAdapter implements IExecutor {
   readonly name = "TradingAdapter"
-  private executeTrade: (signal: TradeSignal) => void
+  private executeTrade: TradeExecutor
 
-  constructor(executeTrade: (signal: TradeSignal) => void) {
+  constructor(executeTrade: TradeExecutor) {
     this.executeTrade = executeTrade
   }
 
@@ -71,7 +80,39 @@ export class TradingAdapter implements IExecutor {
         },
       }
 
-      this.executeTrade(signal)
+      const dispatchResult = this.executeTrade(signal)
+      const dispatchRejected = dispatchResult &&
+        (dispatchResult.accepted === false || dispatchResult.orderCreated === false)
+
+      if (dispatchRejected) {
+        const reason = dispatchResult.reason ?? "Pregão rejected dispatch"
+        return {
+          success: false,
+          action: proposal.action,
+          profit: 0,
+          gasCost: 0,
+          errorMsg: reason,
+          correlationId,
+          intentId,
+          proposalId,
+          decisionReportId,
+          ordemId: dispatchResult.ordemId,
+          dispatchStatus: "failed",
+          settlementStatus: "failed",
+          isProvisional: false,
+          details: {
+            correlationId,
+            intentId,
+            proposalId,
+            decisionReportId,
+            ordemId: dispatchResult.ordemId,
+            dispatchStatus: "failed",
+            settlementStatus: "failed",
+            isProvisional: false,
+            reason,
+          },
+        }
+      }
 
       return {
         success: true,
@@ -82,6 +123,7 @@ export class TradingAdapter implements IExecutor {
         intentId,
         proposalId,
         decisionReportId,
+        ordemId: dispatchResult?.ordemId,
         dispatchStatus: "dispatched",
         settlementStatus: "dispatched",
         isProvisional: true,
@@ -90,6 +132,7 @@ export class TradingAdapter implements IExecutor {
           intentId,
           proposalId,
           decisionReportId,
+          ordemId: dispatchResult?.ordemId,
           dispatchStatus: "dispatched",
           settlementStatus: "dispatched",
           isProvisional: true,

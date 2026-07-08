@@ -109,7 +109,7 @@ function traduzirLog(msg: string): FeedItem | null {
     id: crypto.randomUUID(), text: "📦 Os robôs aprovaram uma movimentação. Aguardando execução...",
     type: "info", timestamp: Date.now(),
   }
-  if (msg.includes("✅ ORDEM CONCLUÍDA")) {
+  if (msg.includes("✅ ORDEM CONCLUÍDA") && !msg.includes("0x00000000")) {
     const m = msg.match(/Lucro: \$([-\d.]+)/)
     if (m) {
       const lucro = parseFloat(m[1])

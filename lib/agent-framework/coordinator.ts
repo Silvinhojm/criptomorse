@@ -383,6 +383,8 @@ export class Coordinator implements ICoordinator {
     const executionResult = await this.executor_.execute(proposal)
     const execDuration = Date.now() - execStart
     const isProvisionalDispatch = executionResult.isProvisional === true || executionResult.settlementStatus === "dispatched" || executionResult.details?.isProvisional === true || executionResult.details?.settlementStatus === "dispatched"
+    const isAdapterDispatchFailure = executionResult.dispatchStatus === "failed" ||
+      executionResult.details?.dispatchStatus === "failed"
 
     dp.execution = {
       success: executionResult.success,
@@ -432,7 +434,7 @@ export class Coordinator implements ICoordinator {
     }
 
     // ── Feedback ──
-    if (!isProvisionalDispatch) {
+    if (!isProvisionalDispatch && !isAdapterDispatchFailure) {
       for (const agent of this.agents.values()) {
         agent.onFeedback({
           success: executionResult.success,
@@ -655,6 +657,8 @@ export class Coordinator implements ICoordinator {
           // Execute
           const result = await this.executor_.execute(proposal)
           const isProvisionalDispatch = result.isProvisional === true || result.settlementStatus === "dispatched" || result.details?.isProvisional === true || result.details?.settlementStatus === "dispatched"
+          const isAdapterDispatchFailure = result.dispatchStatus === "failed" ||
+            result.details?.dispatchStatus === "failed"
           if (isProvisionalDispatch && result.success) {
             // IntentStatus has no PENDING_SETTLEMENT yet; keep cycle intents non-final while settlement is pending.
             this._transitionIntent(cycleIntentId, "EXECUTING")
@@ -678,7 +682,7 @@ export class Coordinator implements ICoordinator {
           }
 
           // Feedback to agents
-          if (!isProvisionalDispatch) {
+          if (!isProvisionalDispatch && !isAdapterDispatchFailure) {
             for (const agent of this.agents.values()) {
               agent.onFeedback({
                 success: result.success,

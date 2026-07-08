@@ -275,6 +275,9 @@ export interface SwapResult {
   private?: boolean;
   /** Hash da transacao do Memo contract (Arc), se aplicavel */
   memoTxHash?: string;
+  synthetic?: boolean;
+  canonicalSettlement?: boolean;
+  settlementStatus?: "synthetic" | "confirmed" | "failed";
 }
 
 export interface BestPairResult {
@@ -1170,7 +1173,10 @@ class RealSwapExecutor {
           const directResult = await executeDirectSwap(this.signer, fromTokenAddr, toTokenAddr, fromAmountRaw, this.userAddress, net.chainId, (m) => log(m));
           if (directResult.success) {
             const outputAmountRaw = parseFloat(directResult.amountReceived ?? "0");
-            const isSynthetic = directResult.amountReceived === fromAmountRaw;
+            const zeroHash = "0x0000000000000000000000000000000000000000000000000000000000000000";
+            const isSynthetic = directResult.synthetic === true ||
+              directResult.txHash === zeroHash ||
+              directResult.amountReceived === fromAmountRaw;
             let amountReceived: number;
             if (isSynthetic) {
               amountReceived = amountUsd / toPrice;
@@ -1183,7 +1189,7 @@ class RealSwapExecutor {
             this._updateCacheBalance(toToken, amountReceived);
             this._updateCacheBalance(fromToken, -(amountUsd / fromPrice));
             const action: "BUY" | "SELL" | "HOLD" = !isStable(toToken) && isStable(fromToken) ? "BUY" : "SELL";
-            log(`💵 Transação direta: ${amountReceived.toFixed(6)} ${toToken} ($${toAmountUsd.toFixed(2)}) | tx: ${directResult.txHash?.slice(0, 10)}`);
+            log(`💵 Transação direta${isSynthetic ? " sintética/testnet (não settlement canônico)" : ""}: ${amountReceived.toFixed(6)} ${toToken} ($${toAmountUsd.toFixed(2)}) | tx: ${directResult.txHash?.slice(0, 10)}`);
             return {
               success: true,
               txHash: directResult.txHash ?? `direct_${Date.now()}`,
@@ -1196,6 +1202,9 @@ class RealSwapExecutor {
               feeUsd: 0,
               action,
               preSwapBalance,
+              synthetic: isSynthetic,
+              canonicalSettlement: !isSynthetic,
+              settlementStatus: isSynthetic ? "synthetic" : "confirmed",
             } as any;
           }
         }

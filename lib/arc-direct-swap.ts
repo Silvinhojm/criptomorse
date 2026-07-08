@@ -133,6 +133,9 @@ export async function executeDirectSwap(
   txHash?: string;
   explorerUrl?: string;
   amountReceived?: string;
+  synthetic?: boolean;
+  canonicalSettlement?: boolean;
+  settlementStatus?: "synthetic" | "confirmed" | "failed";
   error?: string;
 }> {
   const log = (msg: string) => { console.log(msg); onLog?.(msg); };
@@ -195,6 +198,9 @@ export async function executeDirectSwap(
         txHash: '0x' + '0'.repeat(64),
         explorerUrl: `${EXPLORER}/tx/${'0x' + '0'.repeat(64)}`,
         amountReceived: fromAmount,
+        synthetic: true,
+        canonicalSettlement: false,
+        settlementStatus: "synthetic",
       };
     }
 

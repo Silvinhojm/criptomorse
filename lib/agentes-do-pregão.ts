@@ -531,7 +531,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
   // IMPORTANTE: TradingAdapter chama injetarSinal (rota interna), NÃO receberOK.
   // Chamar receberOK criaria ciclo infinito (receberOK → Coordinator → TradingAdapter → receberOK → ...)
   const tradingAdapter = new TradingAdapter((signal) => {
-    pregão.injetarSinal(signal)
+    return pregão.injetarSinal(signal)
   })
   frameworkCoordinator.setExecutor(tradingAdapter)
   registerFrameworkAgentsOnce()

@@ -71,6 +71,9 @@ export interface OrdemExecucao {
     fromAmount: number
     toAmount: number
     profit: number
+    synthetic?: boolean
+    canonicalSettlement?: boolean
+    settlementStatus?: "synthetic" | "confirmed" | "failed"
   }
 }
 
@@ -89,15 +92,15 @@ type OkIndex = Map<string, Map<string, OkSignal[]>>
 import { batchExecutor } from "./batch-executor";
 import { recordRouteFailure, hasSellRoute } from "./route-verifier";
 import { frameworkCoordinator } from "./agent-framework/singletons";
-import { TradingAdapter } from "./agent-framework/trading-adapter";
+import { TradingAdapter, type TradeDispatchResult } from "./agent-framework/trading-adapter";
 import type { AgentProposal } from "./agent-framework/IAgent";
 
 let tradingAdapterConfigured = false
 
-function ensureTradingAdapterConfigured(pregao: { injetarSinal(signal: OkSignal): void }) {
+function ensureTradingAdapterConfigured(pregao: { injetarSinal(signal: OkSignal): TradeDispatchResult }) {
   if (tradingAdapterConfigured) return
   const tradingAdapter = new TradingAdapter((signal) => {
-    pregao.injetarSinal(signal)
+    return pregao.injetarSinal(signal)
   })
   frameworkCoordinator.setExecutor(tradingAdapter)
   tradingAdapterConfigured = true
@@ -293,7 +296,7 @@ class Pregão {
     }
   }
 
-  private registrarSinalInterno(signal: OkSignal, origem: "recebido" | "injetado") {
+  private registrarSinalInterno(signal: OkSignal, origem: "recebido" | "injetado"): TradeDispatchResult {
     // Sanitizar confianca antes de processar
     signal.confianca = Math.min(100, Math.max(0, signal.confianca ?? 0))
     if (isNaN(signal.confianca)) signal.confianca = 0
@@ -301,7 +304,25 @@ class Pregão {
     // Ignorar sinais de redes diferentes da ativa (exceto se nenhuma rede ativa foi definida)
     if (this._redeAtiva && signal.rede !== this._redeAtiva) {
       this.log(`🚫 Sinal ignorado: ${signal.pregueiro} → ${signal.par} na ${signal.rede} (rede ativa: ${this._redeAtiva})`)
-      return
+      return {
+        accepted: false,
+        orderCreated: false,
+        reason: `Pregão rejected dispatch: network mismatch (${signal.rede} != ${this._redeAtiva})`,
+      }
+    }
+
+    const duplicateActive = this.ordens.find(o =>
+      (o.status === "preparando" || o.status === "pronto" || o.status === "executando") &&
+      o.fromToken === signal.fromToken && o.toToken === signal.toToken && o.rede === signal.rede
+    )
+    if (duplicateActive) {
+      this.log(`Duplicate active order for ${signal.fromToken}->${signal.toToken}@${signal.rede} - dispatch rejected`)
+      return {
+        accepted: false,
+        orderCreated: false,
+        ordemId: duplicateActive.id,
+        reason: `Pregão rejected dispatch: duplicate active order ${signal.fromToken}->${signal.toToken}@${signal.rede}`,
+      }
     }
 
     const chave = `${signal.rede}:${signal.par}`
@@ -317,15 +338,31 @@ class Pregão {
     const label = origem === "injetado" ? "OK injetado via TradingAdapter" : "OK recebido"
     this.log(`📢 ${label}: ${signal.pregueiro} → ${signal.par} na ${signal.rede} (${signal.confianca}%)`)
 
+    const beforeOrderIds = new Set(this.ordens.map(o => o.id))
     this.verificarOrdem(chave, signal)
     this.limparExpirados()
+    const createdOrder = this.ordens.find(o => !beforeOrderIds.has(o.id))
+    if (!createdOrder) {
+      return {
+        accepted: false,
+        orderCreated: false,
+        reason: "Pregão accepted signal but did not create an order",
+      }
+    }
+
+    return {
+      accepted: true,
+      orderCreated: true,
+      ordemId: createdOrder.id,
+      reason: "Pregão created order",
+    }
   }
 
   /** Rota interna — usada pelo TradingAdapter para injetar sinais
    *  sem passar pelo ponto de interceptação pública (receberOK).
    *  Chamar receberOK de dentro de um adapter criaria ciclo infinito. */
-  injetarSinal(signal: OkSignal) {
-    this.registrarSinalInterno(signal, "injetado")
+  injetarSinal(signal: OkSignal): TradeDispatchResult {
+    return this.registrarSinalInterno(signal, "injetado")
   }
 
   private verificarOrdem(chave: string, signal: OkSignal) {
@@ -551,7 +588,10 @@ class Pregão {
       Object.assign(ordem, update)
       if (ordem.status === "concluido" && ordem.resultado && !wasCompleted) {
         const isBuyOpening = isStable(ordem.fromToken as any) && !isStable(ordem.toToken as any)
-        if (!isBuyOpening) {
+        const isSyntheticResult = ordem.resultado.synthetic === true ||
+          ordem.resultado.canonicalSettlement === false ||
+          ordem.resultado.txHash === "0x0000000000000000000000000000000000000000000000000000000000000000"
+        if (!isBuyOpening && !isSyntheticResult) {
           this.sessionStats.trades++
           if (ordem.resultado.profit > 0) {
             this.sessionStats.wins++
@@ -559,6 +599,8 @@ class Pregão {
             this.sessionStats.losses++
           }
           this.sessionStats.profit += ordem.resultado.profit
+        } else if (isSyntheticResult) {
+          this.log(`Synthetic/testnet result not counted as canonical settlement: ${ordem.id}`)
         }
         this._saveStats()
       }

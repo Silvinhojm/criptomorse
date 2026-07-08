@@ -82,7 +82,17 @@ class Corretor {
       const resultado = await realSwap.executeSwap(fromKey, toKey, valorTrade, (msg) => this.log(msg), ordem.id)
 
       if (resultado.success) {
-        this.log(`📝 Trade concluído: ${ordem.par}`)
+        const zeroHash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+        const isSyntheticSettlement = (resultado as any).synthetic === true ||
+          (resultado as any).canonicalSettlement === false ||
+          resultado.txHash === zeroHash
+        this.log(isSyntheticSettlement
+          ? `🧪 Trade sintético/testnet concluído: ${ordem.par} (não settlement canônico)`
+          : `📝 Trade concluído: ${ordem.par}`)
+
+        if (isSyntheticSettlement) {
+          this.log(`Synthetic/testnet result for ${ordem.par}: non-canonical settlement, tx hash is not proof of on-chain economic finality`)
+        }
 
         let profit = (resultado.profit ?? 0)
         const isStableTo = ["USDC", "USDT", "DAI", "EURC"].includes(ordem.toToken)
@@ -193,11 +203,14 @@ class Corretor {
             explorerUrl: resultado.explorerUrl,
             fromAmount: valorTrade,
             toAmount: resultado.toAmount,
-            profit
+            profit,
+            synthetic: isSyntheticSettlement,
+            canonicalSettlement: !isSyntheticSettlement,
+            settlementStatus: isSyntheticSettlement ? "synthetic" : "confirmed",
           }
         })
 
-        this.log(`✅ ORDEM CONCLUÍDA: ${ordem.par} | TX: ${resultado.txHash.slice(0, 10)}... | Lucro: $${profit.toFixed(4)}`)
+        this.log(`${isSyntheticSettlement ? "🧪 ORDEM SINTÉTICA/TESTNET CONCLUÍDA" : "✅ ORDEM CONCLUÍDA"}: ${ordem.par} | TX: ${resultado.txHash.slice(0, 10)}... | Lucro: $${profit.toFixed(4)}`)
         for (const cb of this.onTradeCallbacks) cb(ordem)
       } else {
         this.log(`❌ Falha na execução: ${resultado.message}`)
