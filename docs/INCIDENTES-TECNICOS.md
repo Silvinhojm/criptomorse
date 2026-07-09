@@ -1,5 +1,70 @@
 # Registro de Incidentes Técnicos — CriptoMorse
 
+## [09/07/2026] Phase 2e.2e Race Observation - Settlement Update Before DecisionReport Save
+
+**Severidade:** Media
+**Status:** Divida tecnica documentada
+
+Durante a validacao controlada de runtime da Phase 2e.2e / 2e.2e.1, o caminho:
+
+`Coordinator -> TradingAdapter -> Pregao -> Corretor -> SettlementRegistry -> DecisionReport`
+
+foi exercitado em dois modos controlados:
+
+- synthetic: `settlementStatus = synthetic`, `synthetic = true`, `canonicalSettlement = false`, `txHash = 0x00000000`
+- confirmed/canonical mock: `settlementStatus = confirmed`, `synthetic = false`, `canonicalSettlement = true`, `txHash` nao-zero controlado
+
+As validacoes confirmaram que o DecisionReport nao marcou lucro verificado, win-rate,
+BotBank/accounting, reconciliacao ou DecisionAnchor final. Tambem confirmaram que um
+DecisionReport confirmado/canonico preserva `settlementStatus = confirmed`,
+`canonicalSettlement = true` e `synthetic = false` quando recebe updates stale ou
+terminais posteriores (`submitted`, `failed`, `synthetic`).
+
+### Observacao de race
+
+Durante a validacao, o listener do `SettlementRegistry` pode rodar antes do
+`Coordinator` concluir o `_saveDecisionReport()` final. Nesse caso, o primeiro update
+do registry e logado como:
+
+`[SETTLEMENT] DecisionReport not found for settlement update ...`
+
+No cenario observado, isso foi benigno porque o update posterior do Corretor encontrou
+e atualizou corretamente o DecisionReport. O comportamento atual e seguro no sentido de
+que nao lanca erro, nao cria DecisionReport falso e nao muta accounting. Porem, sob
+timing real ou concorrencia, um settlement update pode chegar antes de o DecisionReport
+existir, ficar apenas no `SettlementRegistry`, e nao ser automaticamente reaplicado ao
+DecisionReport depois.
+
+### Risco
+
+O risco nao e execucao financeira indevida. O risco e o DecisionReport ficar stale ou
+incompleto enquanto o SettlementRegistry contem a informacao mais nova. Isso bloquearia
+com seguranca qualquer uso futuro desses campos para prova final, mas tambem poderia
+confundir auditoria se nao houver reconciliacao posterior.
+
+Antes de usar campos de settlement do DecisionReport para DecisionAnchor final, accounting,
+BotBank, lucro verificado, win-rate ou reconciliacao, e obrigatorio implementar ou
+validar pelo menos um destes mecanismos:
+
+- replay de updates pendentes do SettlementRegistry apos criacao/salvamento do DecisionReport;
+- reconciliation pass por `correlationId`;
+- fila/retry deferido no listener;
+- sync explicito pos-save do SettlementRegistry para DecisionReport.
+
+### Limitacao preservada
+
+Phase 2e.2e / 2e.2e.1 ainda nao provam settlement real ponta a ponta na Arc testnet.
+O caminho confirmed/canonical exercitado foi mock/controlado, sem swap real e sem fundos.
+Portanto continuam bloqueados ate validacao real:
+
+- DecisionAnchor final proof;
+- accounting;
+- BotBank;
+- lucro verificado;
+- win-rate;
+- reconciliacao.
+
+
 ## [09/07/2026] Phase 2e.2d Validation Limitation
 
 **Severidade:** Informativo
