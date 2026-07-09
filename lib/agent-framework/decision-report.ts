@@ -42,8 +42,22 @@ export interface DecisionReport {
     decisionReportId?: string
     ordemId?: string
     dispatchStatus?: "dispatched" | "failed"
-    settlementStatus?: "dispatched" | "submitted" | "confirmed" | "failed" | "settled" | "reconciled"
+    settlementStatus?: "dispatched" | "submitted" | "confirmed" | "failed" | "settled" | "reconciled" | "synthetic"
     isProvisional?: boolean
+    synthetic?: boolean
+    canonicalSettlement?: boolean
+    receiptStatus?: number
+    blockNumber?: number
+    gasUsed?: string
+    effectiveGasPrice?: string
+    gasCostNative?: string
+    gasCostUsd?: number
+    fromToken?: string
+    toToken?: string
+    amountIn?: string
+    actualAmountOut?: string
+    balanceDeltas?: Record<string, string>
+    slippageBps?: number
   }
 
   auditId?: string

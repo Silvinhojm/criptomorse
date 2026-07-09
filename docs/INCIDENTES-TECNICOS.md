@@ -1,5 +1,22 @@
 # Registro de Incidentes Técnicos — CriptoMorse
 
+## [09/07/2026] Phase 2e.2d Validation Limitation
+
+**Severidade:** Informativo
+**Status:** Documentado
+
+O caminho de atualizacao `SettlementRegistry -> DecisionReport.execution` foi validado
+com testes isolados/em memoria. Um ciclo real ponta a ponta na Arc testnet nao foi
+executado nesta validacao.
+
+Antes de usar campos de settlement do DecisionReport para DecisionAnchor final, accounting,
+BotBank, lucro verificado, win-rate ou reconciliacao, e obrigatorio validar um ciclo real:
+
+`Coordinator -> TradingAdapter -> Pregao -> Corretor -> SettlementRegistry -> DecisionReport`
+
+com estados `dispatched -> submitted/confirmed` e evidencia real de transacao. Esta
+limitacao e intencional e evita falsa confianca.
+
 ## [05/07/2026] Memory Leak — Arrays unbounded no frontend
 
 **Severidade:** Crítica

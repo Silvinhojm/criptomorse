@@ -50,6 +50,8 @@ export type SettlementUpdate = Partial<SettlementRecord> & {
   txHash?: string
 }
 
+export type SettlementRecordListener = (record: SettlementRecord) => void
+
 let nextSettlementId = 0
 
 function isZeroTxHash(txHash?: string): boolean {
@@ -73,22 +75,46 @@ function createSettlementId(timestamp: number): string {
   return `settlement_${nextSettlementId}_${timestamp}`
 }
 
+function definedSettlementUpdate(update: SettlementUpdate): SettlementUpdate {
+  return Object.fromEntries(
+    Object.entries(update).filter(([, value]) => value !== undefined)
+  ) as SettlementUpdate
+}
+
+function recordsEqual(a: SettlementRecord, b: SettlementRecord): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+function settlementStatusForMerge(existing: SettlementRecord, update: SettlementUpdate): SettlementStatus {
+  const incomingSynthetic = update.synthetic === true || isZeroTxHash(update.txHash) || update.status === "synthetic"
+  if (incomingSynthetic) return "synthetic"
+  if (existing.status === "synthetic" && update.status === "failed") return "synthetic"
+  return update.status ?? existing.status
+}
+
 export class SettlementRegistry {
   private records = new Map<string, SettlementRecord>()
   private byCorrelationId = new Map<string, string>()
   private byOrdemId = new Map<string, string>()
   private byTxHash = new Map<string, string>()
+  private recordListener: SettlementRecordListener | null = null
+
+  setRecordListener(listener: SettlementRecordListener | null): void {
+    this.recordListener = listener
+  }
 
   registerPending(record: SettlementRecord): SettlementRecord {
     const normalized = normalizeRecord(record)
     this.deindex(record.settlementId)
     this.records.set(normalized.settlementId, normalized)
     this.index(normalized)
+    this.notify(normalized)
     return normalized
   }
 
   recordUpdate(update: SettlementUpdate): SettlementRecord | null {
     const existing = this.findMatchingRecord(update)
+    const definedUpdate = definedSettlementUpdate(update)
 
     if (!existing) {
       if (!update.correlationId || !update.adapter || !update.status) return null
@@ -124,24 +150,40 @@ export class SettlementRegistry {
       })
       this.records.set(created.settlementId, created)
       this.index(created)
+      this.notify(created)
       return created
     }
 
-    this.deindex(existing.settlementId)
-    const merged = normalizeRecord({
+    const candidate = normalizeRecord({
       ...existing,
-      ...update,
+      ...definedUpdate,
       settlementId: existing.settlementId,
-      correlationId: update.correlationId ?? existing.correlationId,
-      adapter: update.adapter ?? existing.adapter,
-      status: update.status ?? existing.status,
-      timestamp: update.timestamp ?? Date.now(),
+      correlationId: definedUpdate.correlationId ?? existing.correlationId,
+      adapter: definedUpdate.adapter ?? existing.adapter,
+      status: settlementStatusForMerge(existing, definedUpdate),
+      timestamp: definedUpdate.timestamp ?? Date.now(),
       canonicalSettlement: update.canonicalSettlement === undefined
         ? existing.canonicalSettlement
         : update.canonicalSettlement,
+      balanceDeltas: definedUpdate.balanceDeltas
+        ? { ...(existing.balanceDeltas ?? {}), ...definedUpdate.balanceDeltas }
+        : existing.balanceDeltas,
     })
+
+    const sameWithoutTimestamp = recordsEqual(
+      { ...existing, timestamp: candidate.timestamp },
+      candidate,
+    )
+    const merged = sameWithoutTimestamp
+      ? { ...candidate, timestamp: existing.timestamp }
+      : candidate
+
+    if (recordsEqual(existing, merged)) return existing
+
+    this.deindex(existing.settlementId)
     this.records.set(merged.settlementId, merged)
     this.index(merged)
+    this.notify(merged)
     return merged
   }
 
@@ -176,9 +218,13 @@ export class SettlementRegistry {
       const byOrder = this.findByOrdemId(update.ordemId)
       if (byOrder) return byOrder
     }
-    if (update.txHash) {
+    if (update.txHash && !isZeroTxHash(update.txHash)) {
       const byTx = this.findByTxHash(update.txHash)
-      if (byTx) return byTx
+      if (!byTx) return null
+      if (!update.correlationId || !byTx.correlationId || update.correlationId === byTx.correlationId) {
+        return byTx
+      }
+      console.warn(`[SETTLEMENT] ⚠️ txHash correlation conflict tx:${update.txHash} existing:${byTx.correlationId} incoming:${update.correlationId}`)
     }
     return null
   }
@@ -191,7 +237,14 @@ export class SettlementRegistry {
   private index(record: SettlementRecord): void {
     this.byCorrelationId.set(record.correlationId, record.settlementId)
     if (record.ordemId) this.byOrdemId.set(record.ordemId, record.settlementId)
-    if (record.txHash) this.byTxHash.set(record.txHash, record.settlementId)
+    if (record.txHash && !isZeroTxHash(record.txHash)) {
+      const existing = this.findByTxHash(record.txHash)
+      if (!existing || !existing.correlationId || existing.correlationId === record.correlationId) {
+        this.byTxHash.set(record.txHash, record.settlementId)
+      } else {
+        console.warn(`[SETTLEMENT] ⚠️ txHash correlation conflict tx:${record.txHash} existing:${existing.correlationId} incoming:${record.correlationId}`)
+      }
+    }
   }
 
   private deindex(settlementId: string): void {
@@ -199,6 +252,15 @@ export class SettlementRegistry {
     if (!record) return
     this.byCorrelationId.delete(record.correlationId)
     if (record.ordemId) this.byOrdemId.delete(record.ordemId)
-    if (record.txHash) this.byTxHash.delete(record.txHash)
+    if (record.txHash && !isZeroTxHash(record.txHash)) this.byTxHash.delete(record.txHash)
+  }
+
+  private notify(record: SettlementRecord): void {
+    if (!this.recordListener) return
+    try {
+      this.recordListener(record)
+    } catch (error) {
+      console.warn("[SettlementRegistry] record listener failed:", error)
+    }
   }
 }
