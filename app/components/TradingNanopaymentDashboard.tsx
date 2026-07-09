@@ -163,8 +163,8 @@ export function TradingNanopaymentDashboard({ account, currentNetwork, privateKe
           {[
             { label: "Trades",   value: stats.totalOrders },
             { label: "Volume",   value: `$${stats.totalVolume.toFixed(2)}` },
-            { label: "Win Rate", value: `${stats.winRate.toFixed(0)}%` },
-            { label: "Lucro",    value: `$${stats.totalProfit.toFixed(4)}` },
+            { label: "Win local", value: `${stats.winRate.toFixed(0)}%` },
+            { label: "P/L local", value: `$${stats.totalProfit.toFixed(4)}` },
           ].map(s => (
             <div key={s.label} style={{ background: "#0f172a", borderRadius: 8, padding: 8, textAlign: "center" }}>
               <div style={{ fontSize: 9, color: "#475569" }}>{s.label}</div>

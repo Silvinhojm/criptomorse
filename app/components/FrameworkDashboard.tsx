@@ -55,7 +55,7 @@ export function FrameworkDashboard() {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(100px, 1fr))", gap: 8, marginBottom: 12 }}>
         <StatBox label="Agentes" value={agents.length.toString()} color={ACCENT} />
         <StatBox label="Propostas" value={intentStats.total.toString()} color={ACCENT} />
-        <StatBox label="Completadas" value={intentStats.completed.toString()} color={GREEN} />
+        <StatBox label="Concluidas local" value={intentStats.completed.toString()} color={GREEN} />
         <StatBox label="Votando" value={intentStats.voting.toString()} color={YELLOW} />
         <StatBox label="Pendentes" value={intentStats.pending.toString()} color="#94a3b8" />
         <StatBox label="Falhas" value={intentStats.failed.toString()} color={RED} />
@@ -132,7 +132,7 @@ export function FrameworkDashboard() {
         {/* Audit Summary */}
         <div style={{ background: CARD_BG, borderRadius: 8, padding: 12, border: `1px solid ${BORDER}` }}>
           <div style={{ fontSize: 11, fontWeight: "bold", color: ACCENT, marginBottom: 8 }}>
-            📋 Audit Trail
+            📋 Audit Trail (reported, not reconciled)
           </div>
           <div style={{ fontSize: 10, color: TEXT_MUTED, marginBottom: 6 }}>
             Total: {auditReport.totalActions} ações · {auditReport.successful} sucesso · {auditReport.failed} falhas
@@ -143,13 +143,13 @@ export function FrameworkDashboard() {
               {auditReport.topAgents.slice(0, 5).map(a => (
                 <div key={a.agentId} style={{ display: "flex", justifyContent: "space-between", fontSize: 9, padding: "2px 0" }}>
                   <span>{a.agentId}</span>
-                  <span style={{ color: TEXT_MUTED }}>{a.actions} ações · ${a.profit.toFixed(2)}</span>
+                  <span style={{ color: TEXT_MUTED }}>{a.actions} ações · reported ${a.profit.toFixed(2)}</span>
                 </div>
               ))}
             </div>
           )}
           <div style={{ fontSize: 9, color: TEXT_MUTED, marginTop: 6 }}>
-            💰 Lucro total: ${auditReport.totalProfit.toFixed(4)} · Gas: ${auditReport.totalGasCost.toFixed(4)}
+            Resultado auditado local: ${auditReport.totalProfit.toFixed(4)} · Gas reportado: ${auditReport.totalGasCost.toFixed(4)}
           </div>
         </div>
 
@@ -164,7 +164,8 @@ export function FrameworkDashboard() {
             intents.map(r => {
               const dr = r.decisionReport
               const isOpen = selectedIntent === r.intent.id
-              const executionIsProvisional = dr?.execution?.isProvisional === true || dr?.execution?.settlementStatus === "dispatched"
+              const executionIsReconciled = dr?.execution?.settlementStatus === "reconciled"
+              const executionIsProvisional = dr?.execution?.isProvisional === true || dr?.execution?.settlementStatus === "dispatched" || dr?.execution?.settlementStatus === "submitted" || dr?.execution?.settlementStatus === "confirmed"
               return (
                 <div key={r.intent.id} style={{
                   padding: "6px 0", borderBottom: `1px solid ${BORDER}`, fontSize: 10,
@@ -237,14 +238,14 @@ export function FrameworkDashboard() {
 
                       {/* Execution block */}
                       <div style={{ color: "#06b6d4", fontWeight: "bold", marginBottom: 4, marginTop: 6 }}>
-                        ⚡ Execution
+                        ⚡ Execution / settlement status
                       </div>
                       {dr.execution ? (
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 12px" }}>
-                          <span>Status <b style={{ color: executionIsProvisional ? YELLOW : dr.execution.success ? GREEN : RED }}>{executionIsProvisional ? "Dispatched / provisional" : dr.execution.success ? "✅ Success" : "❌ Failed"}</b></span>
+                          <span>Status <b style={{ color: executionIsReconciled ? GREEN : executionIsProvisional ? YELLOW : dr.execution.success ? TEXT_MUTED : RED }}>{executionIsReconciled ? "Reconciled" : executionIsProvisional ? "Provisional / not reconciled" : dr.execution.success ? "Reported success, not verified profit" : "❌ Failed"}</b></span>
                           <span>Adapter <b style={{ color: TEXT_PRIMARY }}>{dr.execution.adapter}</b></span>
-                          <span>Profit{executionIsProvisional ? " (provisional)" : ""} <b style={{ color: executionIsProvisional ? TEXT_MUTED : dr.execution.profit >= 0 ? GREEN : RED }}>${dr.execution.profit.toFixed(4)}</b></span>
-                          <span>Gas{executionIsProvisional ? " (provisional)" : ""} <b style={{ color: executionIsProvisional ? TEXT_MUTED : TEXT_PRIMARY }}>${dr.execution.gasCost.toFixed(4)}</b></span>
+                          <span>{executionIsReconciled ? "Verified profit" : "Reported P/L (not verified)"} <b style={{ color: executionIsReconciled ? (dr.execution.profit >= 0 ? GREEN : RED) : TEXT_MUTED }}>${dr.execution.profit.toFixed(4)}</b></span>
+                          <span>Gas{executionIsReconciled ? "" : " (not reconciled)"} <b style={{ color: executionIsReconciled ? TEXT_PRIMARY : TEXT_MUTED }}>${dr.execution.gasCost.toFixed(4)}</b></span>
                           <span>Duration <b style={{ color: TEXT_PRIMARY }}>{dr.execution.durationMs}ms</b></span>
                           {dr.execution.txHash && <span>Tx <b style={{ color: ACCENT, fontFamily: "monospace" }}>{dr.execution.txHash.slice(0, 16)}...</b></span>}
                           {dr.execution.errorMsg && <span style={{ color: RED, gridColumn: "span 2" }}>❌ {dr.execution.errorMsg}</span>}
@@ -302,8 +303,8 @@ export function FrameworkDashboard() {
                 <div style={{ color: TEXT_MUTED }}>
                   {tempoRelativo(e.timestamp, now)}
                   {e.result && (
-                    <span style={{ marginLeft: 6, color: (e.result.profit ?? 0) >= 0 ? GREEN : RED }}>
-                      ${(e.result.profit ?? 0).toFixed(4)}
+                    <span style={{ marginLeft: 6, color: TEXT_MUTED }}>
+                      reported ${(e.result.profit ?? 0).toFixed(4)}
                     </span>
                   )}
                 </div>

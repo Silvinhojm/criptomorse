@@ -39,6 +39,7 @@ const SECTIONS: { key: Section; label: string }[] = [
   { key: "agents", label: "Agents" },
   { key: "architecture", label: "Architecture" },
   { key: "operator", label: "Operator" },
+  { key: "ledger", label: "Ledger" },
   { key: "debug", label: "Debug" },
 ]
 
@@ -61,10 +62,10 @@ function shortId(value?: string) {
   return value.length > 14 ? `${value.slice(0, 8)}...${value.slice(-4)}` : value
 }
 
-function isVerifiedSettlement(record: IntentRecord) {
+function isReconciledSettlement(record: IntentRecord) {
   const execution = record.decisionReport?.execution
   if (!execution?.success || execution.isProvisional) return false
-  return ["confirmed", "settled", "reconciled"].includes(execution.settlementStatus ?? "")
+  return execution.settlementStatus === "reconciled"
 }
 
 function useFrameworkSnapshot() {
@@ -145,11 +146,11 @@ function AgentGroups() {
 function ClientOverview({ networkName, isTestnet }: { networkName: string; isTestnet: boolean }) {
   const { records, stats } = useFrameworkSnapshot()
   const latest = records[0]
-  const verified = useMemo(() => records.filter(isVerifiedSettlement), [records])
+  const verified = useMemo(() => records.filter(isReconciledSettlement), [records])
   const verifiedProfit = verified.reduce((sum, r) => sum + (r.decisionReport?.execution?.profit ?? 0), 0)
   const provisional = records.filter(r => r.decisionReport?.execution?.isProvisional).length
   const reports = records.filter(r => r.decisionReport).length
-  const anchors = records.filter(r => r.decisionReport?.onChainStatus === "confirmed" && isVerifiedSettlement(r)).length
+  const anchors = records.filter(r => r.decisionReport?.onChainStatus === "confirmed" && isReconciledSettlement(r)).length
 
   return (
     <div className="space-y-6">
@@ -173,7 +174,7 @@ function ClientOverview({ networkName, isTestnet }: { networkName: string; isTes
       <section className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <MetricCard label="System status" value="Guarded" detail="Knowledge, Policy and Voting gates enabled" />
         <MetricCard label="Current decisions" value={stats.total} detail={`${stats.rejected} rejected, ${stats.approved} approved/executing`} />
-        <MetricCard label="Lucro verificado" value={`$${verifiedProfit.toFixed(2)}`} detail="Only confirmed/settled/reconciled reports count" />
+        <MetricCard label="Lucro verificado" value={`$${verifiedProfit.toFixed(2)}`} detail="Only reconciled settlement counts" />
         <MetricCard label="Dispatched / provisional" value={provisional} detail="Awaiting settlement reconciliation" />
       </section>
 
@@ -219,7 +220,7 @@ function ProofsSection() {
       <SectionHeader title="Proofs" detail="Decision Reports and DecisionAnchor are proof layers. Provisional dispatch is not final settlement proof." />
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <MetricCard label="Reports tracked" value={records.filter(r => r.decisionReport).length} detail="Runtime DecisionReport records" />
-        <MetricCard label="Canonical anchors" value={records.filter(r => r.decisionReport?.onChainStatus === "confirmed" && isVerifiedSettlement(r)).length} detail="Final verified reports only" />
+        <MetricCard label="Canonical anchors" value={records.filter(r => r.decisionReport?.onChainStatus === "confirmed" && isReconciledSettlement(r)).length} detail="Anchored reconciled reports only" />
         <MetricCard label="Pending settlement" value={records.filter(r => r.decisionReport?.execution?.isProvisional).length} detail="Dispatched but not reconciled" />
       </div>
     </div>
@@ -292,6 +293,16 @@ export default function DashboardShell({ children, account, networkName, isTestn
             <div className="space-y-6">
               <SectionHeader title="Operator" detail="Runtime operations, wallet tools, active orders and manual controls." />
               <ActiveTrades />
+              {children}
+            </div>
+          )}
+
+          {section === "ledger" && (
+            <div className="space-y-6">
+              <SectionHeader title="Local Ledger" detail="Local and legacy records. These are not reconciled settlement, verified profit, or on-chain proof." />
+              <div className="rounded-lg px-4 py-3 text-sm" style={{ background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.28)", color: DS.colors.text.primary }}>
+                Dados locais/legados. Nao representam settlement reconciliado, lucro verificado ou prova on-chain.
+              </div>
               {children}
             </div>
           )}

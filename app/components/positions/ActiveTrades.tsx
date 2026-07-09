@@ -21,9 +21,9 @@ export default function ActiveTrades() {
     return (
       <div className="rounded-xl p-4 flex flex-col items-center gap-2" style={{ background: DS.colors.bg.card, border: `1px solid ${DS.colors.bg.border}` }}>
         <span className="text-2xl mt-2">💤</span>
-        <span className="text-xs font-semibold" style={{ color: DS.colors.text.primary }}>Nenhum trade ativo agora</span>
+        <span className="text-xs font-semibold" style={{ color: DS.colors.text.primary }}>Nenhuma posicao local restaurada</span>
         <span className="text-[10px] text-center leading-relaxed max-w-[200px]" style={{ color: DS.colors.text.muted }}>
-          Os robôs estão aguardando uma oportunidade com lucro garantido
+          Nenhum registro aberto em localStorage no momento
         </span>
         <div className="flex gap-2 mt-1 mb-2">
           <span className="text-[9px] px-2 py-1 rounded-full" style={{ background: "rgba(148,163,184,0.1)", color: DS.colors.text.muted }}>
@@ -49,9 +49,9 @@ export default function ActiveTrades() {
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <TrendingUp size={14} style={{ color: DS.colors.accent.green }} />
-          <span className="text-xs font-semibold" style={{ color: DS.colors.text.primary }}>Trades Ativos</span>
+          <span className="text-xs font-semibold" style={{ color: DS.colors.text.primary }}>Posicoes locais restauradas</span>
         </div>
-          <span className="text-[10px]" style={{ color: DS.colors.text.muted }}>{positions.length > 0 ? `📂 ${positions.length} investimento(s) ativo(s)` : ""}</span>
+          <span className="text-[10px]" style={{ color: DS.colors.text.muted }}>{positions.length > 0 ? `localStorage: ${positions.length} nao reconciliada(s)` : ""}</span>
       </div>
 
       <div className="space-y-3">
@@ -86,7 +86,7 @@ export default function ActiveTrades() {
 
                 <div className="grid grid-cols-3 gap-2 text-[10px] mb-2">
                   <div>
-                    <div style={{ color: DS.colors.text.muted }}>Investido</div>
+                    <div style={{ color: DS.colors.text.muted }}>Investido local</div>
                     <div className="font-mono font-semibold" style={{ color: DS.colors.text.primary }}>
                       ${pos.amountPaid.toFixed(2)}
                     </div>
@@ -98,7 +98,7 @@ export default function ActiveTrades() {
                     </div>
                   </div>
                   <div>
-                    <div style={{ color: DS.colors.text.muted }}>Resultado</div>
+                    <div style={{ color: DS.colors.text.muted }}>Resultado local</div>
                     <div className="font-mono font-semibold" style={{
                       color: profitPct > 0 ? DS.colors.accent.green : profitPct < 0 ? DS.colors.accent.red : DS.colors.text.secondary,
                     }}>

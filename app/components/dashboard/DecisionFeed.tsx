@@ -115,8 +115,8 @@ function traduzirLog(msg: string): FeedItem | null {
       const lucro = parseFloat(m[1])
       return {
         id: crypto.randomUUID(),
-        text: lucro >= 0 ? FRASES.lucroRealizado(lucro) : FRASES.perdaRealizada(lucro),
-        type: lucro >= 0 ? "sucesso" : "aviso",
+        text: `Execucao local reportada: ${lucro >= 0 ? "+" : ""}$${lucro.toFixed(4)}. Nao reconciliado; nao e lucro verificado.`,
+        type: "info",
         timestamp: Date.now(),
       }
     }

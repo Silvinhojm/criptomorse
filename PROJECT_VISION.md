@@ -10,6 +10,49 @@ ArcFlow is not a trading bot. Trading is the first Adapter and the first proof d
 
 Build reusable open-source infrastructure for autonomous agents in the Arc ecosystem. ArcFlow coordinates agents through shared knowledge, policy, voting, execution adapters, audit trails, decision reports, and on-chain proofs.
 
+## ArcFlow as Structural Discipline for Economic Agents
+
+A common failure mode in financial and agentic systems is not only bad execution, but overreaction to incomplete or isolated signals.
+
+In trading and autonomous finance, a single strong signal can create premature execution. A local result can be mistaken for verified profit. A confirmed transaction can be confused with reconciled economic outcome.
+
+ArcFlow is designed to introduce structural discipline into the decision chain of autonomous economic agents.
+
+Rather than allowing one signal to trigger immediate execution, every economic proposal must pass through a verifiable path:
+
+```text
+Knowledge -> Policy -> Voting -> Execution -> Settlement -> DecisionReport
+```
+
+This creates intentional friction between signal and action.
+
+ArcFlow does not prevent action.
+ArcFlow prevents unverified action from being treated as truth.
+
+The system separates:
+
+- signal from intent;
+- intent from approval;
+- approval from execution;
+- execution from settlement;
+- settlement from reconciliation;
+- reconciliation from verified profit.
+
+This discipline protects the operator and the system from common automation failures, such as overreacting to one strong signal, bypassing risk limits, duplicating orders, or treating provisional results as verified outcomes.
+
+ArcFlow does not promise profit.
+ArcFlow does not eliminate losses.
+ArcFlow does not replace human judgment.
+
+ArcFlow provides a verifiable process so that economic actions can be limited, reviewed, executed, settled, and audited with clear status boundaries.
+
+Core principle:
+
+```text
+ArcFlow does not celebrate execution.
+ArcFlow only trusts verified settlement.
+```
+
 ## Canonical Lifecycle
 
 All current and future documentation must use this lifecycle:

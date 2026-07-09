@@ -913,7 +913,7 @@ export default function Home() {
       {/* Seções de Trading */}
       {account && (
         <div className="space-y-4 mt-4">
-          <SectionMatch section="operator"><BotBank /></SectionMatch>
+          <SectionMatch section="ledger"><BotBank /></SectionMatch>
           <SectionMatch section="operator"><BridgeWidget userAddress={account} /></SectionMatch>
           <SectionMatch section="operator"><RealAutomatedTrader account={account} currentNetwork={NETWORK_KEY_MAP[currentNetwork.chainId] ?? "arc"} /></SectionMatch>
           <SectionMatch section="operator"><NanopaymentDashboard agentScores={agentScores} /></SectionMatch>

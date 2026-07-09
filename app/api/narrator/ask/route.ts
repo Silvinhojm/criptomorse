@@ -35,14 +35,14 @@ async function responderMoedaBoa(): Promise<string> {
   const linhas: string[] = []
 
   if (positions.length > 0) {
-    linhas.push("📊 Posições abertas:")
+    linhas.push("Posicoes locais restauradas (nao reconciliadas):")
     for (const pos of positions) {
       const profit = pos.currentProfitPercent ?? 0
       const sinal = profit >= 0 ? "✅" : "⚠️"
-      linhas.push(`${sinal} ${pos.boughtToken}: ${profit.toFixed(1)}% (entry $${pos.entryPrice.toFixed(2)})`)
+      linhas.push(`${sinal} ${pos.boughtToken}: resultado local ${profit.toFixed(1)}% (entry $${pos.entryPrice.toFixed(2)})`)
     }
   } else {
-    linhas.push("📭 Nenhuma posição aberta no momento.")
+    linhas.push("Nenhuma posicao local restaurada no momento.")
   }
 
   const ranking = accountant.getRanking()
@@ -51,7 +51,7 @@ async function responderMoedaBoa(): Promise<string> {
   }
 
   const stats = accountant.getStats()
-  linhas.push(`\n📈 Estatísticas gerais: ${stats.totalTrades} trades, ${(stats.winRate * 100).toFixed(0)}% win rate, lucro total $${stats.totalProfit.toFixed(2)}`)
+  linhas.push(`\nEstatisticas locais/accountant: ${stats.totalTrades} registros, ${(stats.winRate * 100).toFixed(0)}% win rate local, resultado local $${stats.totalProfit.toFixed(2)}. Nao e lucro verificado.`)
 
   return linhas.join("\n")
 }
@@ -107,9 +107,9 @@ async function responderSaldo(): Promise<string> {
 async function responderGeral(): Promise<string> {
   const linhas: string[] = []
   const stats = accountant.getStats()
-  linhas.push(`📈 ${stats.totalTrades} trades · ${(stats.winRate * 100).toFixed(0)}% win · $${stats.totalProfit.toFixed(2)} lucro`)
+  linhas.push(`${stats.totalTrades} registros locais - ${(stats.winRate * 100).toFixed(0)}% win local - $${stats.totalProfit.toFixed(2)} resultado local nao reconciliado`)
   const positions = positionManager.getOpenPositions()
-  linhas.push(`📊 ${positions.length} posição(ões) aberta(s)`)
+  linhas.push(`${positions.length} posicao(oes) local(is) restaurada(s), nao reconciliada(s)`)
   const status = pregão.getStatus()
   linhas.push(`🏛️ ${status.ordensAtivas} ordem(ns) ativa(s) · ${status.oksPendentes} OK(s) pendente(s)`)
   const top3 = accountant.getRanking().slice(0, 3).map(s => `${s.agentName}(${s.score.toFixed(0)})`).join(", ")

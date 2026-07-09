@@ -244,9 +244,9 @@ export function RealAutomatedTrader({ account, currentNetwork }: Props) {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 14 }}>
           {[
             { label: "Trades", value: stats.totalTrades, color: "#fbbf24" },
-            { label: "On-chain ✅", value: stats.confirmedTrades, color: "#4ade80" },
-            { label: "Win Rate", value: `${stats.winRate}%`, color: "#a78bfa" },
-            { label: "Lucro", value: `$${stats.totalProfit}`, color: parseFloat(stats.totalProfit) >= 0 ? "#4ade80" : "#f87171" },
+            { label: "Tx reportadas", value: stats.confirmedTrades, color: "#4ade80" },
+            { label: "Win local", value: `${stats.winRate}%`, color: "#a78bfa" },
+            { label: "P/L local", value: `$${stats.totalProfit}`, color: parseFloat(stats.totalProfit) >= 0 ? "#4ade80" : "#f87171" },
           ].map((s) => (
             <div key={s.label} style={{ background: "#0f172a", borderRadius: 8, padding: 8, textAlign: "center" }}>
               <div style={{ fontSize: 9, color: "#475569" }}>{s.label}</div>

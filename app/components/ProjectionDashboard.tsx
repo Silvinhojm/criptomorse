@@ -64,8 +64,8 @@ export function ProjectionDashboard() {
           <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
             <Stat label="Horas Ativo" value={fmt(result.hoursActive)} />
             <Stat label="Trades/dia" value={fmt(result.tradesPerDay)} />
-            <Stat label="Lucro Médio/Trade" value={`$${fmt4(result.avgProfitPerTrade)}`} color={result.avgProfitPerTrade >= 0 ? GREEN : RED} />
-            <Stat label="Win Rate" value={pct(result.winRate)} color={GREEN} />
+            <Stat label="P/L medio projetado" value={`$${fmt4(result.avgProfitPerTrade)}`} color={result.avgProfitPerTrade >= 0 ? GREEN : RED} />
+            <Stat label="Win rate projetado" value={pct(result.winRate)} color={GREEN} />
             <Stat label="APY Projetado" value={pct(result.apyProjected)} color={ORANGE} />
             <Stat label="APY Real" value={pct(result.apyActual)} color={GREEN} />
             <Stat label="Volume Total" value={`$${fmt(result.totalVolume)}`} />

@@ -18,6 +18,8 @@ O ciclo canônico do framework é **Identity → Knowledge Service → Intent �
 
 ---
 
+ArcFlow is also a structural discipline layer for autonomous economic agents: it separates signal, intent, approval, execution, settlement, reconciliation, and verified profit so provisional or local results are not treated as final truth. See `PROJECT_VISION.md` for the canonical explanation.
+
 ## Arquitetura
 
 ### Current Architecture (Canonical)

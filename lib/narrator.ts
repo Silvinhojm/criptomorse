@@ -52,14 +52,14 @@ class Narrador {
     if (lucro >= 0) {
       this.emit({
         icon: "✅",
-        text: `Trade ${par} concluído com lucro de $${lucro.toFixed(2)}!`,
+        text: `Trade ${par} reportado com resultado local de $${lucro.toFixed(2)}. Nao reconciliado; nao e lucro verificado.`,
         timestamp: Date.now(),
         type: "success",
       })
     } else {
       this.emit({
         icon: "⚠️",
-        text: `Trade ${par} fechou com prejuízo de $${Math.abs(lucro).toFixed(2)}. Stop loss ajustado.`,
+        text: `Trade ${par} reportado com resultado local de -$${Math.abs(lucro).toFixed(2)}. Nao reconciliado; nao e perda verificada.`,
         timestamp: Date.now(),
         type: "warn",
       })

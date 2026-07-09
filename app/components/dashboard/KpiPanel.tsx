@@ -65,11 +65,11 @@ export default function KpiPanel() {
       {/* Card Lucro Total */}
       <MetricCard
         icon={stats.totalProfit >= 0 ? "📈" : "📉"}
-        label="Lucro Total"
+        label="P/L local nao verificado"
         value={`$${stats.totalProfit.toFixed(2)}`}
         color={profitColor}
         bgColor={stats.totalProfit >= 0 ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)"}
-        sublabel="Resultado acumulado"
+        sublabel="Accountant/localStorage, nao reconciliado"
       />
 
       {/* Card Win Rate ou Status se <3 trades */}
@@ -81,7 +81,7 @@ export default function KpiPanel() {
           }}>
           <CircularProgress pct={stats.winRate} size={48} />
           <div>
-            <div className="text-[11px] font-medium" style={{ color: DS.colors.text.muted }}>Win Rate</div>
+            <div className="text-[11px] font-medium" style={{ color: DS.colors.text.muted }}>Win rate local/accountant</div>
             <div className="text-lg font-bold font-mono" style={{ color: DS.colors.accent.green, fontFamily: DS.fonts.mono }}>
               {stats.winRate.toFixed(0)}%
             </div>
@@ -111,7 +111,7 @@ export default function KpiPanel() {
         label="Trades"
         value={`${stats.completedTrades}`}
         color={DS.colors.text.primary}
-        sublabel={`${stats.totalTrades} total · ${stats.completedTrades} concluídos`}
+        sublabel={`${stats.totalTrades} total local - ${stats.completedTrades} marcados localmente`}
       />
 
       {/* Card Status Robôs */}

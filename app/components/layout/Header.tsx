@@ -65,8 +65,13 @@ export default function Header({ onToggleWallet, currentNetworkKey, onNetworkCha
     }
   }, [])
 
-  const netName = NETWORKS[redeAtiva as NetworkKey]?.name ?? "Desconhecida"
-  const isTestnet = NETWORKS[redeAtiva as NetworkKey]?.isTestnet ?? false
+  const activeNetworkKey = currentNetworkKey ?? (redeAtiva as NetworkKey)
+  const activeNetwork = NETWORKS[activeNetworkKey]
+  const netName = activeNetwork?.name ?? "Ambiente nao confirmado"
+  const isTestnet = activeNetwork?.isTestnet
+  const environmentLabel = activeNetwork
+    ? (activeNetworkKey === "arc" ? "Arc Testnet" : isTestnet ? `${netName} Testnet` : `${netName} Mainnet`)
+    : "Ambiente nao confirmado"
 
   return (
     <header className="fixed top-0 left-0 right-0 z-50"
@@ -86,13 +91,13 @@ export default function Header({ onToggleWallet, currentNetworkKey, onNetworkCha
             }}>
             <span className="w-1.5 h-1.5 rounded-full inline-block"
               style={{ background: status === "conectado" ? DS.colors.accent.green : DS.colors.accent.red }} />
-            {status === "conectado" ? (isTestnet ? "Testnet" : "Mainnet") : "Offline"}
+            {status === "conectado" ? environmentLabel : "Offline"}
           </div>
         </div>
 
         <div className="flex items-center gap-2">
           {NETWORK_META.map(n => {
-            const active = (currentNetworkKey ?? redeAtiva) === n.key
+            const active = activeNetworkKey === n.key
             return (
               <button key={n.key} onClick={() => onNetworkChange?.(n.key)}
                 className="text-[11px] px-2 py-1 rounded-md font-medium transition-all duration-200 hover:brightness-110"
