@@ -15,6 +15,8 @@ import { ethers } from "ethers"
 import { gasPriceOracle } from "./gas-price-oracle"
 import { COIN_IDS } from "./coin-ids"
 import { recordRouteFailure } from "./route-verifier"
+import { frameworkSettlementRegistry } from "./agent-framework/singletons"
+import type { SettlementStatus } from "./agent-framework/settlement-registry"
 
 const AGENTES_CONHECIDOS = new Set([
   "Quantum", "Technical", "TrendFollower", "MeanReversion",
@@ -40,6 +42,72 @@ class Corretor {
   private log(msg: string) {
     console.log(`[CORRETOR] ${msg}`)
     for (const cb of this.onLogCallbacks) cb(msg)
+  }
+
+  private isZeroTxHash(txHash?: string): boolean {
+    if (!txHash) return false
+    const normalized = txHash.toLowerCase()
+    return normalized === "0x00000000" || /^0x0+$/.test(normalized)
+  }
+
+  private settlementCorrelationId(ordem: OrdemExecucao): string | undefined {
+    return ordem.metadata?.settlementCorrelationId ||
+      ordem.metadata?.correlationId ||
+      ordem.metadata?.intentId
+  }
+
+  private recordSettlementUpdate(ordem: OrdemExecucao, input: {
+    success: boolean
+    txHash?: string
+    fromAmount?: number
+    toAmount?: number
+    synthetic?: boolean
+    canonicalSettlement?: boolean
+    confirmed?: boolean
+    errorMsg?: string
+  }): void {
+    const correlationId = this.settlementCorrelationId(ordem)
+    if (!correlationId) return
+
+    const synthetic = input.synthetic === true || this.isZeroTxHash(input.txHash)
+    const canonicalSettlement = input.canonicalSettlement === true && !synthetic
+    let status: SettlementStatus
+
+    if (synthetic) {
+      status = "synthetic"
+    } else if (!input.success) {
+      status = "failed"
+    } else if (input.confirmed === true && canonicalSettlement) {
+      status = "confirmed"
+    } else if (input.txHash) {
+      status = "submitted"
+    } else {
+      status = "failed"
+    }
+
+    const record = frameworkSettlementRegistry.recordUpdate({
+      correlationId,
+      intentId: ordem.metadata?.intentId,
+      proposalId: ordem.metadata?.proposalId,
+      decisionReportId: ordem.metadata?.decisionReportId,
+      ordemId: ordem.id,
+      adapter: "trading",
+      source: "corretor",
+      status,
+      txHash: input.txHash,
+      fromToken: ordem.fromToken,
+      toToken: ordem.toToken,
+      amountIn: input.fromAmount === undefined ? undefined : String(input.fromAmount),
+      actualAmountOut: input.toAmount === undefined ? undefined : String(input.toAmount),
+      synthetic,
+      canonicalSettlement,
+      errorMsg: input.errorMsg,
+      timestamp: Date.now(),
+    })
+
+    if (record) {
+      this.log(`Settlement update recorded correlation:${record.correlationId} status:${record.status}`)
+    }
   }
 
   async executar(ordem: OrdemExecucao, valorTrade: number) {
@@ -211,10 +279,29 @@ class Corretor {
         })
 
         this.log(`${isSyntheticSettlement ? "🧪 ORDEM SINTÉTICA/TESTNET CONCLUÍDA" : "✅ ORDEM CONCLUÍDA"}: ${ordem.par} | TX: ${resultado.txHash.slice(0, 10)}... | Lucro: $${profit.toFixed(4)}`)
+        this.recordSettlementUpdate(ordem, {
+          success: true,
+          txHash: resultado.txHash,
+          fromAmount: valorTrade,
+          toAmount: resultado.toAmount,
+          synthetic: isSyntheticSettlement,
+          canonicalSettlement: !isSyntheticSettlement && (resultado as any).canonicalSettlement === true,
+          confirmed: resultado.confirmed,
+        })
         for (const cb of this.onTradeCallbacks) cb(ordem)
       } else {
         this.log(`❌ Falha na execução: ${resultado.message}`)
         pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+        this.recordSettlementUpdate(ordem, {
+          success: false,
+          txHash: resultado.txHash,
+          fromAmount: valorTrade,
+          toAmount: resultado.toAmount,
+          synthetic: (resultado as any).synthetic === true,
+          canonicalSettlement: false,
+          confirmed: resultado.confirmed,
+          errorMsg: resultado.message,
+        })
         if (resultado.txHash) {
           recordTradeResult(-valorTrade * 0.1)
         }
@@ -222,6 +309,12 @@ class Corretor {
     } catch (err: any) {
       this.log(`❌ Erro na execução: ${err.message}`)
       pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+      this.recordSettlementUpdate(ordem, {
+        success: false,
+        fromAmount: valorTrade,
+        canonicalSettlement: false,
+        errorMsg: err.message,
+      })
     } finally {
       const unlockKey = ordem.par.split('→')[1] + ':' + redeKey
       this.log(`🔓 Unlock: ${unlockKey} (finally)`)
@@ -390,7 +483,17 @@ class Corretor {
       if (!batchResult.success) {
         for (const s of swaps) {
           const ordem = ordens.find(o => o.fromToken === s.fromToken && o.toToken === s.toToken)
-          if (ordem) pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+          if (ordem) {
+            pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+            this.recordSettlementUpdate(ordem, {
+              success: false,
+              txHash: batchResult.txHash,
+              fromAmount: s.amountUsd,
+              toAmount: s.expectedToAmount,
+              canonicalSettlement: false,
+              errorMsg: "Batch execution failed",
+            })
+          }
         }
         return
       }
@@ -404,6 +507,14 @@ class Corretor {
         if (!r.success) {
           pregão.atualizarOrdem(ordem.id, { status: "falhou" })
           log(`❌ Swap ${ordem.par} falhou no batch`)
+          this.recordSettlementUpdate(ordem, {
+            success: false,
+            txHash: r.txHash ?? batchResult.txHash,
+            fromAmount: r.swap.amountUsd,
+            toAmount: r.swap.expectedToAmount,
+            canonicalSettlement: false,
+            errorMsg: r.error ?? "Batch swap failed",
+          })
           continue
         }
 
@@ -472,13 +583,29 @@ class Corretor {
           },
         })
         log(`✅ BATCH CONCLUÍDO: ${ordem.par} | TX: ${(batchResult.txHash ?? "").slice(0, 10)}... | Lucro: $${profit.toFixed(4)}`)
+        this.recordSettlementUpdate(ordem, {
+          success: true,
+          txHash: r.txHash ?? batchResult.txHash,
+          fromAmount: r.swap.amountUsd,
+          toAmount: r.swap.expectedToAmount,
+          canonicalSettlement: false,
+        })
         for (const cb of this.onTradeCallbacks) cb(ordem)
       }
     } catch (err: any) {
       log(`❌ Erro no batch UltraFlash: ${err.message.slice(0, 150)}`)
       for (const s of swaps) {
         const ordem = ordens.find(o => o.fromToken === s.fromToken && o.toToken === s.toToken)
-        if (ordem) pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+        if (ordem) {
+          pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+          this.recordSettlementUpdate(ordem, {
+            success: false,
+            fromAmount: s.amountUsd,
+            toAmount: s.expectedToAmount,
+            canonicalSettlement: false,
+            errorMsg: err.message,
+          })
+        }
       }
     } finally {
       capitalController.unlockNetwork(redeKey)
