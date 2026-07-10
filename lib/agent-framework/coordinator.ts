@@ -7,7 +7,7 @@ import type { IIntentPublisher, IntentStatus } from "./intent-types"
 import type { DecisionReport } from "./decision-report"
 import { Voting, type VoteResult } from "./voting"
 import { Audit } from "./audit"
-import { frameworkReputation, frameworkKnowledge, frameworkSettlementRegistry } from "./singletons"
+import { frameworkReputation, frameworkKnowledge, frameworkSettlementRegistry, replaySettlementForCorrelationId } from "./singletons"
 import { IntentDeduplicator } from "./intent-deduplicator"
 import { PolicyEngine, type PolicyEngineConfig } from "./policy-engine"
 
@@ -779,6 +779,7 @@ export class Coordinator implements ICoordinator {
     const existing = this.intentPublisher_.getRecord(intentId)
     if (existing) {
       this.intentPublisher_.setDecisionReport(intentId, report)
+      this._syncSettlementFromRegistry(intentId)
     } else {
       this.intentPublisher_.publish({
         id: intentId,
@@ -788,9 +789,24 @@ export class Coordinator implements ICoordinator {
         confidence: report.voting?.confidence ?? 0,
         timestamp: report.createdAt,
       }).then(() => {
-        this.intentPublisher_?.setDecisionReport(intentId, report)
-      }).catch(() => {})
+        const recordExists = this.intentPublisher_?.getRecord(intentId)
+        if (recordExists) {
+          this.intentPublisher_!.setDecisionReport(intentId, report)
+          this._syncSettlementFromRegistry(intentId)
+        } else {
+          console.warn(`[${this.name}] ⚠️ DecisionReport ${report.id} not saved — publish succeeded but intent ${intentId} not found (race or trim)`)
+        }
+      }).catch((e: unknown) => {
+        console.error(`[${this.name}] ❌ Failed to publish intent ${intentId} for report ${report.id}:`, e)
+      })
     }
+  }
+
+  /** Post-save settlement replay: sync any existing or queued settlement
+   *  records into the just-saved DecisionReport.  Idempotent and safe —
+   *  confirmed canonical settlement cannot be downgraded by stale updates. */
+  private _syncSettlementFromRegistry(intentId: string): void {
+    replaySettlementForCorrelationId(intentId)
   }
 
   private _transitionIntent(intentId: string, status: IntentStatus): void {
@@ -808,8 +824,8 @@ export class Coordinator implements ICoordinator {
         timestamp: Date.now(),
       }).then(() => {
         this.intentPublisher_?.updateStatus(intentId, status)
-      }).catch(() => {
-        /* falha silenciosa — intent publisher é opcional */
+      }).catch((e: unknown) => {
+        console.warn(`[${this.name}] ⚠️ Failed to publish intent transition ${intentId} → ${status}:`, e)
       })
     }
   }

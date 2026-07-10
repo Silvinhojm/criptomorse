@@ -1,5 +1,57 @@
 # Registro de Incidentes Técnicos — CriptoMorse
 
+## [09/07/2026] Phase 2e.2f Settlement Replay/Sync Race Closure
+
+**Severidade:** Media
+**Status:** Implementado
+
+### Race fechada
+
+Ouvinte do `SettlementRegistry` podia rodar antes do `Coordinator._saveDecisionReport()` salvar o `DecisionReport`, resultando em:
+
+```
+[SETTLEMENT] ⚠️ DecisionReport not found for settlement update ... — queued for replay
+```
+
+Antes: o update ficava apenas no `SettlementRegistry` e o `DecisionReport` nunca recebia o estado mais recente a menos que outro update chegasse depois.
+
+Depois: dois mecanismos garantem consistência:
+
+1. **Pending queue no listener** — quando o `DecisionReport` não existe ainda, o registro de settlement é enfileirado em `pendingSettlementReplays[]` em vez de ser descartado.
+
+2. **Post-save replay no Coordinator** — após `_saveDecisionReport()`, chama `_syncSettlementFromRegistry()` que busca registros por `correlationId` (que é o `intentId`) e reaplica no `DecisionReport` usando a mesma lógica monotônica do listener.
+
+### Arquivos modificados
+
+| Arquivo | Mudança |
+|---------|---------|
+| `lib/agent-framework/singletons.ts` | `pendingSettlementReplays[]`, `replaySettlementToDecisionRecord()`, `replaySettlementForCorrelationId()`, `flushPendingSettlementReplays()` |
+| `lib/agent-framework/coordinator.ts` | `_syncSettlementFromRegistry()` pós-save, import dos replay helpers |
+
+### Garantias de segurança
+
+- Replay é idempotente — executar múltiplas vezes produz o mesmo `DecisionReport` final
+- `confirmed`/`canonicalSettlement=true` não é rebaixado por updates `submitted`/`failed`/`synthetic` posteriores
+- `txHash` all-zero não vira `canonicalSettlement=true`
+- `settlementStatus` progressão monotônica é preservada
+- Sempre que o listener roda DEPOIS do report existir, o caminho original funciona sem mudanças
+- Nenhuma chamada ao `DecisionAnchor`, `accounting`, `BotBank`, lucro verificado, win-rate ou reconciliação
+
+### Testes controlados
+
+`scripts/phase-2e2f-settlement-replay-test.ts` — 26 asserts, 0 falhas. Cenários:
+
+- A: update antes do report → replay pós-save recupera
+- B: report antes do update → listener original funciona
+- C: confirmed canônico preservado contra updates stale
+- D: synthetic/all-zero txHash não vira canônico
+- E: sem match → replay é no-op
+
+### Bloqueios preservados
+
+`DecisionAnchor`, `accounting`, `BotBank`, lucro verificado, win-rate e reconciliação continuam bloqueados — exigem E2E real na Arc testnet.
+
+
 ## [09/07/2026] Phase 2e.2e Race Observation - Settlement Update Before DecisionReport Save
 
 **Severidade:** Media

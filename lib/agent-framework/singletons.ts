@@ -18,6 +18,14 @@ export const frameworkSettlementRegistry = new SettlementRegistry()
 frameworkSettlementRegistry.setRecordListener(updateDecisionReportFromSettlement)
 export const frameworkCoordinator = new Coordinator({ name: "ArcCoordinator", audit: frameworkAudit, policyEngine: frameworkPolicy, intentPublisher: frameworkIntents })
 
+// ── Pending settlement replay queue ──────────────────────────────────────
+// Holds settlement updates that arrived before the matching DecisionReport
+// was saved. Flushed on explicit replay or next setDecisionReport.
+// Bounded at MAX_PENDING_SETTLEMENT_REPLAYS — oldest entries silently
+// discarded to prevent unbounded memory growth.
+const MAX_PENDING_SETTLEMENT_REPLAYS = 500
+let pendingSettlementReplays: SettlementRecord[] = []
+
 type DecisionReportExecution = NonNullable<DecisionReport["execution"]>
 type ReportSettlementStatus = NonNullable<DecisionReportExecution["settlementStatus"]>
 const PROGRESSIVE_SETTLEMENT_STATUS_ORDER: Partial<Record<ReportSettlementStatus, number>> = {
@@ -103,7 +111,14 @@ function updateDecisionReportFromSettlement(record: SettlementRecord): void {
   const intentRecord = findIntentRecordForSettlement(record)
   const report = intentRecord?.decisionReport
   if (!intentRecord || !report?.execution) {
-    console.warn(`[SETTLEMENT] ⚠️ DecisionReport not found for settlement update correlation:${record.correlationId} decisionReportId:${record.decisionReportId ?? "unknown"}`)
+    console.warn(`[SETTLEMENT] ⚠️ DecisionReport not found for settlement update correlation:${record.correlationId} decisionReportId:${record.decisionReportId ?? "unknown"} — queued for replay`)
+    if (!pendingSettlementReplays.some(r => r.settlementId === record.settlementId)) {
+      if (pendingSettlementReplays.length >= MAX_PENDING_SETTLEMENT_REPLAYS) {
+        const evicted = pendingSettlementReplays.shift()!
+        console.warn(`[SETTLEMENT] ⚠️ Pending replay queue full — evicted oldest correlation:${evicted.correlationId} settlementId:${evicted.settlementId} — no state lost, SettlementRegistry still holds canonical record`)
+      }
+      pendingSettlementReplays.push(record)
+    }
     return
   }
 
@@ -176,4 +191,46 @@ function updateDecisionReportFromSettlement(record: SettlementRecord): void {
   if (JSON.stringify(report.execution) === JSON.stringify(updatedReport.execution)) return
 
   frameworkIntents.setDecisionReport(intentRecord.intent.id, updatedReport)
+}
+
+// ── Replay/sync API ───────────────────────────────────────────────────────
+// Phase 2e.2f: post-save replay ensures no settlement update is lost when
+// the listener fires before _saveDecisionReport completes.
+
+/** Replay a specific settlement record into the matching DecisionReport.
+ *  Uses the same merge/safety logic as the automatic listener.
+ *  Idempotent and monotonic — confirmed canonical cannot be downgraded. */
+export function replaySettlementToDecisionReport(record: SettlementRecord): void {
+  updateDecisionReportFromSettlement(record)
+}
+
+/** Look up the latest settlement record by correlationId and replay it.
+ *  Also flushes any queued replays for the same correlationId.
+ *  Safe to call anytime — no-op if no matching record exists. */
+export function replaySettlementForCorrelationId(correlationId: string): void {
+  const record = frameworkSettlementRegistry.findByCorrelationId(correlationId)
+  if (record) {
+    updateDecisionReportFromSettlement(record)
+  }
+  const queued = pendingSettlementReplays.filter(r => r.correlationId === correlationId)
+  if (queued.length > 0) {
+    pendingSettlementReplays = pendingSettlementReplays.filter(r => r.correlationId !== correlationId)
+    for (const queuedRecord of queued) {
+      updateDecisionReportFromSettlement(queuedRecord)
+    }
+  }
+}
+
+/** Flush ALL queued settlement replays regardless of correlationId.
+ *  Returns the number of replays flushed.
+ *  Safe — each replay is idempotent and monotonic. */
+export function flushPendingSettlementReplays(): number {
+  const count = pendingSettlementReplays.length
+  if (count === 0) return 0
+  const records = [...pendingSettlementReplays]
+  pendingSettlementReplays = []
+  for (const record of records) {
+    updateDecisionReportFromSettlement(record)
+  }
+  return count
 }
