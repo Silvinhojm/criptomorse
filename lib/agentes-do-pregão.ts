@@ -648,10 +648,18 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
     // O sinal passa por Coordinator → consensus → TradingAdapter → originalReceberOK
     // O Pregão vira dependência interna do TradingAdapter, não mais o orquestrador
     if (_frameworkReady) {
+      const inferredAction: "BUY" | "SELL" = signal.direcao === "sell" ? "SELL"
+        : signal.direcao === "buy" ? "BUY"
+        : STABLES.has(signal.fromToken.toUpperCase()) && !STABLES.has(signal.toToken.toUpperCase()) ? "BUY"
+        : !STABLES.has(signal.fromToken.toUpperCase()) && STABLES.has(signal.toToken.toUpperCase()) ? "SELL"
+        : "BUY"
+      if (!signal.direcao && inferredAction !== "BUY") {
+        pregão.adicionarLog(`[AGENTES] ⚠️ Direção inferida para ${signal.pregueiro} → ${signal.par}: ${inferredAction}`)
+      }
       const proposal: AgentProposal = {
         id: `prop_${signal.pregueiro}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         agentId: signal.pregueiro,
-        action: signal.direcao === "sell" ? "SELL" : "BUY",
+        action: inferredAction,
         params: signal as unknown as Record<string, unknown>,
         confidence: signal.confianca,
         timestamp: Date.now(),

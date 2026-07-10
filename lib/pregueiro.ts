@@ -22,6 +22,7 @@ export interface PregueiroDecisao {
   toToken: string
   confianca: number
   motivo: string
+  direcao?: "buy" | "sell"
 }
 
 class TendênciaPregueiro {
@@ -53,7 +54,7 @@ class TendênciaPregueiro {
     if (isStable(from) && !isStable(to)) {
       if (tendencia > 0.001 && volatilidade > 0.002) {
         const conf = Math.min(85, 40 + Math.abs(tendencia) * 3000)
-        return { gostou: true, par, fromToken: from, toToken: to, confianca: Math.round(conf), motivo: `${to} em alta (${(tendencia * 100).toFixed(3)}%)` }
+        return { gostou: true, par, fromToken: from, toToken: to, confianca: Math.round(conf), motivo: `${to} em alta (${(tendencia * 100).toFixed(3)}%)`, direcao: "buy" }
       }
     }
 
@@ -109,7 +110,8 @@ class VolumePregueiro {
       fromToken: best.from,
       toToken: best.to,
       confianca: Math.round(conf),
-      motivo: `Volume alto (${ratio.toFixed(1)}% cap) — ${best.to}`
+      motivo: `Volume alto (${ratio.toFixed(1)}% cap) — ${best.to}`,
+      direcao: "buy",
     }
   }
 
@@ -119,7 +121,7 @@ class VolumePregueiro {
     const par = `${from}→${to}`
     if (ratio > 5 && momentum > 0) {
       const conf = Math.min(80, 45 + ratio * 3)
-      return { gostou: true, par, fromToken: from, toToken: to, confianca: Math.round(conf), motivo: `Volume alto (${ratio.toFixed(1)}% cap)` }
+      return { gostou: true, par, fromToken: from, toToken: to, confianca: Math.round(conf), motivo: `Volume alto (${ratio.toFixed(1)}% cap)`, direcao: isStable(from) && !isStable(to) ? "buy" : !isStable(from) && isStable(to) ? "sell" : undefined }
     }
     return { gostou: false, par, fromToken: from, toToken: to, confianca: 0, motivo: `Volume normal (${ratio.toFixed(1)}%)` }
   }
@@ -162,7 +164,8 @@ class SentimentoPregueiro {
         fromToken: best.from,
         toToken: best.to,
         confianca: Math.round(conf),
-        motivo: `Mercado otimista — comprando ${best.to} (F&G: ${fg})`
+        motivo: `Mercado otimista — comprando ${best.to} (F&G: ${fg})`,
+        direcao: "buy",
       }
     }
 
@@ -178,7 +181,8 @@ class SentimentoPregueiro {
         fromToken: best.from,
         toToken: best.to,
         confianca: Math.round(conf),
-        motivo: `Medo extremo — vendendo ${best.from} (F&G: ${fg})`
+        motivo: `Medo extremo — vendendo ${best.from} (F&G: ${fg})`,
+        direcao: "sell",
       }
     }
 
@@ -193,7 +197,8 @@ class SentimentoPregueiro {
         fromToken: best.from,
         toToken: best.to,
         confianca: 55,
-        motivo: `Oportunidade de compra — mercado com medo (F&G: ${fg})`
+        motivo: `Oportunidade de compra — mercado com medo (F&G: ${fg})`,
+        direcao: "buy",
       }
     }
 
@@ -243,7 +248,8 @@ class TáticoPregueiro {
       fromToken: escolhido.from,
       toToken: escolhido.to,
       confianca,
-      motivo
+      motivo,
+      direcao: "buy",
     }
   }
 
@@ -252,7 +258,11 @@ class TáticoPregueiro {
     this.ciclos++
     if (isStable(from) && !isStable(to)) {
       const confianca = this.ciclos % 3 === 0 ? 65 : 45
-      return { gostou: true, par, fromToken: from, toToken: to, confianca, motivo: `${to} — rotação` }
+      return { gostou: true, par, fromToken: from, toToken: to, confianca, motivo: `${to} — rotação`, direcao: "buy" }
+    }
+    if (!isStable(from) && isStable(to)) {
+      const confianca = this.ciclos % 3 === 0 ? 65 : 45
+      return { gostou: true, par, fromToken: from, toToken: to, confianca, motivo: `${from} — venda`, direcao: "sell" }
     }
     return { gostou: false, par, fromToken: from, toToken: to, confianca: 0, motivo: "Sem sinal tático" }
   }
@@ -339,7 +349,8 @@ export async function executarCicloPregueiros(rede?: string) {
           confianca: melhorTendencia.decisao.confianca,
           timestamp: Date.now(),
           fromToken: melhorTendencia.decisao.fromToken,
-          toToken: melhorTendencia.decisao.toToken
+          toToken: melhorTendencia.decisao.toToken,
+          direcao: melhorTendencia.decisao.direcao,
         })
       }
     }
@@ -355,7 +366,8 @@ export async function executarCicloPregueiros(rede?: string) {
           confianca: decisaoVolume.confianca,
           timestamp: Date.now(),
           fromToken: decisaoVolume.fromToken,
-          toToken: decisaoVolume.toToken
+          toToken: decisaoVolume.toToken,
+          direcao: decisaoVolume.direcao,
         })
       }
     }
@@ -374,7 +386,8 @@ export async function executarCicloPregueiros(rede?: string) {
             confianca: decisaoSentimento.confianca,
             timestamp: Date.now(),
             fromToken: decisaoSentimento.fromToken,
-            toToken: decisaoSentimento.toToken
+            toToken: decisaoSentimento.toToken,
+            direcao: decisaoSentimento.direcao,
           })
         }
       }
@@ -391,7 +404,8 @@ export async function executarCicloPregueiros(rede?: string) {
           confianca: decisaoTatico.confianca,
           timestamp: Date.now(),
           fromToken: decisaoTatico.fromToken,
-          toToken: decisaoTatico.toToken
+          toToken: decisaoTatico.toToken,
+          direcao: decisaoTatico.direcao,
         })
       }
     }
@@ -439,6 +453,7 @@ async function verificarStaircaseFechamento(redes: NetworkKey[]) {
           timestamp: Date.now(),
           fromToken: pos.boughtToken,
           toToken: stableDestino,
+          direcao: "sell",
         })
       }
     }

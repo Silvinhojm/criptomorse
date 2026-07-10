@@ -118,6 +118,7 @@
 //                  On-chain Proof
 // ═══════════════════════════════════════════════════════════════════════════════
 
+import { ethers } from "ethers"
 import { poolProfiler } from "../pool-profiler"
 import { hasSellRoute, isRouteBlocked, STABLECOINS } from "../route-verifier"
 import { gasPriceOracle, type GasContext } from "../gas-price-oracle"
@@ -125,7 +126,8 @@ import { accountant } from "../accountant"
 import { volatilityTracker } from "../volatility-tracker"
 import { pairPriceFeed } from "../pair-price-feed"
 import { hasChainlinkFeed } from "../chainlink-feeds"
-import { NETWORKS, type NetworkKey } from "../real-swap-executor"
+import { NETWORKS, type NetworkKey, realSwap } from "../real-swap-executor"
+import { MIN_POOL_RESERVE, DEFAULT_MIN_RESERVE } from "../config/market-thresholds"
 import { frameworkReputation } from "./singletons"
 import type { KnowledgeRequest, KnowledgeReport } from "./knowledge-types"
 
@@ -161,6 +163,19 @@ function resolveTokenAddress(token: string, network: string): string | null {
   const addr = net.tokens[token as keyof typeof net.tokens]
   return addr ? addr.toLowerCase() : null
 }
+
+// ── Arc V2 known pools ────────────────────────────────────────────
+// GenericAMMPair (Uniswap V2-style) pools on Arc testnet.
+// Not discoverable via V3 factory — read reserves directly via RPC.
+const ARC_V2_POOLS = [
+  { token0: "0x3600000000000000000000000000000000000000", token1: "0x89b50855aa3be2f677cd6303cec089b5f319d72a", address: "0xa1e418d16c969fdb9482716c7e2bd3d31872ebfb" },
+  { token0: "0x3600000000000000000000000000000000000000", token1: "0xf0c4a4ce82a5746abaad9425360ab04fbba432bf", address: "0x185556c077c95fc07498fed4d4faf03b6ee30c5c" },
+]
+
+const V2_RESERVE_ABI = [
+  "function reserve0() view returns (uint256)",
+  "function reserve1() view returns (uint256)",
+]
 
 export class KnowledgeService {
   private cache = new Map<string, CacheEntry>()
@@ -268,16 +283,115 @@ export class KnowledgeService {
         if (isStable(request.pair.from) && isStable(request.pair.to)) return 80
         try {
           const pools = await poolProfiler.getPools(request.network as NetworkKey, fromAddr, toAddr)
-          if (pools.length === 0) return 0
-          const maxLiq = Math.max(...pools.map(p => Number(p.liquidity)))
-          if (maxLiq <= 0) return 10
-          const score = Math.min(100, Math.round(Math.log10(maxLiq) * 10))
-          return Math.max(score, pools.length * 25)
+          if (pools.length > 0) {
+            const maxLiq = Math.max(...pools.map(p => Number(p.liquidity)))
+            if (maxLiq <= 0) return 10
+            const score = Math.min(100, Math.round(Math.log10(maxLiq) * 10))
+            return Math.max(score, pools.length * 25)
+          }
         } catch {
-          return 0
+          /* poolProfiler unavailable — try V2 fallback */
         }
+        // V2 pool fallback for networks without V3 factory (e.g. Arc testnet)
+        if (request.network === "arc") {
+          return this._getArcV2Score(fromAddr, toAddr)
+        }
+        return 0
       }
     )
+  }
+
+  /** Read real reserves from GenericAMMPair (V2-style) pools on Arc.
+   *  Returns a liquidity score based on USD reserve depth of the stablecoin side.
+   *
+   *  Error handling guarantees:
+   *  - Pool not found          → 0 (no pool → blocked)
+   *  - Provider unavailable    → 0 (no RPC → blocked)
+   *  - RPC call fails/timeout  → 0 (read failure → blocked)
+   *  - reserve0/reserve1 0     → 0 (empty pool → blocked)
+   *  - Token order unknown     → 0 (can't resolve depth → blocked)
+   *  - Below actionable depth  → 0 (dust → blocked)
+   *  - All paths return 0      → canTrade stays false
+   *  - No exception escapes    → Coordinator/caller never crashes
+   *
+   *  Minimum actionable reserve is determined per-token from existing
+   *  MIN_POOL_RESERVE config (e.g. cirBTC → $10) or DEFAULT_MIN_RESERVE ($5).
+   *  This is the same conservative threshold already used by agentes-do-pregão
+   *  for SELL validation. */
+  private async _getArcV2Score(fromAddr: string, toAddr: string): Promise<number> {
+    // ── 1. Pool address lookup ──────────────────────────────────────────────
+    // Matches bidirectionally: token0↔token1 order is irrelevant.
+    const pool = ARC_V2_POOLS.find(p =>
+      (p.token0 === fromAddr && p.token1 === toAddr) ||
+      (p.token0 === toAddr && p.token1 === fromAddr)
+    )
+    if (!pool) return 0
+
+    // ── 2. RPC provider ─────────────────────────────────────────────────────
+    const provider = realSwap.getProvider()
+    if (!provider) return 0
+
+    // ── 3. Read on-chain reserves ───────────────────────────────────────────
+    // eth_call — read-only, no gas, no signing, no state change.
+    const contract = new ethers.Contract(pool.address, V2_RESERVE_ABI, provider)
+    let reserve0: bigint
+    let reserve1: bigint
+    try {
+      reserve0 = await contract.reserve0()
+      reserve1 = await contract.reserve1()
+    } catch {
+      return 0
+    }
+
+    // ── 4. Both Arc V2 pools have USDC as token0 (6 decimals, ~$1 each) ──
+    // reserve0 = USDC raw amount, reserve1 = volatile token raw amount.
+    // Use reserve0 as USD depth proxy.
+    if (reserve0 <= 0n) return 0
+
+    const usdDepth = Number(reserve0) / 1_000_000
+
+    // ── 5. Belt-and-suspenders: conversion safety ───────────────────────────
+    if (usdDepth <= 0) return 0
+
+    // ── 6. Minimum actionable reserve ───────────────────────────────────────
+    // Use existing MIN_POOL_RESERVE config (the same threshold used by
+    // agentes-do-pregão for SELL validation) to prevent dust from passing.
+    // For cirBTC: $10; for EURC/USDC: $5; unknown tokens: DEFAULT_MIN_RESERVE.
+    // Only score ≥20 if reserves exceed this threshold.
+    const minReserve = this._minActionableReserve(fromAddr, toAddr)
+    if (usdDepth < minReserve) return 0
+
+    // ── 7. Score tiers ──────────────────────────────────────────────────────
+    if (usdDepth < 50) return 20
+    if (usdDepth < 200) return 60
+    return 80
+  }
+
+  /** Resolve the minimum actionable reserve USD for a pair on Arc.
+   *  Checks MIN_POOL_RESERVE for each token in the pair, returns the
+   *  highest threshold found, or DEFAULT_MIN_RESERVE as floor. */
+  private _minActionableReserve(fromAddr: string, toAddr: string): number {
+    let threshold = DEFAULT_MIN_RESERVE
+    for (const addr of [fromAddr, toAddr]) {
+      const sym = this._addrToSymbol(addr, "arc")
+      if (sym) {
+        const t = MIN_POOL_RESERVE.arc?.[sym]
+        if (t && t > threshold) threshold = t
+      }
+    }
+    return threshold
+  }
+
+  /** Reverse-map token address → symbol using NETWORKS config.
+   *  Returns null if address is unknown on the given network. */
+  private _addrToSymbol(address: string, network: string): string | null {
+    const net = NETWORKS[network as NetworkKey]
+    if (!net) return null
+    const lowerAddr = address.toLowerCase()
+    for (const [sym, addr] of Object.entries(net.tokens)) {
+      if ((addr as string).toLowerCase() === lowerAddr) return sym
+    }
+    return null
   }
 
   private _checkRoutes(request: KnowledgeRequest): {

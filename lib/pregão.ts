@@ -271,13 +271,22 @@ class Pregão {
     void this.submeterSinalAoCoordinator(signal)
   }
 
+  private _inferDirection(signal: OkSignal): "BUY" | "SELL" {
+    if (signal.direcao === "sell") return "SELL"
+    if (signal.direcao === "buy") return "BUY"
+    if (isStable(signal.fromToken) && !isStable(signal.toToken)) return "BUY"
+    if (!isStable(signal.fromToken) && isStable(signal.toToken)) return "SELL"
+    this.log(`[PREGÃO] ⚠️ Direção ambígua para ${signal.pregueiro} → ${signal.par} — padrão BUY`)
+    return "BUY"
+  }
+
   async submeterSinalAoCoordinator(signal: OkSignal): Promise<boolean> {
     ensureTradingAdapterConfigured(this)
 
     const proposal: AgentProposal = {
       id: `prop_${signal.pregueiro}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       agentId: signal.pregueiro,
-      action: signal.direcao === "sell" ? "SELL" : "BUY",
+      action: this._inferDirection(signal),
       params: signal as unknown as Record<string, unknown>,
       confidence: signal.confianca,
       timestamp: Date.now(),
