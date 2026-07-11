@@ -9,6 +9,9 @@ import {
   frameworkSettlementRegistry,
   frameworkIntents,
   replaySettlementForCorrelationId,
+  getPendingSettlementReplayDiagnostics,
+  flushPendingSettlementReplays,
+  replaySettlementToDecisionReport,
 } from "../lib/agent-framework/singletons"
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -74,6 +77,14 @@ function cloneReport(r: DecisionReport): DecisionReport {
   return JSON.parse(JSON.stringify(r))
 }
 
+function replaceSetDecisionReport(fn: ((id: string, report: DecisionReport) => boolean) | null): () => void {
+  const saved = frameworkIntents.setDecisionReport
+  if (fn) {
+    frameworkIntents.setDecisionReport = fn
+  }
+  return function restore() { frameworkIntents.setDecisionReport = saved }
+}
+
 // ── Verdict tracking ────────────────────────────────────────────────────
 
 let passed = 0
@@ -122,12 +133,33 @@ const SCENARIO_NAMES: Record<string, string> = {
   AP: "registerPending settled plus zero txHash rejected before normalization",
   AQ: "Mixed settled update rejected atomically",
   AR: "Valid status flows remain supported",
+  AS: "Exception: one queued item — retryCount tracked, item preserved",
+  AT: "Exception mid-flush does NOT corrupt remaining items",
+  AU: "Retry count increments across multiple calls",
+  AV: "Item dropped after MAX_SETTLEMENT_REPLAY_ATTEMPTS failures",
+  AW: "Multiple correlationIds — one fails, other unaffected",
+  AX: "FIFO order preserved within same correlationId",
+  AY: "Cap enforcement — eviction of oldest entries",
+  AZ: "Dedupe by settlementId — snapshot preserved",
+  BA: "Snapshot integrity — registry mutation does not affect queue",
+  BB: "SettlementId re-enqueued after drop is allowed",
+  BC: "getPendingSettlementReplayDiagnostics returns correct fields",
+  BD: "Monkey-patch intercepts setDecisionReport calls",
+  BE: "Replay after drop triggers fresh enqueue",
+  BF: "flushPendingSettlementReplays returns 0 when empty",
+  BG: "flushPendingSettlementReplays FIFO — A fails, B and C blocked",
+  BH: "flushPendingSettlementReplays — different corrIds independent",
+  BI: "A1/A2/A3 FIFO — success→fail→block + second call + cross-corrId independence",
 }
 
 const SCENARIO_ORDER = [
   "A", "B", "C", "D", "E", "F", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X",
   "Y", "Z", "AA", "AB", "AC", "AD", "AE", "AF", "AG", "AJ", "AK", "AL", "AM", "AN", "AO", "AP", "AQ", "AR",
+  "AS", "AT", "AU", "AV", "AW", "AX", "AY", "AZ", "BA", "BB", "BC", "BD", "BE", "BF", "BG", "BH", "BI", "BJ", "BK",
 ] as const
+
+SCENARIO_NAMES.BJ = "Scoped replaySettlementForCorrelationId FIFO and correlation isolation"
+SCENARIO_NAMES.BK = "Diagnostics balanceDeltas copy isolation"
 
 function captureWarnings<T>(fn: () => T): { result: T; warnings: string[] } {
   const originalWarn = console.warn
@@ -1791,9 +1823,993 @@ console.log("  (reserved settled rejection does not change existing valid transi
 
 // ══════════════════════════════════════════════════════════════════════════
 // End Phase 2e.2h scenarios
+// --------------------------------------------------------------------------
+// Phase 2e.2i � Settlement Replay Queue Integration (AS�BD)
+// --------------------------------------------------------------------------
+
+// -- Scenario AS: Exception � one queued item, retryCount tracked ----------
+
+console.log("Scenario AS � Exception: one queued item � retryCount tracked, item preserved")
+console.log("  (listener enqueues when report absent ? override fires on replay)")
+
+{
+  var corrIdAS = "scenario_AS_enqueue_retry"
+  var setAS = "settlement_AS_001"
+
+  // 1. Publish intent first (so intent record exists)
+  frameworkIntents.publish({ id: corrIdAS, agentId: "test-as", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+
+  // 2. Register in global registry � listener fires and enqueues (report absent)
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdAS, { settlementId: setAS }))
+
+  // 3. Set report
+  frameworkIntents.setDecisionReport(corrIdAS, makeReport("decision_" + corrIdAS, corrIdAS))
+
+  // 4. Activate throwing override
+  const _restoreOverride = replaceSetDecisionReport(function () { throw new Error("Simulated failure AS") })
+
+  try {
+    // 5. Replay � projection works (report exists), queued item fires override
+    replaySettlementForCorrelationId(corrIdAS)
+
+    var diagAS = getPendingSettlementReplayDiagnostics()
+    var entryAS = diagAS.find(function (e) { return e.correlationId === corrIdAS })
+    assert("AS.1 Entry remains in queue", !!entryAS)
+    if (entryAS) {
+      assert("AS.2 retryCount === 1", entryAS.retryCount === 1, "got " + entryAS.retryCount)
+      assert("AS.3 lastAttemptAt is set", typeof entryAS.lastAttemptAt === "number")
+      assert("AS.4 lastError contains error", (entryAS.lastError ?? "").indexOf("Simulated failure AS") !== -1)
+    }
+  } finally {
+    _restoreOverride()
+    // Clean up residual entry: with real setDecisionReport restored,
+    // replay succeeds and removes the queued entry.
+    replaySettlementForCorrelationId(corrIdAS)
+  }
+}
+
+// -- Scenario AT: Exception mid-flush does NOT corrupt remaining items -----
+
+console.log("Scenario AT � Exception mid-flush does NOT corrupt remaining items")
+console.log("  (replay processes each correlationId independently)")
+
+{
+  var cOkAT = "scenario_AT_corr_ok"
+  var cFailAT = "scenario_AT_corr_fail"
+  var cOk2AT = "scenario_AT_corr_ok2"
+  var allAT = [cOkAT, cFailAT, cOk2AT]
+
+  for (var idx3 = 0; idx3 < allAT.length; idx3++) {
+    var c = allAT[idx3]
+    frameworkIntents.publish({ id: c, agentId: "test-at", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+    frameworkSettlementRegistry.registerPending(makeSettlementRecord(c, { settlementId: "settlement_AT_" + c }))
+    frameworkIntents.setDecisionReport(c, makeReport("decision_" + c, c))
+  }
+
+  const _restoreOverride = replaceSetDecisionReport(function (id) {
+    // id is the intent ID = correlation ID
+    if (id === cFailAT) throw new Error("Simulated failure AT")
+    return true
+  })
+
+  try {
+    replaySettlementForCorrelationId(cOkAT)
+    replaySettlementForCorrelationId(cFailAT)
+    replaySettlementForCorrelationId(cOk2AT)
+
+    var diagAT2 = getPendingSettlementReplayDiagnostics()
+    assert("AT.1 corr_ok cleared", !diagAT2.find(function (e) { return e.correlationId === cOkAT }))
+    var fAT = diagAT2.find(function (e) { return e.correlationId === cFailAT })
+    assert("AT.2 corr_fail remains", !!fAT)
+    if (fAT) assert("AT.3 corr_fail retryCount >= 1", fAT.retryCount >= 1, "got " + fAT.retryCount)
+    assert("AT.4 corr_ok2 cleared", !diagAT2.find(function (e) { return e.correlationId === cOk2AT }))
+  } finally {
+    _restoreOverride()
+    // Clean up residual entry: replay cFailAT with real hook succeeds.
+    replaySettlementForCorrelationId(cFailAT)
+  }
+}
+
+// -- Scenario AU: Retry count increments across multiple calls -----------
+
+console.log("Scenario AU � Retry count increments across multiple calls")
+console.log("  (each call increments retryCount without removing the entry)")
+
+{
+  var corrIdAU = "scenario_AU_retry_increment"
+  var setAU = "settlement_AU_001"
+
+  frameworkIntents.publish({ id: corrIdAU, agentId: "test-au", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdAU, { settlementId: setAU }))
+  frameworkIntents.setDecisionReport(corrIdAU, makeReport("decision_" + corrIdAU, corrIdAU))
+
+  const _restoreOverride = replaceSetDecisionReport(function () { throw new Error("Persistent failure AU") })
+
+  try {
+    replaySettlementForCorrelationId(corrIdAU)
+    replaySettlementForCorrelationId(corrIdAU)
+    replaySettlementForCorrelationId(corrIdAU)
+
+    var diagAU = getPendingSettlementReplayDiagnostics()
+    var entryAU = diagAU.find(function (e) { return e.correlationId === corrIdAU })
+    assert("AU.1 Entry still in queue", !!entryAU)
+    if (entryAU) {
+      assert("AU.2 retryCount === 3", entryAU.retryCount === 3, "got " + entryAU.retryCount)
+      assert("AU.3 lastError preserved", typeof entryAU.lastError === "string" && entryAU.lastError.length > 0)
+    }
+  } finally {
+    _restoreOverride()
+    // Clean up residual entry: replay with real hook succeeds.
+    replaySettlementForCorrelationId(corrIdAU)
+  }
+}
+
+// -- Scenario AV: Item dropped after MAX_SETTLEMENT_REPLAY_ATTEMPTS (5) --
+
+console.log("Scenario AV � Item dropped after MAX_SETTLEMENT_REPLAY_ATTEMPTS failures")
+console.log("  (5 consecutive failures ? entry removed, warning emitted)")
+
+{
+  var corrIdAV = "scenario_AV_drop_limit"
+  var setAVA1 = "settlement_AV_A1"
+  var setAVA2 = "settlement_AV_A2"
+  var txAVA1 = "0xd100000000000000000000000000000000000000000000000000000000000001"
+  var txAVA2 = "0xd200000000000000000000000000000000000000000000000000000000000002"
+
+  // Assert queue is clean before AV starts — prior scenarios clean their own state.
+  var diagBeforeAV = getPendingSettlementReplayDiagnostics()
+  assert("AV.0 Queue empty before scenario",
+    diagBeforeAV.length === 0,
+    "got " + diagBeforeAV.length + " entries: " + JSON.stringify(diagBeforeAV.map(function (e) { return e.correlationId + "@" + e.settlementId + " retry=" + e.retryCount })))
+
+  frameworkIntents.publish({ id: corrIdAV, agentId: "test-av", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdAV, { settlementId: setAVA1, txHash: txAVA1 }))
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdAV, { settlementId: setAVA2, txHash: txAVA2 }))
+  frameworkIntents.setDecisionReport(corrIdAV, makeReport("decision_" + corrIdAV, corrIdAV))
+
+  var appliedAVA2 = 0
+  var attemptedAVA1 = 0
+  const _restoreOverride = replaceSetDecisionReport(function (_id, updatedReport) {
+    var appliedTxHash = updatedReport.execution?.txHash
+    if (appliedTxHash === txAVA1) {
+      attemptedAVA1++
+      throw new Error("Persistent failure AV A1")
+    }
+    if (appliedTxHash === txAVA2) appliedAVA2++
+    return true
+  })
+
+  try {
+    var wAV = captureWarnings(function () {
+      var removedAV1 = flushPendingSettlementReplays()
+      var diagAV1 = getPendingSettlementReplayDiagnostics().filter(function (e) { return e.correlationId === corrIdAV })
+      var a1AV1 = diagAV1.find(function (e) { return e.settlementId === setAVA1 })
+      var a2AV1 = diagAV1.find(function (e) { return e.settlementId === setAVA2 })
+      assert("AV.1 Call 1 removes 0", removedAV1 === 0, "got " + removedAV1)
+      assert("AV.2 A1 remains with retryCount 1", a1AV1?.retryCount === 1, "got " + a1AV1?.retryCount)
+      assert("AV.3 A2 remains with retryCount 0 after call 1", a2AV1?.retryCount === 0, "got " + a2AV1?.retryCount)
+      assert("AV.4 A2 not called after call 1", appliedAVA2 === 0, "got " + appliedAVA2)
+      assert("AV.4a A1 attempted exactly once in call 1", attemptedAVA1 === 1, "got " + attemptedAVA1)
+
+      var removedAV2 = flushPendingSettlementReplays()
+      var diagAV2 = getPendingSettlementReplayDiagnostics().filter(function (e) { return e.correlationId === corrIdAV })
+      assert("AV.5 Call 2 removes 0", removedAV2 === 0, "got " + removedAV2)
+      assert("AV.6 A1 retryCount 2", diagAV2.find(function (e) { return e.settlementId === setAVA1 })?.retryCount === 2)
+      assert("AV.7 A2 retryCount 0 after call 2", diagAV2.find(function (e) { return e.settlementId === setAVA2 })?.retryCount === 0)
+      assert("AV.8 A2 not called after call 2", appliedAVA2 === 0)
+      assert("AV.8a A1 attempted exactly once in call 2", attemptedAVA1 === 2, "got cumulative " + attemptedAVA1)
+
+      var removedAV3 = flushPendingSettlementReplays()
+      var diagAV3 = getPendingSettlementReplayDiagnostics().filter(function (e) { return e.correlationId === corrIdAV })
+      assert("AV.9 Call 3 removes 0", removedAV3 === 0, "got " + removedAV3)
+      assert("AV.10 A1 retryCount 3", diagAV3.find(function (e) { return e.settlementId === setAVA1 })?.retryCount === 3)
+      assert("AV.11 A2 retryCount 0 after call 3", diagAV3.find(function (e) { return e.settlementId === setAVA2 })?.retryCount === 0)
+      assert("AV.12 A2 not called after call 3", appliedAVA2 === 0)
+      assert("AV.12a A1 attempted exactly once in call 3", attemptedAVA1 === 3, "got cumulative " + attemptedAVA1)
+
+      var removedAV4 = flushPendingSettlementReplays()
+      var diagAV4 = getPendingSettlementReplayDiagnostics().filter(function (e) { return e.correlationId === corrIdAV })
+      assert("AV.13 Call 4 removes 0", removedAV4 === 0, "got " + removedAV4)
+      assert("AV.14 A1 retryCount 4", diagAV4.find(function (e) { return e.settlementId === setAVA1 })?.retryCount === 4)
+      assert("AV.15 A2 retryCount 0 after call 4", diagAV4.find(function (e) { return e.settlementId === setAVA2 })?.retryCount === 0)
+      assert("AV.16 A2 not called after call 4", appliedAVA2 === 0)
+      assert("AV.16a A1 attempted exactly once in call 4", attemptedAVA1 === 4, "got cumulative " + attemptedAVA1)
+
+      var removedAV5 = flushPendingSettlementReplays()
+      var diagAV5 = getPendingSettlementReplayDiagnostics().filter(function (e) { return e.correlationId === corrIdAV })
+      assert("AV.17 Call 5 returns exactly 1 removal", removedAV5 === 1, "got " + removedAV5)
+      assert("AV.18 A1 removed on fifth failure", !diagAV5.find(function (e) { return e.settlementId === setAVA1 }))
+      assert("AV.19 A2 remains after A1 drop", !!diagAV5.find(function (e) { return e.settlementId === setAVA2 }))
+      assert("AV.20 A2 retryCount 0 after A1 drop", diagAV5.find(function (e) { return e.settlementId === setAVA2 })?.retryCount === 0)
+      assert("AV.21 A2 not called in A1 drop call", appliedAVA2 === 0)
+      assert("AV.21a A1 attempted exactly once in call 5", attemptedAVA1 === 5, "got cumulative " + attemptedAVA1)
+    })
+
+    var dropWarningsAV = wAV.warnings.filter(function (w) {
+      return w.indexOf("action=dropped_after_retry_limit") !== -1 && w.indexOf(setAVA1) !== -1
+    })
+    assert("AV.22 Exactly one dropped warning for A1", dropWarningsAV.length === 1, "got " + dropWarningsAV.length)
+
+    var removedAV6 = flushPendingSettlementReplays()
+    assert("AV.23 Call 6 removes A2 after success", removedAV6 === 1, "got " + removedAV6)
+    assert("AV.24 A2 called only on call 6", appliedAVA2 === 1, "got " + appliedAVA2)
+    assert("AV.25 Queue empty for correlationId", !getPendingSettlementReplayDiagnostics().find(function (e) { return e.correlationId === corrIdAV }))
+  } finally {
+    _restoreOverride()
+    flushPendingSettlementReplays()
+  }
+}
+
+function replaceFindByCorrelationId(fn: (correlationId: string) => SettlementRecord | null): () => void {
+  const saved = frameworkSettlementRegistry.findByCorrelationId
+  frameworkSettlementRegistry.findByCorrelationId = fn
+  return function restore() { frameworkSettlementRegistry.findByCorrelationId = saved }
+}
+
+// -- Scenario AW: Multiple correlationIds � one fails, other unaffected --
+
+console.log("Scenario AW � Multiple correlationIds � one fails, other unaffected")
+console.log("  (failing corrId does not prevent other corrIds from succeeding)")
+
+{
+  var cOkAW = "scenario_AW_ok"
+  var cFailAW = "scenario_AW_fail"
+  var allAW = [cOkAW, cFailAW]
+
+  for (var idx4 = 0; idx4 < allAW.length; idx4++) {
+    var c = allAW[idx4]
+    frameworkIntents.publish({ id: c, agentId: "test-aw", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+    frameworkSettlementRegistry.registerPending(makeSettlementRecord(c, { settlementId: "settlement_AW_" + c }))
+    frameworkIntents.setDecisionReport(c, makeReport("decision_" + c, c))
+  }
+
+  const _restoreOverride = replaceSetDecisionReport(function (id) {
+    if (id === cFailAW) throw new Error("Simulated failure AW")
+    return true
+  })
+
+  try {
+    replaySettlementForCorrelationId(cOkAW)
+    replaySettlementForCorrelationId(cFailAW)
+
+    var diagAW = getPendingSettlementReplayDiagnostics()
+    assert("AW.1 cOk cleared", !diagAW.find(function (e) { return e.correlationId === cOkAW }))
+    var fAW = diagAW.find(function (e) { return e.correlationId === cFailAW })
+    assert("AW.2 cFail remains", !!fAW)
+    if (fAW) assert("AW.3 cFail retryCount >= 1", fAW.retryCount >= 1, "got " + fAW.retryCount)
+  } finally {
+    _restoreOverride()
+    flushPendingSettlementReplays()
+  }
+}
+
+// -- Scenario AX: FIFO order preserved within same correlationId ---------
+
+console.log("Scenario AX � FIFO order preserved within same correlationId")
+console.log("  (two queued items for same corrId � first enqueued is processed first)")
+
+{
+  var corrIdAX = "scenario_AX_fifo"
+  var setAX1 = "settlement_AX_first"
+  var setAX2 = "settlement_AX_second"
+
+  frameworkIntents.publish({ id: corrIdAX, agentId: "test-ax", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+
+  // Listener enqueues set1 (report absent)
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdAX, { settlementId: setAX1 }))
+  // Listener enqueues set2 (different settlementId, report still absent)
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdAX, { settlementId: setAX2, status: "submitted" }))
+
+  // With no override, replay should process both (projection works, queued items succeed)
+  replaySettlementForCorrelationId(corrIdAX)
+
+  var diagAX = getPendingSettlementReplayDiagnostics()
+  var entriesAX = diagAX.filter(function (e) { return e.correlationId === corrIdAX })
+  // Both entries should be processed and removed successfully
+  assert("AX.1 No entries remaining after successful replay", entriesAX.length === 0, "got " + entriesAX.length)
+}
+
+// -- Scenario AY: Cap enforcement � eviction of oldest entries ----------
+
+console.log("Scenario AY � Cap enforcement � eviction of oldest entries")
+console.log("  (queue reaches MAX_PENDING_SETTLEMENT_REPLAYS ? oldest evicted)")
+
+{
+  // Fill the queue to the cap by calling registerPending without intent records.
+  var wAY = captureWarnings(function () {
+    for (var i5 = 0; i5 < 510; i5++) {
+      var cidAY = "scenario_AY_cap_" + String(i5).padStart(4, "0")
+      frameworkSettlementRegistry.registerPending(makeSettlementRecord(cidAY, {
+        settlementId: "settlement_AY_" + String(i5).padStart(4, "0"),
+        correlationId: cidAY,
+        fromToken: "USDC",
+        toToken: "EURC",
+      }))
+    }
+  })
+
+  try {
+    var diagAY = getPendingSettlementReplayDiagnostics()
+    assert("AY.1 Queue size <= 500", diagAY.length <= 500, "got " + diagAY.length)
+    var evictedAY = wAY.warnings.filter(function (w) { return w.indexOf("evicted_queue_full") !== -1 })
+    assert("AY.2 At least one eviction warning", evictedAY.length >= 1, "got " + evictedAY.length)
+  } finally {
+    // Deterministic cleanup even if assertions fail.
+    // Creates 510 intent records (unique IDs prefixed scenario_AY_cap_*;
+    // they remain in frameworkIntents — no removal API exists — but do NOT
+    // interfere with other scenarios because no test references them).
+    for (var ciAY = 0; ciAY < 510; ciAY++) {
+      var cidAYclean = "scenario_AY_cap_" + String(ciAY).padStart(4, "0")
+      frameworkIntents.publish({ id: cidAYclean, agentId: "test-ay", action: "BUY", params: { fromToken: "USDC", toToken: "EURC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+      frameworkIntents.setDecisionReport(cidAYclean, makeReport("decision_" + cidAYclean, cidAYclean))
+    }
+    flushPendingSettlementReplays()
+  }
+
+  // Verify zero AY entries remain in the replay queue after cleanup
+  // IntentRecords still exist (no removal API), but they are unique IDs not
+  // referenced by any other scenario and do not leak into future assertions.
+  var ayAfterCleanup = getPendingSettlementReplayDiagnostics().filter(function (e) {
+    return e.correlationId.indexOf("scenario_AY_cap_") === 0
+  })
+  assert("AY.3 Zero AY entries remain in queue after cleanup", ayAfterCleanup.length === 0, "got " + ayAfterCleanup.length)
+}
+
+
+// -- Scenario AZ: Dedupe by settlementId --------------------------------
+
+console.log("Scenario AZ � Dedupe by settlementId � same settlementId not enqueued twice")
+console.log("  (second registerPending with same settlementId is deduped in queue)")
+console.log("  (firstQueuedAt, replayId, retryCount, and record fields are preserved)")
+
+{
+  var corrIdAZ = "scenario_AZ_dedupe"
+  var setAZ = "settlement_AZ_001"
+
+  frameworkIntents.publish({ id: corrIdAZ, agentId: "test-az", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+
+  // First registerPending: listener enqueues (report absent)
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdAZ, { settlementId: setAZ }))
+  // Capture first entry snapshot
+  var diagBeforeAZ = getPendingSettlementReplayDiagnostics()
+  var entryBeforeAZ = diagBeforeAZ.find(function (e) { return e.correlationId === corrIdAZ })
+  var firstReplayIdAZ = entryBeforeAZ ? entryBeforeAZ.replayId : null
+  var firstQueuedAtAZ = entryBeforeAZ ? entryBeforeAZ.firstQueuedAt : null
+
+  // Second registerPending with SAME settlementId: listener fires, dedupe blocks
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdAZ, { settlementId: setAZ }))
+
+  // Set report so the override fires
+  frameworkIntents.setDecisionReport(corrIdAZ, makeReport(corrIdAZ, corrIdAZ))
+
+  const _restoreOverride = replaceSetDecisionReport(function () { throw new Error("AZ dedupe") })
+  try {
+    replaySettlementForCorrelationId(corrIdAZ)
+
+    var diagAZ = getPendingSettlementReplayDiagnostics()
+    var entriesAZ = diagAZ.filter(function (e) { return e.correlationId === corrIdAZ })
+    assert("AZ.1 Exactly 1 entry in queue", entriesAZ.length === 1, "got " + entriesAZ.length)
+    if (entriesAZ.length === 1) {
+      assert("AZ.2 retryCount === 1", entriesAZ[0].retryCount === 1, "got " + entriesAZ[0].retryCount)
+      // Snapshot preservation assertions
+      assert("AZ.3 replayId unchanged", entriesAZ[0].replayId === firstReplayIdAZ, "got " + entriesAZ[0].replayId + " expected " + firstReplayIdAZ)
+      assert("AZ.4 firstQueuedAt unchanged", entriesAZ[0].firstQueuedAt === firstQueuedAtAZ, "got " + entriesAZ[0].firstQueuedAt)
+      assert("AZ.5 record settlementId unchanged", entriesAZ[0].settlementId === setAZ, "got " + entriesAZ[0].settlementId)
+    }
+  } finally {
+    _restoreOverride()
+    // Clean up remaining queue entry so BF starts empty
+    flushPendingSettlementReplays()
+  }
+}
+
+// -- Scenario BA: Snapshot integrity -- direct mutation of original object --
+
+console.log("Scenario BA � Snapshot integrity -- direct mutation of original object")
+console.log("  (mutating the original variable after enqueue does NOT alter queued copy)")
+
+{
+  var corrIdBA = "scenario_BA_snapshot"
+  var setBA = "settlement_BA_001"
+
+  frameworkIntents.publish({ id: corrIdBA, agentId: "test-ba", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+
+  try {
+    // Create a record variable, then enqueue it
+    var originalRecordBA = makeSettlementRecord(corrIdBA, {
+      settlementId: setBA,
+      status: "submitted",
+      txHash: "0xbaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      blockNumber: 1000,
+      balanceDeltas: { USDC: "-5000000", cirBTC: "0.0005" },
+    })
+    frameworkSettlementRegistry.registerPending(originalRecordBA)
+
+    // DIRECTLY MUTATE the original object (not through Registry API)
+    // Scalars:
+    originalRecordBA.status = "confirmed"
+    originalRecordBA.txHash = "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    originalRecordBA.blockNumber = 9999
+    originalRecordBA.canonicalSettlement = true
+    // balanceDeltas:
+    if (originalRecordBA.balanceDeltas) {
+      originalRecordBA.balanceDeltas.USDC = "-99999999"
+      delete originalRecordBA.balanceDeltas.cirBTC
+      originalRecordBA.balanceDeltas.EURC = "+10000000"
+    }
+
+    // The queued entry should still have the ORIGINAL snapshot
+    var diagBA = getPendingSettlementReplayDiagnostics()
+    var entryBA = diagBA.find(function (e) { return e.correlationId === corrIdBA })
+    assert("BA.1 Entry exists in queue", !!entryBA)
+    if (entryBA) {
+      assert("BA.2 settlementId unchanged", entryBA.settlementId === setBA, "got " + entryBA.settlementId)
+      assert("BA.3 status is original (submitted, not confirmed)", entryBA.status === "submitted", "got " + entryBA.status)
+      assert("BA.4 txHash is original (ba..., not cc...)", entryBA.txHash === "0xbaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "got " + entryBA.txHash)
+      assert("BA.5 blockNumber is original (1000, not 9999)", entryBA.blockNumber === 1000, "got " + entryBA.blockNumber)
+      assert("BA.6 retryCount is 0 (fresh enqueue)", entryBA.retryCount === 0, "got " + entryBA.retryCount)
+      assert("BA.7 replayId is non-empty string", typeof entryBA.replayId === "string" && entryBA.replayId.length > 0)
+      assert("BA.8 firstQueuedAt > 0", typeof entryBA.firstQueuedAt === "number" && entryBA.firstQueuedAt > 0)
+      // balanceDeltas snapshot:
+      assert("BA.9 USDC balDelta preserved (-5000000)", entryBA.balanceDeltas?.USDC === "-5000000", "got " + entryBA.balanceDeltas?.USDC)
+      assert("BA.10 cirBTC balDelta preserved (0.0005)", entryBA.balanceDeltas?.cirBTC === "0.0005", "got " + entryBA.balanceDeltas?.cirBTC)
+      assert("BA.11 EURC not leaked into snapshot", !entryBA.balanceDeltas?.EURC, "got " + entryBA.balanceDeltas?.EURC)
+    }
+  } finally {
+    // Clean up the queued entry
+    frameworkIntents.setDecisionReport(corrIdBA, makeReport("decision_" + corrIdBA, corrIdBA))
+    flushPendingSettlementReplays()
+  }
+}
+
+// -- Scenario BB: SettlementId re-enqueued after drop is allowed ---------
+
+console.log("Scenario BB � SettlementId re-enqueued after drop is allowed")
+console.log("  (after an entry is dropped due to max retries, re-enqueueing the same settlementId creates a fresh entry)")
+
+{
+  var corrIdBB = "scenario_BB_reenqueue"
+  var setBB = "settlement_BB_001"
+
+  frameworkIntents.publish({ id: corrIdBB, agentId: "test-bb", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+
+  // Enqueue
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBB, { settlementId: setBB }))
+  frameworkIntents.setDecisionReport(corrIdBB, makeReport("decision_" + corrIdBB, corrIdBB))
+
+  // Drop by exhausting retries
+  const _restoreOverrideBB = replaceSetDecisionReport(function () { throw new Error("BB persistent failure") })
+
+  try {
+    for (var i6 = 0; i6 < 5; i6++) replaySettlementForCorrelationId(corrIdBB)
+  } finally {
+    _restoreOverrideBB()
+  }
+
+  try {
+    // Verify dropped
+    var diagAfterDrop = getPendingSettlementReplayDiagnostics()
+    var afterDrop = diagAfterDrop.find(function (e) { return e.correlationId === corrIdBB })
+    assert("BB.1 Entry dropped after max retries", !afterDrop, "found retryCount=" + (afterDrop ? afterDrop.retryCount : "none"))
+
+    // Re-enqueue same settlementId � should create a fresh entry (dedupe only blocks while entry exists)
+    frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBB, { settlementId: setBB, status: "confirmed" }))
+
+    // After drop + re-register: report is merged synchronously (no queue entry)
+    // because the report already exists with execution.
+    var diagRe = getPendingSettlementReplayDiagnostics()
+    var reEntry = diagRe.find(function (e) { return e.correlationId === corrIdBB })
+    assert("BB.2 No queue entry after re-register (synchronous merge)", !reEntry)
+    var intentBB = frameworkIntents.getRecord(corrIdBB)
+    assert("BB.3 Report exists after re-register", !!(intentBB?.decisionReport?.execution))
+    if (intentBB?.decisionReport?.execution) {
+      assert("BB.4 settlementStatus is confirmed after merge", intentBB.decisionReport.execution.settlementStatus === "confirmed", "got " + intentBB.decisionReport.execution.settlementStatus)
+    }
+  } finally {
+    // Cleanup: flush any remaining entries
+    flushPendingSettlementReplays()
+  }
+}
+
+// -- Scenario BC: getPendingSettlementReplayDiagnostics returns correct fields --
+
+console.log("Scenario BC � getPendingSettlementReplayDiagnostics returns correct fields")
+console.log("  (all diagnostic fields populated correctly)")
+
+{
+  var corrIdBC = "scenario_BC_diag_fields"
+  var setBC = "settlement_BC_001"
+
+  frameworkIntents.publish({ id: corrIdBC, agentId: "test-bc", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBC, { settlementId: setBC }))
+  frameworkIntents.setDecisionReport(corrIdBC, makeReport("decision_" + corrIdBC, corrIdBC))
+
+  const _restoreOverride = replaceSetDecisionReport(function () { throw new Error("BC diagnostic") })
+  try {
+    replaySettlementForCorrelationId(corrIdBC)
+
+    var diagBC = getPendingSettlementReplayDiagnostics()
+    var entryBC = diagBC.find(function (e) { return e.correlationId === corrIdBC })
+    assert("BC.1 Entry exists", !!entryBC)
+    if (entryBC) {
+      assert("BC.2 replayId is non-empty string", typeof entryBC.replayId === "string" && entryBC.replayId.length > 0)
+      assert("BC.3 settlementId matches", entryBC.settlementId === setBC, "got " + entryBC.settlementId)
+      assert("BC.4 correlationId matches", entryBC.correlationId === corrIdBC)
+      assert("BC.5 status matches", entryBC.status === "confirmed", "got " + entryBC.status)
+      assert("BC.6 retryCount is number >= 0", typeof entryBC.retryCount === "number" && entryBC.retryCount >= 0)
+      assert("BC.7 firstQueuedAt > 0", typeof entryBC.firstQueuedAt === "number" && entryBC.firstQueuedAt > 0)
+      assert("BC.8 lastAttemptAt >= firstQueuedAt", typeof entryBC.lastAttemptAt === "number" && entryBC.lastAttemptAt >= entryBC.firstQueuedAt)
+      assert("BC.9 lastError contains message", (entryBC.lastError ?? "").indexOf("BC diagnostic") !== -1)
+    }
+  } finally {
+    _restoreOverride()
+    // Clean up remaining queue entry so BF starts empty
+    flushPendingSettlementReplays()
+  }
+}
+
+// -- Scenario BD: Monkey-patch intercepts setDecisionReport calls --------
+
+console.log("Scenario BD � Monkey-patch intercepts setDecisionReport calls")
+console.log("  (the monkey-patch intercepts every call to frameworkIntents.setDecisionReport)")
+
+{
+  var corrIdBD = "scenario_BD_hook_intercept"
+  var setBD = "settlement_BD_001"
+
+  frameworkIntents.publish({ id: corrIdBD, agentId: "test-bd", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBD, { settlementId: setBD }))
+  frameworkIntents.setDecisionReport(corrIdBD, makeReport("decision_" + corrIdBD, corrIdBD))
+
+  var hookCallCountBD = 0
+  var lastIdPassedBD: string | null = null
+  var hasSettlementStatusBD = false
+
+  const _restoreOverride = replaceSetDecisionReport(function (id, updatedReport) {
+    hookCallCountBD++
+    lastIdPassedBD = id
+    hasSettlementStatusBD = JSON.stringify(updatedReport).indexOf("settlementStatus") !== -1
+    return true
+  })
+
+  try {
+    replaySettlementForCorrelationId(corrIdBD)
+    assert("BD.1 Hook called at least once", hookCallCountBD >= 1, "called " + hookCallCountBD)
+    // intent ID = correlation ID in tests, NOT "decision_corrId"
+    assert("BD.2 Hook received correct intent ID", lastIdPassedBD === corrIdBD, "got " + lastIdPassedBD)
+    assert("BD.3 Hook received report with settlementStatus", hookCallCountBD >= 1 && hasSettlementStatusBD)
+
+    // Restore and verify no errors
+    _restoreOverride()
+    var bdW = captureWarnings(function () { replaySettlementForCorrelationId(corrIdBD) })
+    assert("BD.4 No error warnings after restore", bdW.warnings.filter(function (w) { return /error/i.test(w) }).length === 0)
+  } finally {
+    _restoreOverride()
+    // Clean up remaining queue entry so BF starts empty
+    flushPendingSettlementReplays()
+  }
+}
+
+// -- Scenario BE: Replay after drop triggers fresh enqueue ---------------
+
+console.log("Scenario BE � Replay after drop triggers fresh enqueue")
+console.log("  (after drop, a new registry update with same correlationId creates a fresh queue entry)")
+
+{
+  var corrIdBE = "scenario_BE_reenqueue_after_drop"
+  var setBE = "settlement_BE_001"
+
+  frameworkIntents.publish({ id: corrIdBE, agentId: "test-be", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+
+  // Enqueue first entry
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBE, { settlementId: setBE, status: "submitted" }))
+
+  // Set report and drop via retry exhaustion
+  frameworkIntents.setDecisionReport(corrIdBE, makeReport("decision_" + corrIdBE, corrIdBE))
+  const _restoreOverrideBE = replaceSetDecisionReport(function () { throw new Error("BE persistent failure") })
+  try {
+    for (var i9 = 0; i9 < 5; i9++) replaySettlementForCorrelationId(corrIdBE)
+  } finally {
+    _restoreOverrideBE()
+  }
+
+  try {
+    // Verify dropped
+    var diagAfterBE = getPendingSettlementReplayDiagnostics()
+    assert("BE.1 Entry dropped after 5 retries", !diagAfterBE.find(function (e) { return e.correlationId === corrIdBE }))
+
+    // New registry update triggers fresh enqueue (different settlementId)
+    frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBE, { settlementId: "settlement_BE_002", status: "confirmed" }))
+
+    // After drop + re-register: report is merged synchronously (no queue entry)
+    var diagReBE = getPendingSettlementReplayDiagnostics()
+    var reBE = diagReBE.find(function (e) { return e.correlationId === corrIdBE })
+    assert("BE.2 No queue entry after re-register (synchronous merge)", !reBE)
+    var intentBE = frameworkIntents.getRecord(corrIdBE)
+    assert("BE.3 Report exists after re-register", !!(intentBE?.decisionReport?.execution))
+    if (intentBE?.decisionReport?.execution) {
+      assert("BE.4 settlementStatus is confirmed after merge", intentBE.decisionReport.execution.settlementStatus === "confirmed", "got " + intentBE.decisionReport.execution.settlementStatus)
+    }
+  } finally {
+    flushPendingSettlementReplays()
+  }
+}
+
+// -- Scenario BF: flushPendingSettlementReplays returns 0 when empty ----
+// Queue is empty because every prior scenario cleaned up its own entries.
+// (AY in try/finally, AZ flush in finally, BA set+flush in finally,
+//  BB flush in finally, BC flush in finally, BD flush in finally,
+//  BE entry drops then merges synchronously.)
+
+console.log("Scenario BF � flushPendingSettlementReplays returns 0 when queue is empty")
+
+{
+  // Assert queue is clean before testing empty flush — any leak means
+  // a prior scenario's finally block failed to clean up.
+  var diagBeforeBF = getPendingSettlementReplayDiagnostics()
+  assert("BF.0 Precondition: queue empty before BF", diagBeforeBF.length === 0,
+    "got " + diagBeforeBF.length + " entries: " + JSON.stringify(diagBeforeBF.map(function (e) { return e.correlationId + "@" + e.settlementId + " retry=" + e.retryCount })))
+
+  // Flush should return 0 when the queue is already consumed
+  var flushCount = flushPendingSettlementReplays()
+  assert("BF.1 flush returns 0 when empty", flushCount === 0, "got " + flushCount)
+  assert("BF.2 No entries after empty flush", getPendingSettlementReplayDiagnostics().length === 0)
+}
+
+// -- Scenario BG: flushPendingSettlementReplays FIFO � A B C � A fails, B and C blocked --
+
+console.log("Scenario BG � flushPendingSettlementReplays FIFO � three entries same corrId, first fails, rest blocked")
+console.log("  (A enqueued first, processed first; A fails ? B and C blocked)")
+
+{
+  var corrIdBG = "scenario_BG_fifo_block"
+  var corrIdBGSuccess = "scenario_BG_independent_success"
+  var setBG1 = "settlement_BG_first"
+  var setBG2 = "settlement_BG_second"
+  var setBG3 = "settlement_BG_third"
+  var setBGSuccess = "settlement_BG_success"
+
+  frameworkIntents.publish({ id: corrIdBG, agentId: "test-bg", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+  frameworkIntents.publish({ id: corrIdBGSuccess, agentId: "test-bg", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+
+  // Enqueue three entries for same correlationId (report absent each time)
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBG, { settlementId: setBG1 }))
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBG, { settlementId: setBG2, status: "submitted" }))
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBG, { settlementId: setBG3, status: "confirmed" }))
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBGSuccess, { settlementId: setBGSuccess }))
+
+  // Set report so the override fires
+  frameworkIntents.setDecisionReport(corrIdBG, makeReport("decision_" + corrIdBG, corrIdBG))
+  frameworkIntents.setDecisionReport(corrIdBGSuccess, makeReport("decision_" + corrIdBGSuccess, corrIdBGSuccess))
+
+  const _restoreOverride = replaceSetDecisionReport(function (id) {
+    if (id === corrIdBG) throw new Error("BG failure")
+    return true
+  })
+  try {
+    // Use flush which processes ALL correlationIds
+    var flushResult = captureWarnings(function () { return flushPendingSettlementReplays() })
+    var flushReturned = flushResult.result
+
+    var diagBG = getPendingSettlementReplayDiagnostics()
+    var entriesBG = diagBG.filter(function (e) { return e.correlationId === corrIdBG })
+    // First entry (setBG1) was processed ? failed, retryCount=1
+    // It was retained (retryCount < MAX), so it stays in queue
+    // B and C are blocked by the same correlationId
+    assert("BG.1 At least one entry remains", entriesBG.length >= 1, "got " + entriesBG.length)
+    assert("BG.2 All 3 entries remain (1 retained, 2 blocked)", entriesBG.length === 3, "got " + entriesBG.length)
+    // The first entry (setBG1) has retryCount=1
+    var firstBG = entriesBG.find(function (e) { return e.settlementId === setBG1 })
+    assert("BG.3 First entry still in queue", !!firstBG, "firstBG not found")
+    if (firstBG) {
+      assert("BG.4 First entry retryCount === 1", firstBG.retryCount === 1, "got " + firstBG.retryCount)
+    }
+    // Verify the ordering: the entry at index 0 in the queue should be the first settlement
+    if (diagBG.length > 0) {
+      assert("BG.5 First queued entry is setBG1 (FIFO preserved)", diagBG[0].settlementId === setBG1, "got " + diagBG[0].settlementId)
+    }
+    assert("BG.6 One success, one failure and blocked items return 1 removal", flushReturned === 1, "got " + flushReturned)
+    assert("BG.7 Independent success removed", !diagBG.find(function (e) { return e.settlementId === setBGSuccess }))
+  } finally {
+    _restoreOverride()
+    flushPendingSettlementReplays()
+  }
+}
+
+// -- Scenario BH: flushPendingSettlementReplays � different corrIds independent --
+
+console.log("Scenario BH � flushPendingSettlementReplays � different correlationIds are independent")
+console.log("  (B fails, A still succeeds, C still succeeds)")
+
+{
+  var corrIdBH_A = "scenario_BH_multi_A"
+  var corrIdBH_B = "scenario_BH_multi_B"
+  var corrIdBH_C = "scenario_BH_multi_C"
+
+  frameworkIntents.publish({ id: corrIdBH_A, agentId: "test-bh", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+  frameworkIntents.publish({ id: corrIdBH_B, agentId: "test-bh", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+  frameworkIntents.publish({ id: corrIdBH_C, agentId: "test-bh", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+
+  // Enqueue all three (report absent)
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBH_A, { settlementId: "settlement_BH_A" }))
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBH_B, { settlementId: "settlement_BH_B" }))
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBH_C, { settlementId: "settlement_BH_C" }))
+
+  // Set reports
+  frameworkIntents.setDecisionReport(corrIdBH_A, makeReport("decision_" + corrIdBH_A, corrIdBH_A))
+  frameworkIntents.setDecisionReport(corrIdBH_B, makeReport("decision_" + corrIdBH_B, corrIdBH_B))
+  frameworkIntents.setDecisionReport(corrIdBH_C, makeReport("decision_" + corrIdBH_C, corrIdBH_C))
+
+  // Only corrIdBH_B fails
+  const _restoreOverride = replaceSetDecisionReport(function (id) {
+    if (id === corrIdBH_B) throw new Error("BH failure B")
+    return true
+  })
+
+  try {
+    flushPendingSettlementReplays()
+
+    var diagBH = getPendingSettlementReplayDiagnostics()
+    // A and C should be cleared, B should remain
+    var leftA = diagBH.find(function (e) { return e.correlationId === corrIdBH_A })
+    var leftB = diagBH.find(function (e) { return e.correlationId === corrIdBH_B })
+    var leftC = diagBH.find(function (e) { return e.correlationId === corrIdBH_C })
+    assert("BH.1 A cleared (different corrId)", !leftA)
+    assert("BH.2 B remains (failed)", !!leftB)
+    assert("BH.3 C cleared (different corrId)", !leftC)
+    if (leftB) {
+      assert("BH.4 B retryCount >= 1", leftB.retryCount >= 1, "got " + leftB.retryCount)
+    }
+  } finally {
+    _restoreOverride()
+    flushPendingSettlementReplays()
+  }
+}
+
+// -- Scenario BI: A1/A2/A3 FIFO via flushPendingSettlementReplays (no projection) --
+
+console.log("Scenario BI � A1/A2/A3 FIFO via flushPendingSettlementReplays")
+console.log("  (uses flushPendingSettlementReplays to avoid projection;")
+console.log("   distinct txHashes ensure non-identical reports so setDecisionReport is reached;")
+console.log("   A1 succeeds, A2 fails, A3 blocked; second call clears all)")
+
+{
+  var corrIdBI = "scenario_BI_main"
+  var corrIdBI_B = "scenario_BI_other"
+  var setIdA1 = "settlement_BI_A1"
+  var setIdA2 = "settlement_BI_A2"
+  var setIdA3 = "settlement_BI_A3"
+  var setIdB1 = "settlement_BI_B1"
+
+  frameworkIntents.publish({ id: corrIdBI, agentId: "test-bi", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+  frameworkIntents.publish({ id: corrIdBI_B, agentId: "test-bi", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+
+  // Enqueue A1, A2, A3 (same corrId) with distinct txHashes, then B1 (different corrId)
+  // Using distinct txHashes ensures even with same "confirmed" status,
+  // updateDecisionReportFromSettlement finds non-identical reports and calls setDecisionReport.
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBI, { settlementId: setIdA1, txHash: "0xa100000000000000000000000000000000000000000000000000000000000001" }))
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBI, { settlementId: setIdA2, txHash: "0xa200000000000000000000000000000000000000000000000000000000000002" }))
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBI, { settlementId: setIdA3, txHash: "0xa300000000000000000000000000000000000000000000000000000000000003" }))
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBI_B, { settlementId: setIdB1 }))
+
+  // Set reports so replay can find them
+  frameworkIntents.setDecisionReport(corrIdBI, makeReport("decision_" + corrIdBI, corrIdBI))
+  frameworkIntents.setDecisionReport(corrIdBI_B, makeReport("decision_" + corrIdBI_B, corrIdBI_B))
+
+  // Override: first `setDecisionReport` call for corrIdBI succeeds, second throws.
+  // flushPendingSettlementReplays processes A1 (1st call, succeeds), A2 (2nd call, throws → blocked),
+  // A3 blocked. B1 succeeds (different corrId, always true).
+  var biFailA2 = true
+  var firstPassProcessed: string[] = []
+  var firstPassAProcessed: string[] = []
+  var secondPassProcessed: string[] = []
+
+  const _restoreOverride = replaceSetDecisionReport(function (id, updatedReport) {
+    var appliedTxHash = updatedReport.execution?.txHash
+    if (id === corrIdBI) {
+      var settlementId = appliedTxHash === "0xa100000000000000000000000000000000000000000000000000000000000001" ? setIdA1
+        : appliedTxHash === "0xa200000000000000000000000000000000000000000000000000000000000002" ? setIdA2
+        : appliedTxHash === "0xa300000000000000000000000000000000000000000000000000000000000003" ? setIdA3
+        : "unknown"
+      if (biFailA2) {
+        firstPassProcessed.push(settlementId)
+        firstPassAProcessed.push(settlementId)
+        if (settlementId === setIdA2) throw new Error("Simulated failure BI A2")
+      } else {
+        secondPassProcessed.push(settlementId)
+      }
+      return true
+    }
+    if (id === corrIdBI_B && biFailA2) firstPassProcessed.push(setIdB1)
+    return true
+  })
+
+  try {
+    // ── First pass: flushPendingSettlementReplays (no projection step) ──
+    var firstFlushRemovedBI = flushPendingSettlementReplays()
+
+    var diagBI = getPendingSettlementReplayDiagnostics()
+    var entriesBI = diagBI.filter(function (e) { return e.correlationId === corrIdBI })
+    // A1 removed (success); A2 retained (failure); A3 blocked
+    assert("BI.1 A1 removed after success", !entriesBI.find(function (e) { return e.settlementId === setIdA1 }))
+    assert("BI.2 A2 remains after failure", !!entriesBI.find(function (e) { return e.settlementId === setIdA2 }))
+    assert("BI.3 A3 remains (blocked)", !!entriesBI.find(function (e) { return e.settlementId === setIdA3 }))
+    // Verify exactly 2 entries remain for this corrId
+    assert("BI.4 Exactly 2 entries remain (A2 + A3)", entriesBI.length === 2, "got " + entriesBI.length)
+    // retryCounts
+    var a2Entry = entriesBI.find(function (e) { return e.settlementId === setIdA2 })
+    var a3Entry = entriesBI.find(function (e) { return e.settlementId === setIdA3 })
+    assert("BI.5 A2 retryCount === 1", a2Entry ? a2Entry.retryCount === 1 : false, "got " + (a2Entry ? a2Entry.retryCount : "missing"))
+    assert("BI.6 A3 retryCount === 0 (never attempted)", a3Entry ? a3Entry.retryCount === 0 : false, "got " + (a3Entry ? a3Entry.retryCount : "missing"))
+    // FIFO order: A2 before A3 in queue
+    if (entriesBI.length >= 2) {
+      assert("BI.7 FIFO order: A2 before A3", entriesBI[0].settlementId === setIdA2 && entriesBI[1].settlementId === setIdA3,
+        "got [" + entriesBI.map(function (e) { return e.settlementId }).join(",") + "]")
+    }
+    assert("BI.8 A3 NOT attempted in first pass", firstPassAProcessed.indexOf(setIdA3) === -1)
+    assert("BI.9 First pass A order exactly [A1, A2]",
+      JSON.stringify(firstPassAProcessed) === JSON.stringify([setIdA1, setIdA2]),
+      "got [" + firstPassAProcessed.join(",") + "]")
+    assert("BI.10 Global first-pass order exactly [A1, A2, B1]",
+      JSON.stringify(firstPassProcessed) === JSON.stringify([setIdA1, setIdA2, setIdB1]),
+      "got [" + firstPassProcessed.join(",") + "]")
+    assert("BI.11 First flush returns 2 removals", firstFlushRemovedBI === 2, "got " + firstFlushRemovedBI)
+
+    // B1 processed independently — different corrId is unaffected by A2's failure
+    var b1AfterFirstPass = diagBI.find(function (e) { return e.correlationId === corrIdBI_B })
+    assert("BI.12 B1 processed independently (different corrId)", !b1AfterFirstPass)
+
+    // ── Second pass: allow A2, then A3; keep the hook to observe exact order ──
+    biFailA2 = false
+
+    var flushedCount = flushPendingSettlementReplays()
+
+    var diagBI2 = getPendingSettlementReplayDiagnostics()
+    var a2After = diagBI2.find(function (e) { return e.correlationId === corrIdBI && e.settlementId === setIdA2 })
+    var a3After = diagBI2.find(function (e) { return e.correlationId === corrIdBI && e.settlementId === setIdA3 })
+    var b1After = diagBI2.find(function (e) { return e.correlationId === corrIdBI_B })
+
+    assert("BI.13 A2 cleared on second call", !a2After)
+    assert("BI.14 A3 cleared on second call", !a3After)
+    assert("BI.15 B1 already cleared in first pass", !b1After)
+
+    // ── Prove second pass processed [A2, A3] for corrIdBI ──
+    // Before pass 2 the remaining entries for corrIdBI were [A2(retry=1), A3(retry=0)]
+    // (known from entriesBI above). After pass 2 both are gone.
+    // The hook remains installed in success mode so it records both removals.
+    assert("BI.16 Second pass processed [A2, A3]",
+      JSON.stringify(secondPassProcessed) === JSON.stringify([setIdA2, setIdA3]),
+      "got [" + secondPassProcessed.join(",") + "]")
+    assert("BI.17 Second flush returns 2 removals", flushedCount === 2, "got " + flushedCount)
+
+    // No entries remain for either correlationId
+    assert("BI.18 No entries remain for main corrId", diagBI2.filter(function (e) { return e.correlationId === corrIdBI }).length === 0)
+    assert("BI.19 No entries remain for other corrId", diagBI2.filter(function (e) { return e.correlationId === corrIdBI_B }).length === 0)
+  } finally {
+    _restoreOverride()
+    flushPendingSettlementReplays()
+  }
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 
 // ── Summary ──────────────────────────────────────────────────────────────
+
+// Scenario BJ: scoped replaySettlementForCorrelationId FIFO
+console.log("Scenario BJ - scoped replaySettlementForCorrelationId FIFO and correlation isolation")
+{
+  var corrIdBJ_A = "scenario_BJ_scoped_A"
+  var corrIdBJ_B = "scenario_BJ_scoped_B"
+  var setBJA1 = "settlement_BJ_A1"
+  var setBJA2 = "settlement_BJ_A2"
+  var setBJA3 = "settlement_BJ_A3"
+  var setBJB1 = "settlement_BJ_B1"
+  var txBJA1 = "0xe100000000000000000000000000000000000000000000000000000000000001"
+  var txBJA2 = "0xe200000000000000000000000000000000000000000000000000000000000002"
+  var txBJA3 = "0xe300000000000000000000000000000000000000000000000000000000000003"
+  var txBJB1 = "0xe400000000000000000000000000000000000000000000000000000000000004"
+
+  frameworkIntents.publish({ id: corrIdBJ_A, agentId: "test-bj", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+  frameworkIntents.publish({ id: corrIdBJ_B, agentId: "test-bj", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBJ_A, { settlementId: setBJA1, txHash: txBJA1 }))
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBJ_A, { settlementId: setBJA2, txHash: txBJA2 }))
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBJ_A, { settlementId: setBJA3, txHash: txBJA3 }))
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBJ_B, { settlementId: setBJB1, txHash: txBJB1 }))
+  frameworkIntents.setDecisionReport(corrIdBJ_A, makeReport("decision_" + corrIdBJ_A, corrIdBJ_A))
+  frameworkIntents.setDecisionReport(corrIdBJ_B, makeReport("decision_" + corrIdBJ_B, corrIdBJ_B))
+
+  var failBJA2 = true
+  var firstOrderBJ: string[] = []
+  var secondOrderBJ: string[] = []
+  var bOrderBJ: string[] = []
+  const restoreFindBJ = replaceFindByCorrelationId(function () { return null })
+  const restoreSetBJ = replaceSetDecisionReport(function (id, updatedReport) {
+    var txHash = updatedReport.execution?.txHash
+    var settlementId = txHash === txBJA1 ? setBJA1
+      : txHash === txBJA2 ? setBJA2
+      : txHash === txBJA3 ? setBJA3
+      : txHash === txBJB1 ? setBJB1
+      : "unknown"
+    if (id === corrIdBJ_A) {
+      if (failBJA2) firstOrderBJ.push(settlementId)
+      else secondOrderBJ.push(settlementId)
+      if (failBJA2 && settlementId === setBJA2) throw new Error("BJ A2 failure")
+    } else if (id === corrIdBJ_B) {
+      bOrderBJ.push(settlementId)
+    }
+    return true
+  })
+
+  try {
+    replaySettlementForCorrelationId(corrIdBJ_A)
+    var diagBJ1 = getPendingSettlementReplayDiagnostics()
+    var aBJ1 = diagBJ1.filter(function (e) { return e.correlationId === corrIdBJ_A })
+    assert("BJ.1 First A order exactly [A1,A2]", JSON.stringify(firstOrderBJ) === JSON.stringify([setBJA1, setBJA2]), "got " + JSON.stringify(firstOrderBJ))
+    assert("BJ.2 A1 removed", !aBJ1.find(function (e) { return e.settlementId === setBJA1 }))
+    assert("BJ.3 A2 remains", !!aBJ1.find(function (e) { return e.settlementId === setBJA2 }))
+    assert("BJ.4 A2 retryCount 1", aBJ1.find(function (e) { return e.settlementId === setBJA2 })?.retryCount === 1)
+    assert("BJ.5 A3 remains", !!aBJ1.find(function (e) { return e.settlementId === setBJA3 }))
+    assert("BJ.6 A3 retryCount 0", aBJ1.find(function (e) { return e.settlementId === setBJA3 })?.retryCount === 0)
+    assert("BJ.7 B1 untouched by scoped A replay", !!diagBJ1.find(function (e) { return e.settlementId === setBJB1 }) && bOrderBJ.length === 0)
+
+    failBJA2 = false
+    replaySettlementForCorrelationId(corrIdBJ_A)
+    var diagBJ2 = getPendingSettlementReplayDiagnostics()
+    assert("BJ.8 Second A order exactly [A2,A3]", JSON.stringify(secondOrderBJ) === JSON.stringify([setBJA2, setBJA3]), "got " + JSON.stringify(secondOrderBJ))
+    assert("BJ.9 A queue empty", !diagBJ2.find(function (e) { return e.correlationId === corrIdBJ_A }))
+    assert("BJ.10 B1 still remains after second A replay", !!diagBJ2.find(function (e) { return e.settlementId === setBJB1 }))
+
+    replaySettlementForCorrelationId(corrIdBJ_B)
+    var diagBJ3 = getPendingSettlementReplayDiagnostics()
+    assert("BJ.11 B order exactly [B1]", JSON.stringify(bOrderBJ) === JSON.stringify([setBJB1]), "got " + JSON.stringify(bOrderBJ))
+    assert("BJ.12 B queue empty", !diagBJ3.find(function (e) { return e.correlationId === corrIdBJ_B }))
+  } finally {
+    restoreSetBJ()
+    restoreFindBJ()
+    flushPendingSettlementReplays()
+  }
+}
+
+// Scenario BK: diagnostics balanceDeltas copy isolation
+console.log("Scenario BK - diagnostics balanceDeltas copy isolation")
+{
+  var corrIdBK = "scenario_BK_diagnostics_copy"
+  var setBK = "settlement_BK_001"
+  frameworkIntents.publish({ id: corrIdBK, agentId: "test-bk", action: "BUY", params: { fromToken: "USDC", toToken: "cirBTC", rede: "arc" }, confidence: 80, timestamp: Date.now() })
+  frameworkSettlementRegistry.registerPending(makeSettlementRecord(corrIdBK, {
+    settlementId: setBK,
+    balanceDeltas: { USDC: "-5000000", cirBTC: "0.0005" },
+  }))
+  frameworkIntents.setDecisionReport(corrIdBK, makeReport("decision_" + corrIdBK, corrIdBK))
+
+  var appliedBalanceDeltasBK: Record<string, string> | undefined
+  const restoreSetBK = replaceSetDecisionReport(function (_id, updatedReport) {
+    appliedBalanceDeltasBK = updatedReport.execution?.balanceDeltas
+    return true
+  })
+
+  try {
+    var firstDiagBK = getPendingSettlementReplayDiagnostics().find(function (e) { return e.settlementId === setBK })
+    assert("BK.1 Diagnostics entry exists", !!firstDiagBK)
+    if (firstDiagBK?.balanceDeltas) {
+      firstDiagBK.balanceDeltas.USDC = "-99999999"
+      delete firstDiagBK.balanceDeltas.cirBTC
+      firstDiagBK.balanceDeltas.EURC = "+10000000"
+    }
+    var secondDiagBK = getPendingSettlementReplayDiagnostics().find(function (e) { return e.settlementId === setBK })
+    assert("BK.2 Internal USDC unchanged", secondDiagBK?.balanceDeltas?.USDC === "-5000000")
+    assert("BK.3 Internal cirBTC key preserved", secondDiagBK?.balanceDeltas?.cirBTC === "0.0005")
+    assert("BK.4 Added EURC key not leaked", secondDiagBK?.balanceDeltas?.EURC === undefined)
+
+    flushPendingSettlementReplays()
+    assert("BK.5 Replay applied original USDC", appliedBalanceDeltasBK?.USDC === "-5000000")
+    assert("BK.6 Replay applied original cirBTC", appliedBalanceDeltasBK?.cirBTC === "0.0005")
+    assert("BK.7 Replay did not apply injected EURC", appliedBalanceDeltasBK?.EURC === undefined)
+  } finally {
+    restoreSetBK()
+    flushPendingSettlementReplays()
+  }
+}
 
 console.log(`\n${"=".repeat(96)}`)
 console.log("Scenario assertion table")

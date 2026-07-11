@@ -21,10 +21,23 @@ export const frameworkCoordinator = new Coordinator({ name: "ArcCoordinator", au
 // ── Pending settlement replay queue ──────────────────────────────────────
 // Holds settlement updates that arrived before the matching DecisionReport
 // was saved. Flushed on explicit replay or next setDecisionReport.
-// Bounded at MAX_PENDING_SETTLEMENT_REPLAYS — oldest entries silently
-// discarded to prevent unbounded memory growth.
+// Each entry carries replay metadata (retryCount, timestamps, lastError).
+// Bounded at MAX_PENDING_SETTLEMENT_REPLAYS — oldest entries are evicted
+// with an observable warning to prevent unbounded memory growth.
 const MAX_PENDING_SETTLEMENT_REPLAYS = 500
-let pendingSettlementReplays: SettlementRecord[] = []
+const MAX_SETTLEMENT_REPLAY_ATTEMPTS = 5
+let nextReplayId = 0
+
+type PendingSettlementReplayEntry = {
+  replayId: string
+  record: SettlementRecord
+  retryCount: number
+  firstQueuedAt: number
+  lastAttemptAt?: number
+  lastError?: string
+}
+
+let pendingSettlementReplays: PendingSettlementReplayEntry[] = []
 
 type DecisionReportExecution = NonNullable<DecisionReport["execution"]>
 type ReportSettlementStatus = NonNullable<DecisionReportExecution["settlementStatus"]>
@@ -112,12 +125,19 @@ function updateDecisionReportFromSettlement(record: SettlementRecord): void {
   const report = intentRecord?.decisionReport
   if (!intentRecord || !report?.execution) {
     console.warn(`[SETTLEMENT] ⚠️ DecisionReport not found for settlement update correlation:${record.correlationId} decisionReportId:${record.decisionReportId ?? "unknown"} — queued for replay`)
-    if (!pendingSettlementReplays.some(r => r.settlementId === record.settlementId)) {
+    if (!pendingSettlementReplays.some(e => e.record.settlementId === record.settlementId)) {
       if (pendingSettlementReplays.length >= MAX_PENDING_SETTLEMENT_REPLAYS) {
         const evicted = pendingSettlementReplays.shift()!
-        console.warn(`[SETTLEMENT] ⚠️ Pending replay queue full — evicted oldest correlation:${evicted.correlationId} settlementId:${evicted.settlementId} — no state lost, SettlementRegistry still holds canonical record`)
+        _settlementReplayLog("evicted_queue_full", evicted.record, 0, evicted.retryCount)
       }
-      pendingSettlementReplays.push(record)
+      const snapshot = snapshotSettlementRecord(record)
+      nextReplayId++
+      pendingSettlementReplays.push({
+        replayId: `replay_${nextReplayId}_${Date.now()}`,
+        record: snapshot,
+        retryCount: 0,
+        firstQueuedAt: Date.now(),
+      })
     }
     return
   }
@@ -205,32 +225,182 @@ export function replaySettlementToDecisionReport(record: SettlementRecord): void
 }
 
 /** Look up the latest settlement record by correlationId and replay it.
- *  Also flushes any queued replays for the same correlationId.
- *  Safe to call anytime — no-op if no matching record exists. */
+ *  Also processes any queued replays for the same correlationId item by item.
+ *  Safe to call anytime — no-op if no matching record exists.
+ *  Exception-safe: items that fail remain in the queue for retry. */
 export function replaySettlementForCorrelationId(correlationId: string): void {
+  // 1. Project the current Registry record (best-effort).
+  // If the projection throws, queued items are still processed — they may
+  // carry older snapshots that succeed where the latest projection failed.
   const record = frameworkSettlementRegistry.findByCorrelationId(correlationId)
   if (record) {
-    updateDecisionReportFromSettlement(record)
+    try {
+      updateDecisionReportFromSettlement(record)
+    } catch (error) {
+      _settlementReplayLog("registry_projection_failed", record, 0, 0, error)
+    }
   }
-  const queued = pendingSettlementReplays.filter(r => r.correlationId === correlationId)
-  if (queued.length > 0) {
-    pendingSettlementReplays = pendingSettlementReplays.filter(r => r.correlationId !== correlationId)
-    for (const queuedRecord of queued) {
-      updateDecisionReportFromSettlement(queuedRecord)
+
+  // 2. Process queued items FIFO, one at a time, removing only on success.
+  // We always search by replayId to handle index shifting after splice.
+  let found = true
+  while (found) {
+    found = false
+    for (let i = 0; i < pendingSettlementReplays.length; i++) {
+      const entry = pendingSettlementReplays[i]
+      if (entry.record.correlationId !== correlationId) continue
+
+      found = true
+      try {
+        updateDecisionReportFromSettlement(entry.record)
+      } catch (error) {
+        entry.retryCount++
+        entry.lastAttemptAt = Date.now()
+        entry.lastError = safeErrorString(error)
+
+        if (entry.retryCount >= MAX_SETTLEMENT_REPLAY_ATTEMPTS) {
+          pendingSettlementReplays.splice(i, 1)
+          _settlementReplayLog("dropped_after_retry_limit", entry.record, entry.retryCount, entry.retryCount, error)
+        } else {
+          _settlementReplayLog("retained", entry.record, entry.retryCount, entry.retryCount, error)
+        }
+        // On failure, stop processing this correlationId in this call
+        // but mark found=false so the while loop exits.
+        found = false
+        break
+      }
+
+      // Success: remove the entry and restart scan (indices shifted).
+      pendingSettlementReplays.splice(i, 1)
+      break
     }
   }
 }
 
 /** Flush ALL queued settlement replays regardless of correlationId.
- *  Returns the number of replays flushed.
- *  Safe — each replay is idempotent and monotonic. */
+ *  Returns the number of entries removed during this call, whether applied
+ *  successfully or deliberately dropped after reaching the retry limit.
+ *  Processes item by item — only removes entries on success.
+ *  Failed entries remain queued for retry (up to MAX_SETTLEMENT_REPLAY_ATTEMPTS).
+ *  If one entry of a correlationId fails, remaining entries of the same
+ *  correlationId are skipped in this flush call but NOT removed. */
 export function flushPendingSettlementReplays(): number {
-  const count = pendingSettlementReplays.length
-  if (count === 0) return 0
-  const records = [...pendingSettlementReplays]
-  pendingSettlementReplays = []
-  for (const record of records) {
-    updateDecisionReportFromSettlement(record)
+  if (pendingSettlementReplays.length === 0) return 0
+
+  const blockedCorrelationIds = new Set<string>()
+  let removedCount = 0
+
+  for (let i = 0; i < pendingSettlementReplays.length; ) {
+    const entry = pendingSettlementReplays[i]
+    const corrId = entry.record.correlationId
+
+    if (blockedCorrelationIds.has(corrId)) {
+      i++
+      continue
+    }
+
+    try {
+      updateDecisionReportFromSettlement(entry.record)
+    } catch (error) {
+      entry.retryCount++
+      entry.lastAttemptAt = Date.now()
+      entry.lastError = safeErrorString(error)
+
+      if (entry.retryCount >= MAX_SETTLEMENT_REPLAY_ATTEMPTS) {
+        pendingSettlementReplays.splice(i, 1)
+        removedCount++
+        _settlementReplayLog("dropped_after_retry_limit", entry.record, entry.retryCount, entry.retryCount, error)
+      } else {
+        _settlementReplayLog("retained", entry.record, entry.retryCount, entry.retryCount, error)
+        i++
+      }
+      blockedCorrelationIds.add(corrId)
+      continue
+    }
+
+    // Success: remove and continue without increment (next entry shifts down).
+    pendingSettlementReplays.splice(i, 1)
+    removedCount++
   }
-  return count
+
+  return removedCount
+}
+
+// ── Snapshot helper ────────────────────────────────────────────────────────
+// Prevents mutations on the original SettlementRegistry record from affecting
+// a queued replay.  Explicitly copies every potentially-mutable field.
+// SettlementRecord has only ONE mutable field by reference:
+//   - balanceDeltas: Record<string, string>  ← object, shallow-copied below
+// All other fields are scalars (string | number | boolean | undefined) and
+// are safely captured by the spread operator:
+//   settlementId, correlationId, intentId, proposalId, decisionReportId,
+//   ordemId, adapter, status, txHash, receiptStatus, blockNumber, gasUsed,
+//   effectiveGasPrice, gasCostNative, gasCostUsd, fromToken, toToken,
+//   amountIn, quotedAmountOut, actualAmountOut, slippageBps, synthetic,
+//   canonicalSettlement, errorMsg, timestamp, source
+// No arrays, no nested objects, no details/receipts/txHashes fields exist.
+
+function snapshotSettlementRecord(record: SettlementRecord): SettlementRecord {
+  return {
+    ...record,
+    balanceDeltas: record.balanceDeltas ? { ...record.balanceDeltas } : undefined,
+  }
+}
+
+// ── Log helper ─────────────────────────────────────────────────────────────
+
+function safeErrorString(error: unknown): string {
+  if (error instanceof Error) return `${error.name}:${error.message.split("\n")[0]}`
+  return `Non-Error:${String(error).slice(0, 120)}`
+}
+
+function _settlementReplayLog(
+  action: string,
+  record: SettlementRecord,
+  attempt: number,
+  retryCount: number,
+  error?: unknown,
+): void {
+  const err = error ? `error=${safeErrorString(error)}` : ""
+  console.warn(
+    `[SETTLEMENT] ⚠️ Replay: action=${action}` +
+    ` correlationId=${record.correlationId}` +
+    ` settlementId=${record.settlementId}` +
+    ` status=${record.status}` +
+    ` attempt=${attempt}` +
+    ` retryCount=${retryCount}` +
+    (err ? ` ${err}` : ""),
+  )
+}
+
+// ── Read-only diagnostics (for tests, no production caller) ────────────────
+
+export function getPendingSettlementReplayDiagnostics(): {
+  replayId: string
+  settlementId: string
+  correlationId: string
+  status: string
+  retryCount: number
+  firstQueuedAt: number
+  lastAttemptAt?: number
+  lastError?: string
+  txHash?: string
+  blockNumber?: number
+  balanceDeltas?: Record<string, string>
+}[] {
+  return pendingSettlementReplays.map(entry => ({
+    replayId: entry.replayId,
+    settlementId: entry.record.settlementId,
+    correlationId: entry.record.correlationId,
+    status: entry.record.status,
+    retryCount: entry.retryCount,
+    firstQueuedAt: entry.firstQueuedAt,
+    lastAttemptAt: entry.lastAttemptAt,
+    lastError: entry.lastError,
+    txHash: entry.record.txHash,
+    blockNumber: entry.record.blockNumber,
+    balanceDeltas: entry.record.balanceDeltas
+      ? { ...entry.record.balanceDeltas }
+      : undefined,
+  }))
 }
