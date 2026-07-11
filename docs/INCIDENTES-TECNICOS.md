@@ -884,3 +884,43 @@ Conclusão: o contrato funciona e já foi chamado. Isso não prova completude do
 - Pool A foi recuperada com sucesso; a classificação anterior como "unrecoverable" foi corrigida por simulação read-only e tx confirmada.
 - Ownership de pools está dividida entre wallet principal (`0x77f5...`) e wallet stress/deploy (`0xfa033D...`).
 - DecisionAnchor funciona como contrato, mas a ancoragem canônica de DecisionReport no runtime ainda está incompleta.
+
+---
+
+## npx pode baixar executor ausente silenciosamente
+
+**Data**: 2026-07-11
+
+**Contexto**: Durante a auditoria da Phase 2e.2i, o runner de teste (`scripts/phase-2e2f-settlement-replay-test.ts`) foi executado com `npx tsx` em uma rodada intermediária.
+
+**Fatos**:
+- `tsx` não era dependência local: `npm ls tsx --depth=0` retornou vazio, `node_modules/tsx` ausente, `node_modules/.bin/tsx.cmd` ausente
+- `npx` pode ter consultado ou baixado o executor do registry npm para o cache global, sem aviso explícito
+- O resultado foi posteriormente reproduzido com TypeScript local (dependência comprovada: `typescript@5.9.3`)
+- O método seguro aprovado usa exclusivamente recursos locais:
+  - `node_modules/typescript/lib/typescript.js`
+  - `ts.transpileModule()` para compilação in-memory
+  - `Module._resolveFilename` personalizado para resolver alias `@/*`
+
+**Regra**: Não usar `npx` para executores que não sejam dependência local comprovada. Quando `npx` for indispensável, usar `--no-install` (ou equivalente) e comprovar resolução local antes da execução.
+
+**Arquivos envolvidos**: `scripts/phase-2e2f-settlement-replay-test.ts` (runner), `node_modules/typescript/` (dependência local)
+
+---
+
+## PowerShell 5.1 interpreta incorretamente UTF-8 sem BOM com caracteres não-ASCII
+
+**Data**: 2026-07-11
+
+**Contexto**: O script de checkpoint da Phase 2e.2i continha um em dash (`—`, U+2014) na string de mensagem da tag (`-m "Phase 2e.2i — Settlement replay exception safety"`). O script foi escrito em UTF-8 sem BOM e executado com `powershell.exe -File`.
+
+**Fatos**:
+- PowerShell 5.1 no Windows interpreta arquivos sem BOM como Windows-1252 (legacy), corrompendo caracteres não-ASCII
+- O em dash (3 bytes em UTF-8: `E2 80 94`) foi interpretado como 3 caracteres Windows-1252 individuais, causando um erro de string não terminada (`A cadeia de caracteres não tem o terminador`)
+- O parser do PowerShell falhou com: `'}' de fechamento ausente no bloco de instrução`
+- A lógica do checkpoint não era o defeito — apenas o encoding do caractere
+- Solução aplicada: substituir `—` (em dash) por `--` (dois hífens ASCII) e escrever o arquivo com BOM via `[System.Text.UTF8Encoding]::new($true)`
+
+**Regra**: Usar exclusivamente caracteres ASCII em scripts PowerShell operacionais, ou salvar explicitamente como UTF-8 com BOM. Preferir `--` em vez de `—` (em dash) em strings de script. Validar scripts críticos em `powershell.exe 5.1` antes de uso em checkpoint automatizado.
+
+**Arquivos envolvidos**: script de checkpoint temporário `%TEMP%\arcflow-checkpoint-*.ps1`

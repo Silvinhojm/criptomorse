@@ -22,7 +22,7 @@ The following in-memory structures are the sources of truth today. After restart
 
 | Field | Cardinality | Recoverable from on-chain? |
 |-------|-------------|---------------------------|
-| `SettlementRecord` (22 fields) | 1 per settlement event | TX hash can be re-queried; `balanceDeltas`, `gasUsed`, and `canonicalSettlement` are computed off-chain and NOT recoverable purely from RPC |
+| `SettlementRecord` (27 fields) | 1 per settlement event | TX hash can be re-queried; `balanceDeltas`, `gasUsed`, and `canonicalSettlement` are computed off-chain and NOT recoverable purely from RPC |
 | Internal indices (`byCorrelationId`, `byTxHash`, `byOrdemId`) | 1 per key | Rebuildable from stored records |
 
 **Risk without persistence**: The system loses knowledge of which settlements were `confirmed canonical`, which `balanceDeltas` were applied, and which `gasUsed` values were recorded. The blockchain holds the raw transaction but not the coordinator's interpretation of it.
@@ -99,10 +99,11 @@ Coordinator
 ```
 
 The persistence write in Phase 2:
-- Is fire-and-forget (not awaited in the hot path)
-- Never influences the return value or control flow of the Coordinator
-- Errors are logged at `warn` level, never `error`
-- Has a dedicated `PERSISTENCE_WRITE_ENABLED` flag independent of recovery
+- Each mutation **schedules** a debounced snapshot capture — not a physical write per mutation.
+- The mutation's hot path does not await the persistence write and is not affected by its result.
+- Only one consolidated write occurs after the debounce window (2s) or at maximum staleness (10s).
+- Errors from the write are logged at `warn` level, never `error`.
+- The write path is gated by `PERSISTENCE_WRITE_ENABLED`, independent of recovery.
 
 ### 3.3 Hard Cutover vs. Gradual
 
@@ -121,7 +122,7 @@ Rationale:
 
 Two independent flags. Both default to `false`. Both are runtime-configurable without restart.
 
-### 4.1 `PERSISTENCE_WRITE_ENABLED`
+### 4.1 `PERSISTENCE_WRITE_ENABLED` (takes effect immediately)
 
 When `false`:
 - No writes to persistence occur
@@ -130,20 +131,12 @@ When `false`:
 - The runtime continues with memory-only operation
 
 When `true`:
-- Shadow writes fire on every state mutation
+- Shadow writes fire on state mutations (debounced, see Section 3.2)
 - Writes are best-effort (failures logged, not thrown)
 
-### 4.2 `PERSISTENCE_RECOVERY_ENABLED`
+### 4.2 `PERSISTENCE_RECOVERY_ENABLED` (takes effect on next restart)
 
-When `false`:
-- On restart, the system starts with empty state (current behavior)
-- Existing persisted data is ignored entirely
-- No attempt to read, hydrate, or validate persisted records
-
-When `true`:
-- On restart, the system reads from persistence
-- Hydration follows the validation pipeline (Section 7)
-- Recovery failures leave the system in empty state (not partially-hydrated)
+This flag can be configured at runtime, but produces effect only during initialization. Changing it mid-cycle does NOT hydrate or de-hydrate existing singletons. Existing in-memory state is never reinterpreted based on a flag change.
 
 ### 4.3 Flag Independence
 
@@ -176,26 +169,31 @@ There is no "revert migration" because there is no migration. The flags disable 
 
 ### 5.1 Storage Format
 
+The stored blob uses an **envelope** structure: the version and checksum are in the outer wrapper, and the four persisted domains are serialized as a deterministic JSON string inside `payload`. The checksum is computed over the exact UTF-8 bytes of the `payload` string BEFORE it is embedded in the envelope.
+
 ```
 arcflow_persistence_v1
-├── version:              1
-├── created_at:           ISO 8601 timestamp
-├── last_write_at:        ISO 8601 timestamp
-├── checksum:             SHA-256 of serialized payload (hex)
-├── settlement_registry:
-│   └── records[]:        Array<SettlementRecord>   (ordered by timestamp)
-├── decision_reports:
-│   └── reports[]:        Array<{intentId, DecisionReport}>
-├── pending_replay_queue:
-│   └── entries[]:        Array<PendingSettlementReplayEntry>
-└── audit:
-    └── entries[]:        Array<AuditEntry>
+├── version:              1                              (integer)
+├── created_at:           ISO 8601 timestamp             (string)
+├── last_write_at:        ISO 8601 timestamp             (string)
+├── checksum:             SHA-256 of payload UTF-8 bytes (hex string)
+└── payload:              deterministic JSON string containing:
+     ├── settlement_registry:
+     │   └── records[]:        Array<SettlementRecord>   (ordered by timestamp)
+     ├── decision_reports:
+     │   └── reports[]:        Array<{intentId, DecisionReport}>
+     ├── pending_replay_queue:
+     │   └── entries[]:        Array<PendingSettlementReplayEntry>
+     └── audit:
+         └── entries[]:        Array<AuditEntry>
 ```
 
 ### 5.2 Serialization
 
-- Format: JSON (line-delimited for append-friendly writes, or single blob for atomic write)
+- Format: The envelope is JSON. `payload` is a deterministic JSON string inside the envelope.
 - Encoding: UTF-8 without BOM
+- The SHA-256 checksum is computed over the exact UTF-8 bytes of `payload`, NOT over a reserialization of the already-parsed object. This avoids non-determinism from JavaScript engine key ordering.
+- At write time: serialize the four domains into a deterministic JSON string (using sorted keys via a canonical serializer or `JSON.stringify` with a stable-key replacer), compute the checksum, then embed both into the envelope.
 - All `bigint` fields stored as strings with `n` suffix (e.g., `"21000n"`)
 - All `number` fields stored as JSON numbers
 - All `undefined` fields omitted entirely (not stored as `null`)
@@ -238,15 +236,18 @@ The checksum is computed over the entire serialized payload **excluding** the `c
 ### 6.2 Write-Time Integrity
 
 On every write:
-1. Serialize the current state snapshot
-2. Compute SHA-256 checksum
-3. Embed checksum in the payload
-4. Write the complete payload to the backend
+1. Serialize the current state snapshot into a deterministic JSON string (the `payload`)
+2. Compute SHA-256 checksum over the UTF-8 bytes of `payload`
+3. Embed `version`, `checksum`, and `payload` into the envelope
+4. Write the complete envelope to the backend
 
-The backend write is atomic (either fully written or not written at all). For backends that don't support atomic writes natively (e.g., `localStorage`), use a staging approach:
-1. Write to `arcflow_persistence_v1.tmp`
-2. Compute checksum of the temp file
-3. Rename `arcflow_persistence_v1.tmp` → `arcflow_persistence_v1` (atomic on most filesystems)
+Atomicity strategy varies by backend:
+
+- **FileSystemBackend**: write to `arcflow_persistence_v1.tmp`, fsync (where applicable), then `rename(tmp, target)` — POSIX atomic rename.
+- **IndexedDBBackend**: single transaction with `put(store, value)`.
+- **LocalStorageBackend**: single-key overwrite (`localStorage.setItem(key, value)`) — no rename available. Overwrite is atomic per-key but not crash-safe for multi-step writes. For localStorage, versioned slots with an active pointer may be used to protect against partial writes during quota exhaustion or crash.
+
+The staging approach (temp file + rename) applies only to filesystem backends. localStorage and IndexedDB have their own atomicity properties that must be respected individually.
 
 ### 6.3 Read-Time Integrity
 
@@ -329,25 +330,31 @@ If a write fails (backend error, quota exceeded, disk full):
 ### 8.1 Hydration Pipeline (on Restart)
 
 ```
-1. Read payload from backend
+1. Read bytes from backend
    │
    ├─ null / not found → start with empty state (normal for first run)
    │
-   └─ payload found
+   └─ bytes found
         │
-       2. Validate version (reject unknown versions)
+       2. Parse envelope JSON (version, checksum, payload string)
         │
-       3. Validate checksum (quarantine on mismatch, start empty)
+       3. Validate envelope structure (version and checksum fields present, payload is a string)
         │
-       4. Deserialize JSON (quarantine on parse error, start empty)
+       4. Validate version (reject unknown versions)
         │
-       5. Validate structural invariants (Section 8.2)
+       5. Compute SHA-256 over payload UTF-8 bytes
         │
-       6. Rebuild internal indices
+       6. Compare checksum (quarantine on mismatch, start empty)
         │
-       7. Hydrate singletons (Section 8.3)
+       7. Parse payload JSON (quarantine on parse error, start empty)
         │
-       8. Reconcile queue with DecisionReports (Section 8.4)
+       8. Validate structural invariants (Section 8.2)
+        │
+       9. Rebuild internal indices
+        │
+      10. Hydrate singletons (Section 8.3)
+        │
+      11. Reconcile queue with DecisionReports (Section 8.4)
 ```
 
 ### 8.2 Structural Invariants
@@ -392,6 +399,18 @@ Reconciliation process:
 4. Log the count of reconciled vs. retained entries
 
 This prevents "zombie queue entries" that survived a restart despite their reports being available.
+
+The reconciliation replay is subject to the following constraints:
+
+- It performs **internal settlement projection only** — it updates DecisionReport fields (`settlementStatus`, `canonicalSettlement`, `txHash`, etc.).
+- It does NOT invoke any Adapter, swap executor, signer, or economic action.
+- It operates only after all domains are hydrated and validated (after step 10 of the hydration pipeline).
+- A projection failure retains the entry with its existing `retryCount`; the `MAX_SETTLEMENT_REPLAY_ATTEMPTS` limit from Phase 2e.2i applies.
+- A failure on one `correlationId` does not block reconciliation of others.
+- No automatic retry loop is triggered; the entry remains queued for the next normal cycle.
+- The reconciliation never creates, promotes, or accepts a record with status `settled` — the Phase 2e.2h invariant (settled reserved) remains valid during and after recovery.
+- The result (counts of reconciled, retained, and skipped entries) is recorded in a recovery report.
+- If no integration point for automatic replay exists in the Coordinator at the time Phase 2e.2k begins, one will be defined before recovery is enabled.
 
 ---
 
@@ -487,7 +506,7 @@ The `lastError` field persists across restarts. This enables post-mortem analysi
 
 ### 11.4 Replay After Restart
 
-On restart, the Coordinator's `runCycle()` calls `retryPendingProofs()` (for on-chain proofs) and can also call `flushPendingSettlementReplays()` (for settlement queue). This means:
+On restart, the Coordinator's `runCycle()` calls `retryPendingProofs()` (for on-chain proof anchoring via DecisionAnchor). A dedicated integration point for automatic settlement queue replay on restart will be defined before `PERSISTENCE_RECOVERY_ENABLED` is activated. Once wired, the replay mechanism from Phase 2e.2i operates identically after restart. This means:
 
 - Queue entries that survived the restart will be retried on the next cycle
 - The retry mechanism from Phase 2e.2i operates identically after restart
@@ -702,13 +721,13 @@ These are NOT part of this design phase. They are included here to show the comp
 
 | Principle | How This Design Respects It |
 |-----------|---------------------------|
-| P1 — Coordinator is single entry point | Persistence reads/writes happen inside the Coordinator, not as a separate entry point |
-| P4 — No shortcut flags | Kill switch flags are explicit, documented, and gated — they don't bypass Coordinator logic |
-| P6 — Every domain is an Adapter | Persistence is an Adapter around the existing memory domains, not a replacement |
-| P7 — Every decision generates Audit | Persistence writes are auditable events logged through the Audit system |
-| P8 — No direct external access | Persistence backend is accessed only through `IPersistenceBackend`, never directly |
-| P9 — Framework independent of domain | Persistence layer is in `lib/agent-framework/`, not in any domain module |
-| P12 — Global rules belong to Policy Engine | Kill switch flags are managed by Policy Engine configuration |
+| Principle 1 — Coordinator is single entry point | Persistence reads/writes happen inside the Coordinator, not as a separate entry point |
+| Principle 4 — No shortcut flags | Kill switch flags are explicit, documented, and gated — they don't bypass Coordinator logic |
+| Principle 6 — Every domain is an Adapter | Persistence is an Adapter around the existing memory domains, not a replacement |
+| Principle 7 — Every decision generates Audit | Persistence writes are auditable events logged through the Audit system |
+| Principle 8 — No direct external access | Persistence backend is accessed only through `IPersistenceBackend`, never directly |
+| Principle 9 — Framework independent of domain | Persistence layer is in `lib/agent-framework/`, not in any domain module |
+| Principle 12 — Global rules belong to Policy Engine | Kill switch flags are managed by Policy Engine configuration |
 
 ---
 
