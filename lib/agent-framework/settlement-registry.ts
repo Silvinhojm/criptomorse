@@ -81,15 +81,256 @@ function definedSettlementUpdate(update: SettlementUpdate): SettlementUpdate {
   ) as SettlementUpdate
 }
 
+const RESERVED_SETTLED_ERROR = "Settlement status \"settled\" is reserved for a future verification phase"
+
+function warnReservedSettled(
+  operation: "registerPending" | "recordUpdate",
+  input: Pick<SettlementUpdate, "correlationId" | "settlementId">,
+): void {
+  console.warn(
+    `[SettlementRegistry] Rejected ${operation}: ${RESERVED_SETTLED_ERROR}` +
+    ` (correlationId=${input.correlationId ?? "unknown"}, settlementId=${input.settlementId ?? "unknown"})`,
+  )
+}
+
 function recordsEqual(a: SettlementRecord, b: SettlementRecord): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
 
-function settlementStatusForMerge(existing: SettlementRecord, update: SettlementUpdate): SettlementStatus {
-  const incomingSynthetic = update.synthetic === true || isZeroTxHash(update.txHash) || update.status === "synthetic"
-  if (incomingSynthetic) return "synthetic"
-  if (existing.status === "synthetic" && update.status === "failed") return "synthetic"
-  return update.status ?? existing.status
+// ── Status progression order ─────────────────────────────────────────────
+// settled is reserved for a future verification phase — not active in STATUS_ORDER.
+const STATUS_ORDER: Record<string, number> = {
+  dispatched: 0,
+  submitted: 1,
+  confirmed: 2,
+}
+
+function statusOrder(s: string): number {
+  return STATUS_ORDER[s] ?? -1
+}
+
+/** An authoritative settlement has on-chain certainty: confirmed canonical
+ *  with canonicalSettlement=true, synthetic!=true, and non-zero txHash. */
+function isAuthoritative(record: SettlementRecord): boolean {
+  return record.status === "confirmed" &&
+    record.canonicalSettlement === true &&
+    record.synthetic !== true &&
+    !!record.txHash &&
+    !isZeroTxHash(record.txHash)
+}
+
+/** A protected settlement cannot be status-regressed, even if not canonical. */
+function isProtectedStatus(record: SettlementRecord): boolean {
+  return record.status === "confirmed"
+}
+
+// ── Field merge helpers for evidence protection ──────────────────────────
+type MergeDecision = "overwrite" | "enrich" | "preserve"
+
+function decideMerge<T>(
+  existingVal: T | undefined,
+  incomingVal: T | undefined,
+  authoritative: boolean,
+  sameSettlement: boolean,
+): MergeDecision {
+  if (!authoritative) return "overwrite"
+  if (incomingVal === undefined) return "preserve"
+  if (existingVal === undefined) return "enrich"
+  if (!sameSettlement) return "preserve"
+  return "preserve" // same settlement but conflicting — keep existing
+}
+
+function mergeScalar<T>(
+  existingVal: T | undefined,
+  incomingVal: T | undefined,
+  authoritative: boolean,
+  sameSettlement: boolean,
+): T | undefined {
+  const d = decideMerge(existingVal, incomingVal, authoritative, sameSettlement)
+  if (d === "overwrite") return incomingVal
+  if (d === "enrich") return incomingVal
+  return existingVal
+}
+
+/** Merge a settlement update into an existing record with full monotonic
+ *  protection for status progression and evidence fields.
+ *
+ *  Status progression (ordinal):  dispatched(0) < submitted(1) < confirmed(2)
+ *  - failed and synthetic are terminal / diagnostic — not on the ordinal scale.
+ *  - settled is reserved for a future verification phase and is not producible
+ *    or promotable in this phase.
+ *  - Once authoritative (confirmed canonical), all proof fields are locked;
+ *    only enrichment from the same settlement (same txHash) is accepted for
+ *    fields that are still undefined.
+ */
+function mergeSettlementRecord(existing: SettlementRecord, definedUpdate: SettlementUpdate): SettlementRecord {
+  const incomingSynthetic =
+    definedUpdate.synthetic === true ||
+    isZeroTxHash(definedUpdate.txHash) ||
+    definedUpdate.status === "synthetic"
+
+  const existingAuth = isAuthoritative(existing)
+  const existingProtected = isProtectedStatus(existing)
+  const incomingOrd = definedUpdate.status !== undefined ? statusOrder(definedUpdate.status) : -1
+  const existingOrd = statusOrder(existing.status)
+
+  const incomingTxValid = !!definedUpdate.txHash && !isZeroTxHash(definedUpdate.txHash)
+  const sameTxHash = existingAuth && incomingTxValid && definedUpdate.txHash === existing.txHash
+  const sameSettlement = sameTxHash
+
+  // ── Status ────────────────────────────────────────────────────────────
+  // settled is reserved for a future verification phase — never produced here.
+  let status: SettlementStatus
+
+  if (existingProtected && incomingSynthetic) {
+    status = existing.status
+  } else if (existingProtected && definedUpdate.status !== undefined && incomingOrd < 2) {
+    // confirmed (even non-canonical) protected from submitted/dispatched
+    status = existing.status
+  } else if (incomingSynthetic) {
+    // dispatched, submitted, failed → synthetic
+    status = "synthetic"
+  } else if (existing.status === "synthetic") {
+    // synthetic can only be replaced by confirmed (real proof on-chain)
+    status = definedUpdate.status === "confirmed" ? "confirmed" : existing.status
+  } else if (existing.status === "failed") {
+    // failed can be replaced by confirmed or synthetic
+    if (definedUpdate.status === "confirmed" || definedUpdate.status === "synthetic") {
+      status = definedUpdate.status
+    } else {
+      status = existing.status
+    }
+  } else if (definedUpdate.status !== undefined && incomingOrd < existingOrd) {
+    // ordinal regression blocked (e.g. submitted → dispatched)
+    status = existing.status
+  } else if (definedUpdate.status !== undefined) {
+    // normal progression or same status
+    status = definedUpdate.status
+  } else {
+    status = existing.status
+  }
+
+  // ── Synthetic flag ────────────────────────────────────────────────────
+  let mergedSynthetic: boolean
+  if (existingProtected) {
+    mergedSynthetic = existing.synthetic === true
+  } else if (incomingSynthetic || status === "synthetic") {
+    mergedSynthetic = true
+  } else if (definedUpdate.synthetic !== undefined) {
+    mergedSynthetic = definedUpdate.synthetic === true
+  } else if (definedUpdate.status !== undefined && definedUpdate.status !== existing.status) {
+    mergedSynthetic = definedUpdate.status === "synthetic"
+  } else {
+    mergedSynthetic = existing.synthetic === true
+  }
+
+  // ── Canonical settlement ──────────────────────────────────────────────
+  let canonicalSettlement: boolean
+  if (existingAuth) {
+    canonicalSettlement = true
+  } else if (definedUpdate.canonicalSettlement !== undefined) {
+    canonicalSettlement = definedUpdate.canonicalSettlement === true && !mergedSynthetic
+  } else {
+    canonicalSettlement = existing.canonicalSettlement === true && !mergedSynthetic
+  }
+
+  // ── txHash (special — identity of the settlement) ─────────────────────
+  let txHash: string | undefined
+  if (existingAuth) {
+    if (definedUpdate.txHash !== undefined) {
+      if (definedUpdate.txHash === existing.txHash || isZeroTxHash(definedUpdate.txHash)) {
+        txHash = existing.txHash
+      } else {
+        console.warn(`[SettlementRegistry] ⚠️ Cannot replace txHash for ${existing.correlationId}: existing ${existing.txHash} vs incoming ${definedUpdate.txHash} — preserving existing`)
+        txHash = existing.txHash
+      }
+    } else {
+      txHash = existing.txHash
+    }
+  } else {
+    txHash = definedUpdate.txHash !== undefined ? definedUpdate.txHash : existing.txHash
+  }
+
+  // ── Evidence / identity fields (protected for authoritative records) ───
+  const a = existingAuth
+  const s = sameSettlement
+
+  const blockNumber = mergeScalar(existing.blockNumber, definedUpdate.blockNumber, a, s)
+  const receiptStatus = mergeScalar(existing.receiptStatus, definedUpdate.receiptStatus, a, s)
+  const gasUsed = mergeScalar(existing.gasUsed, definedUpdate.gasUsed, a, s)
+  const effectiveGasPrice = mergeScalar(existing.effectiveGasPrice, definedUpdate.effectiveGasPrice, a, s)
+  const gasCostNative = mergeScalar(existing.gasCostNative, definedUpdate.gasCostNative, a, s)
+  const gasCostUsd = mergeScalar(existing.gasCostUsd, definedUpdate.gasCostUsd, a, s)
+  const fromToken = mergeScalar(existing.fromToken, definedUpdate.fromToken, a, s)
+  const toToken = mergeScalar(existing.toToken, definedUpdate.toToken, a, s)
+  const amountIn = mergeScalar(existing.amountIn, definedUpdate.amountIn, a, s)
+  const quotedAmountOut = mergeScalar(existing.quotedAmountOut, definedUpdate.quotedAmountOut, a, s)
+  const actualAmountOut = mergeScalar(existing.actualAmountOut, definedUpdate.actualAmountOut, a, s)
+  const slippageBps = mergeScalar(existing.slippageBps, definedUpdate.slippageBps, a, s)
+  const ordemId = mergeScalar(existing.ordemId, definedUpdate.ordemId, a, s)
+
+  // ── errorMsg ──────────────────────────────────────────────────────────
+  let errorMsg: string | undefined
+  if (existingAuth) {
+    errorMsg = existing.errorMsg
+  } else if (status === "confirmed" && existing.status !== "confirmed") {
+    errorMsg = definedUpdate.errorMsg ?? undefined
+  } else {
+    errorMsg = definedUpdate.errorMsg ?? existing.errorMsg
+  }
+
+  // ── balanceDeltas ─────────────────────────────────────────────────────
+  let balanceDeltas: Record<string, string> | undefined
+  if (!existingAuth) {
+    balanceDeltas = definedUpdate.balanceDeltas
+      ? { ...(existing.balanceDeltas ?? {}), ...definedUpdate.balanceDeltas }
+      : existing.balanceDeltas
+  } else if (!definedUpdate.balanceDeltas) {
+    balanceDeltas = existing.balanceDeltas
+  } else if (!existing.balanceDeltas) {
+    balanceDeltas = definedUpdate.balanceDeltas
+  } else if (!sameSettlement) {
+    balanceDeltas = existing.balanceDeltas
+  } else {
+    const merged = { ...existing.balanceDeltas }
+    for (const [key, value] of Object.entries(definedUpdate.balanceDeltas)) {
+      if (existing.balanceDeltas[key] !== undefined && existing.balanceDeltas[key] !== value) {
+        console.warn(`[SettlementRegistry] ⚠️ Conflicting balanceDelta for key ${key} in ${existing.correlationId} — preserving existing`)
+      } else if (existing.balanceDeltas[key] === undefined) {
+        merged[key] = value
+      }
+    }
+    balanceDeltas = merged
+  }
+
+  // ── Timestamp — lock for authoritative records ────────────────────────
+  const timestamp = existingAuth
+    ? existing.timestamp
+    : (definedUpdate.timestamp ?? Date.now())
+
+  // ── Optional fields — always enrich ───────────────────────────────────
+  return {
+    settlementId: existing.settlementId,
+    correlationId: definedUpdate.correlationId ?? existing.correlationId,
+    adapter: definedUpdate.adapter ?? existing.adapter,
+    status,
+    canonicalSettlement,
+    synthetic: mergedSynthetic,
+    txHash,
+    blockNumber,
+    receiptStatus,
+    timestamp,
+    intentId: definedUpdate.intentId ?? existing.intentId,
+    proposalId: definedUpdate.proposalId ?? existing.proposalId,
+    decisionReportId: definedUpdate.decisionReportId ?? existing.decisionReportId,
+    ordemId,
+    fromToken, toToken, amountIn, quotedAmountOut, actualAmountOut,
+    errorMsg,
+    source: definedUpdate.source ?? existing.source,
+    gasUsed, effectiveGasPrice, gasCostNative, gasCostUsd,
+    slippageBps,
+    balanceDeltas,
+  }
 }
 
 export class SettlementRegistry {
@@ -104,6 +345,13 @@ export class SettlementRegistry {
   }
 
   registerPending(record: SettlementRecord): SettlementRecord {
+    // Reject the caller's explicit reserved status before normalizeRecord() can
+    // mask it as synthetic because of synthetic=true or an all-zero txHash.
+    if (record.status === "settled") {
+      warnReservedSettled("registerPending", record)
+      throw new RangeError(RESERVED_SETTLED_ERROR)
+    }
+
     const normalized = normalizeRecord(record)
     this.deindex(record.settlementId)
     this.records.set(normalized.settlementId, normalized)
@@ -113,8 +361,15 @@ export class SettlementRegistry {
   }
 
   recordUpdate(update: SettlementUpdate): SettlementRecord | null {
-    const existing = this.findMatchingRecord(update)
     const definedUpdate = definedSettlementUpdate(update)
+    const existing = this.findMatchingRecord(definedUpdate)
+
+    // Reject the entire mixed update. No evidence fields, timestamps, indexes,
+    // records, or listener notifications are applied from a reserved status.
+    if (definedUpdate.status === "settled") {
+      warnReservedSettled("recordUpdate", definedUpdate)
+      return existing ?? null
+    }
 
     if (!existing) {
       if (!update.correlationId || !update.adapter || !update.status) return null
@@ -154,21 +409,7 @@ export class SettlementRegistry {
       return created
     }
 
-    const candidate = normalizeRecord({
-      ...existing,
-      ...definedUpdate,
-      settlementId: existing.settlementId,
-      correlationId: definedUpdate.correlationId ?? existing.correlationId,
-      adapter: definedUpdate.adapter ?? existing.adapter,
-      status: settlementStatusForMerge(existing, definedUpdate),
-      timestamp: definedUpdate.timestamp ?? Date.now(),
-      canonicalSettlement: update.canonicalSettlement === undefined
-        ? existing.canonicalSettlement
-        : update.canonicalSettlement,
-      balanceDeltas: definedUpdate.balanceDeltas
-        ? { ...(existing.balanceDeltas ?? {}), ...definedUpdate.balanceDeltas }
-        : existing.balanceDeltas,
-    })
+    const candidate = normalizeRecord(mergeSettlementRecord(existing, definedUpdate))
 
     const sameWithoutTimestamp = recordsEqual(
       { ...existing, timestamp: candidate.timestamp },
