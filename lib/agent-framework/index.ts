@@ -34,6 +34,7 @@ export {
 export type { KnowledgeRequest, KnowledgeReport } from "./knowledge-types"
 export { KnowledgeService } from "./knowledge-service"
 export type { DecisionReport, RejectionStage, RejectedBy, RejectionCode, RejectionMetadata } from "./decision-report"
+export type { DecisionReportWriteResult } from "./coordinator"
 export { SettlementRegistry } from "./settlement-registry"
 export type { SettlementRecord, SettlementSource, SettlementStatus, SettlementUpdate } from "./settlement-registry"
 export { frameworkReputation, frameworkAudit, frameworkIntents, frameworkKnowledge, frameworkPolicy, frameworkSettlementRegistry, frameworkCoordinator } from "./singletons"

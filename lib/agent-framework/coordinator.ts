@@ -4,12 +4,18 @@ import type { IExecutor } from "./IExecutor"
 import type { ISafetyGuard } from "./ISafetyGuard"
 import type { IAudit } from "./IAudit"
 import type { IIntentPublisher, IntentStatus } from "./intent-types"
-import type { DecisionReport } from "./decision-report"
+import type { DecisionReport, RejectionMetadata } from "./decision-report"
 import { Voting, type VoteResult } from "./voting"
 import { Audit } from "./audit"
 import { frameworkReputation, frameworkKnowledge, frameworkSettlementRegistry, replaySettlementForCorrelationId } from "./singletons"
 import { IntentDeduplicator } from "./intent-deduplicator"
 import { PolicyEngine, type PolicyEngineConfig } from "./policy-engine"
+
+export interface DecisionReportWriteResult {
+  saved: boolean
+  mode: "updated_existing" | "published_new"
+  error?: string
+}
 
 export { type ConsensusResult, type CycleReport, type SubmissionResult }
 
@@ -95,7 +101,7 @@ export class Coordinator implements ICoordinator {
 
   async submitProposal(proposal: AgentProposal): Promise<SubmissionResult> {
     const startTime = Date.now()
-    const intentId = `intent_${proposal.agentId}_${startTime}`
+    const intentId = `intent_${proposal.agentId}_${proposal.timestamp ?? startTime}`
 
     const dp: DecisionReport = {
       id: `decision_${startTime}_${proposal.agentId}`,
@@ -109,34 +115,48 @@ export class Coordinator implements ICoordinator {
 
     if (this.safetyGuard_ && this.safetyGuard_.isOpen()) {
       dp.voting = { votes: [], totalVoters: 0, approved: false, confidence: 0, reason: "Safety guard open", weightedConfidence: 0, minAgentsRequired: this.MIN_AGREEING_AGENTS }
-      dp.resolvedAt = Date.now()
-      dp.durationMs = dp.resolvedAt - startTime
-      this._saveDecisionReport(intentId, dp)
-      return {
-        consensus: {
-          approved: false, action: proposal.action, confidence: 0,
-          agentVotes: [], tiebreaker: "",
-          reason: `Safety guard open — proposal ${proposal.id} rejected`,
-        },
+      const safetyConsensus: ConsensusResult = {
+        approved: false, action: proposal.action, confidence: 0,
+        agentVotes: [], tiebreaker: "",
+        reason: `Safety guard open — proposal ${proposal.id} rejected`,
       }
+      return await this._recordRejection({
+        proposal, intentId, decisionReport: dp,
+        rejection: {
+          rejectedBy: "safety_guard",
+          rejectionCode: "SAFETY_GUARD_OPEN",
+          rejectionStage: "intake",
+          rejectionReason: safetyConsensus.reason,
+          sourcePath: "submitProposal",
+          occurredAt: Date.now(),
+        },
+        consensus: safetyConsensus,
+      })
     }
 
     const dup = this.deduplicator.isDuplicate(proposal.agentId, proposal.action, proposal.params)
     if (dup.duplicate) {
       dp.dedupSkipped = true
-      dp.resolvedAt = Date.now()
-      dp.durationMs = dp.resolvedAt - startTime
-      this._saveDecisionReport(intentId, dp)
       if (dup.count <= this.deduplicator.MAX_WARNINGS) {
         console.warn(`[${this.name}] 🚫 Duplicate intent from ${proposal.agentId} — discarded (×${dup.count} in ${this.deduplicator.WINDOW_MS / 1000}s)`)
       }
-      return {
-        consensus: {
-          approved: false, action: proposal.action, confidence: 0,
-          agentVotes: [], tiebreaker: "",
-          reason: `Duplicate intent from ${proposal.agentId} — discarded (×${dup.count})`,
-        },
+      const dupConsensus: ConsensusResult = {
+        approved: false, action: proposal.action, confidence: 0,
+        agentVotes: [], tiebreaker: "",
+        reason: `Duplicate intent from ${proposal.agentId} — discarded (×${dup.count})`,
       }
+      return await this._recordRejection({
+        proposal, intentId, decisionReport: dp,
+        rejection: {
+          rejectedBy: "deduplicator",
+          rejectionCode: "DUPLICATE_INTENT",
+          rejectionStage: "intake",
+          rejectionReason: dupConsensus.reason,
+          sourcePath: "submitProposal",
+          occurredAt: Date.now(),
+        },
+        consensus: dupConsensus,
+      })
     }
 
     proposal.params.intentId = intentId
@@ -215,18 +235,25 @@ export class Coordinator implements ICoordinator {
     // ── canTrade gate ──
     if (dp.knowledge && !canTrade) {
       dp.rejectedBy = "knowledge"
-      this._transitionIntent(intentId, "REJECTED")
-      dp.resolvedAt = Date.now()
-      dp.durationMs = dp.resolvedAt - startTime
-      this._saveDecisionReport(intentId, dp)
-      console.log(`[${this.name}] 🛑 Knowledge rejected: canTrade=false`)
-      return {
-        consensus: {
-          approved: false, action: proposal.action, confidence: 0,
-          agentVotes: [], tiebreaker: "",
-          reason: "Knowledge Service rejected proposal: canTrade=false",
-        },
+      const knowConsensus: ConsensusResult = {
+        approved: false, action: proposal.action, confidence: 0,
+        agentVotes: [], tiebreaker: "",
+        reason: "Knowledge Service rejected proposal: canTrade=false",
       }
+      const knowResult = await this._recordRejection({
+        proposal, intentId, decisionReport: dp,
+        rejection: {
+          rejectedBy: "knowledge",
+          rejectionCode: "KNOWLEDGE_CAN_TRADE_FALSE",
+          rejectionStage: "knowledge",
+          rejectionReason: knowConsensus.reason,
+          sourcePath: "submitProposal",
+          occurredAt: Date.now(),
+        },
+        consensus: knowConsensus,
+      })
+      console.log(`[${this.name}] 🛑 Knowledge rejected: canTrade=false`)
+      return knowResult
     }
 
     this._transitionIntent(intentId, "KNOWLEDGE_VALIDATED")
@@ -235,25 +262,25 @@ export class Coordinator implements ICoordinator {
     const preVotePolicy = this._checkPreVotePolicy(proposal)
     if (!preVotePolicy.allowed) {
       dp.rejectedBy = "policy"
-      this._transitionIntent(intentId, "REJECTED")
-      dp.resolvedAt = Date.now()
-      dp.durationMs = dp.resolvedAt - startTime
-      this._saveDecisionReport(intentId, dp)
-      if (this.audit_) {
-        this.audit_.record(Audit.createEntry({
-          agentId: proposal.agentId, action: proposal.action, proposal,
-          result: null, approved: false, confidence: 0, voters: 0,
-          tags: ["policy_rejection", "pre_vote"],
-        }))
+      const preVoteConsensus: ConsensusResult = {
+        approved: false, action: proposal.action, confidence: 0,
+        agentVotes: [], tiebreaker: "",
+        reason: preVotePolicy.reason,
       }
-      console.log(`[${this.name}] 🛑 Policy rejected (pre-vote): ${preVotePolicy.reason}`)
-      return {
-        consensus: {
-          approved: false, action: proposal.action, confidence: 0,
-          agentVotes: [], tiebreaker: "",
-          reason: preVotePolicy.reason,
+      const preVoteResult = await this._recordRejection({
+        proposal, intentId, decisionReport: dp,
+        rejection: {
+          rejectedBy: "policy",
+          rejectionCode: "PRE_VOTE_POLICY_REJECTED",
+          rejectionStage: "pre_vote_policy",
+          rejectionReason: preVotePolicy.reason,
+          sourcePath: "submitProposal",
+          occurredAt: Date.now(),
         },
-      }
+        consensus: preVoteConsensus,
+      })
+      console.log(`[${this.name}] 🛑 Policy rejected (pre-vote): ${preVotePolicy.reason}`)
+      return preVoteResult
     }
 
     // apply knowledge override policy
@@ -311,68 +338,90 @@ export class Coordinator implements ICoordinator {
     }
 
     if (!hasEnoughConsensus) {
-      this._transitionIntent(intentId, "REJECTED")
-      dp.resolvedAt = Date.now()
-      dp.durationMs = dp.resolvedAt - startTime
-      this._saveDecisionReport(intentId, dp)
+      const voteResult = await this._recordRejection({
+        proposal, intentId, decisionReport: dp,
+        rejection: {
+          rejectedBy: "voting",
+          rejectionCode: "VOTING_REJECTED",
+          rejectionStage: "voting",
+          rejectionReason: consensus.reason,
+          sourcePath: "submitProposal",
+          occurredAt: Date.now(),
+        },
+        consensus,
+      })
       console.log(`[${this.name}] ❌ Rejected — ${consensus.reason}`)
-      return { consensus }
+      return voteResult
     }
 
     if (!this.executor_) {
-      this._transitionIntent(intentId, "REJECTED")
-      dp.resolvedAt = Date.now()
-      dp.durationMs = dp.resolvedAt - startTime
-      this._saveDecisionReport(intentId, dp)
-      console.log(`[${this.name}] ❌ Rejected — no executor configured`)
-      return {
-        consensus: {
-          ...consensus,
-          approved: false,
-          reason: "No executor configured",
-        },
+      const noExecConsensus: ConsensusResult = {
+        ...consensus,
+        approved: false,
+        reason: "No executor configured",
       }
+      const noExecResult = await this._recordRejection({
+        proposal, intentId, decisionReport: dp,
+        rejection: {
+          rejectedBy: "coordinator",
+          rejectionCode: "NO_EXECUTOR",
+          rejectionStage: "capability",
+          rejectionReason: noExecConsensus.reason,
+          sourcePath: "submitProposal",
+          occurredAt: Date.now(),
+        },
+        consensus: noExecConsensus,
+      })
+      console.log(`[${this.name}] ❌ Rejected — no executor configured`)
+      return noExecResult
     }
 
     // ── Pre-execution policy check ──
     const preExecPolicy = this._checkPreExecPolicy(proposal)
     if (!preExecPolicy.allowed) {
       dp.rejectedBy = "policy"
-      this._transitionIntent(intentId, "REJECTED")
-      dp.resolvedAt = Date.now()
-      dp.durationMs = dp.resolvedAt - startTime
-      this._saveDecisionReport(intentId, dp)
-      if (this.audit_) {
-        this.audit_.record(Audit.createEntry({
-          agentId: proposal.agentId, action: proposal.action, proposal,
-          result: null, approved: false, confidence: 0, voters: 0,
-          tags: ["policy_rejection", "pre_exec"],
-        }))
+      const preExecConsensus: ConsensusResult = {
+        ...consensus,
+        approved: false,
+        reason: preExecPolicy.reason,
       }
-      console.log(`[${this.name}] 🛑 Policy rejected (pre-exec): ${preExecPolicy.reason}`)
-      return {
-        consensus: {
-          ...consensus,
-          approved: false,
-          reason: preExecPolicy.reason,
+      const preExecResult = await this._recordRejection({
+        proposal, intentId, decisionReport: dp,
+        rejection: {
+          rejectedBy: "policy",
+          rejectionCode: "PRE_EXEC_POLICY_REJECTED",
+          rejectionStage: "pre_exec_policy",
+          rejectionReason: preExecPolicy.reason,
+          sourcePath: "submitProposal",
+          occurredAt: Date.now(),
         },
-      }
+        consensus: preExecConsensus,
+      })
+      console.log(`[${this.name}] 🛑 Policy rejected (pre-exec): ${preExecPolicy.reason}`)
+      return preExecResult
     }
 
     const canExec = this.executor_.canExecute(proposal)
     if (!canExec.allowed) {
-      this._transitionIntent(intentId, "REJECTED")
-      dp.resolvedAt = Date.now()
-      dp.durationMs = dp.resolvedAt - startTime
-      this._saveDecisionReport(intentId, dp)
-      console.log(`[${this.name}] ❌ Rejected — ${canExec.reason}`)
-      return {
-        consensus: {
-          ...consensus,
-          approved: false,
-          reason: canExec.reason,
-        },
+      const canExecConsensus: ConsensusResult = {
+        ...consensus,
+        approved: false,
+        reason: canExec.reason,
       }
+      const canExecResult = await this._recordRejection({
+        proposal, intentId, decisionReport: dp,
+        rejection: {
+          rejectedBy: "executor",
+          rejectionCode: "EXECUTOR_CAN_EXECUTE_FALSE",
+          rejectionStage: "execution_guard",
+          rejectionReason: canExec.reason,
+          sourcePath: "submitProposal",
+          occurredAt: Date.now(),
+        },
+        consensus: canExecConsensus,
+      })
+      console.log(`[${this.name}] ❌ Rejected — ${canExec.reason}`)
+      return canExecResult
     }
 
     // ── Execution stage ──
@@ -462,7 +511,8 @@ export class Coordinator implements ICoordinator {
 
     dp.resolvedAt = Date.now()
     dp.durationMs = dp.resolvedAt - startTime
-    this._saveDecisionReport(intentId, dp)
+    const execWrite = await this._saveDecisionReport(intentId, dp)
+    if (!execWrite.saved) throw new Error("Failed to persist execution decision report")
 
     // ── On-chain proof ──
     if (executionResult.success && !isProvisionalDispatch && this.intentPublisher_?.anchorDecision) {
@@ -774,32 +824,109 @@ export class Coordinator implements ICoordinator {
     return report
   }
 
-  private _saveDecisionReport(intentId: string, report: DecisionReport): void {
-    if (!this.intentPublisher_) return
+  private async _saveDecisionReport(intentId: string, report: DecisionReport): Promise<DecisionReportWriteResult> {
+    if (!this.intentPublisher_) {
+      return { saved: false, mode: "updated_existing", error: "IntentPublisher not available" }
+    }
     const existing = this.intentPublisher_.getRecord(intentId)
     if (existing) {
-      this.intentPublisher_.setDecisionReport(intentId, report)
+      const ok = this.intentPublisher_.setDecisionReport(intentId, report)
+      if (!ok) {
+        return { saved: false, mode: "updated_existing", error: "setDecisionReport returned false" }
+      }
       this._syncSettlementFromRegistry(intentId)
-    } else {
-      this.intentPublisher_.publish({
+      return { saved: true, mode: "updated_existing" }
+    }
+    try {
+      await this.intentPublisher_.publish({
         id: intentId,
         agentId: report.agentId,
         action: report.action,
         params: report.params,
         confidence: report.voting?.confidence ?? 0,
         timestamp: report.createdAt,
-      }).then(() => {
-        const recordExists = this.intentPublisher_?.getRecord(intentId)
-        if (recordExists) {
-          this.intentPublisher_!.setDecisionReport(intentId, report)
-          this._syncSettlementFromRegistry(intentId)
-        } else {
-          console.warn(`[${this.name}] ⚠️ DecisionReport ${report.id} not saved — publish succeeded but intent ${intentId} not found (race or trim)`)
-        }
-      }).catch((e: unknown) => {
-        console.error(`[${this.name}] ❌ Failed to publish intent ${intentId} for report ${report.id}:`, e)
       })
+      const record = this.intentPublisher_?.getRecord(intentId)
+      if (!record) {
+        return { saved: false, mode: "published_new", error: "Publish succeeded but intent not found (race or trim)" }
+      }
+      const ok = this.intentPublisher_!.setDecisionReport(intentId, report)
+      if (!ok) {
+        return { saved: false, mode: "published_new", error: "setDecisionReport returned false after publish" }
+      }
+      this._syncSettlementFromRegistry(intentId)
+      return { saved: true, mode: "published_new" }
+    } catch (e) {
+      const msg = (e as Error).message ?? String(e)
+      return { saved: false, mode: "published_new", error: `Publish failed: ${msg}` }
     }
+  }
+
+  private async _recordRejection(args: {
+    proposal: AgentProposal
+    intentId: string
+    decisionReport: DecisionReport
+    rejection: RejectionMetadata
+    consensus: ConsensusResult
+  }): Promise<SubmissionResult> {
+    const { proposal, intentId, decisionReport: dp, rejection, consensus } = args
+
+    if (!rejection.rejectedBy || !rejection.rejectionCode || !rejection.rejectionStage || !rejection.sourcePath) {
+      throw new Error(`Invalid rejection metadata: missing required field in ${dp.id}`)
+    }
+
+    dp.outcome = "rejected"
+    dp.rejection = rejection
+    dp.auditStatus = "not_attempted"
+    dp.resolvedAt = Date.now()
+    dp.durationMs = dp.resolvedAt - (proposal.timestamp ?? dp.createdAt)
+
+    let write: DecisionReportWriteResult
+    try {
+      write = await this._saveDecisionReport(intentId, dp)
+    } catch {
+      throw new Error("Failed to persist rejection decision report")
+    }
+    if (!write.saved) throw new Error("Failed to persist rejection decision report")
+
+    this._transitionIntent(intentId, "REJECTED")
+
+    let auditRecorded = false
+    if (this.audit_) {
+      const entry = Audit.createEntry({
+        agentId: proposal.agentId,
+        action: proposal.action,
+        proposal,
+        result: null,
+        approved: false,
+        confidence: 0,
+        voters: 0,
+        tags: [
+          "rejection",
+          `rejection_code:${rejection.rejectionCode}`,
+          `rejection_stage:${rejection.rejectionStage}`,
+          `rejected_by:${rejection.rejectedBy}`,
+          `source_path:${rejection.sourcePath}`,
+        ],
+      })
+      try {
+        auditRecorded = this.audit_.record(entry)?.recorded === true
+      } catch {
+        auditRecorded = false
+      }
+    }
+
+    dp.auditStatus = auditRecorded ? "recorded" : "write_failed"
+    let finalWrite: DecisionReportWriteResult
+    try {
+      finalWrite = await this._saveDecisionReport(intentId, dp)
+    } catch {
+      throw new Error("Failed to persist final rejection audit status")
+    }
+    if (!finalWrite.saved) throw new Error("Failed to persist final rejection audit status")
+    if (!auditRecorded) throw new Error("Failed to record rejection audit")
+
+    return { consensus }
   }
 
   /** Post-save settlement replay: sync any existing or queued settlement
