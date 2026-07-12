@@ -36,9 +36,14 @@ export interface AuditReport {
   periodEnd: number
 }
 
+export interface AuditWriteResult {
+  recorded: boolean
+  error?: string
+}
+
 export interface IAudit {
   readonly name: string
-  record(entry: AuditEntry): void
+  record(entry: AuditEntry): AuditWriteResult
   updateEntry(id: string, updates: Partial<Pick<AuditEntry, "onChainHash" | "onChainTx" | "onChainStatus">>): boolean
   getRecent(count: number): AuditEntry[]
   getByAgent(agentId: string, limit?: number): AuditEntry[]

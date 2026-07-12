@@ -1,8 +1,8 @@
-import type { IAudit, AuditEntry, AuditReport } from "./IAudit"
+import type { IAudit, AuditEntry, AuditReport, AuditWriteResult } from "./IAudit"
 import type { AgentProposal } from "./IAgent"
 import type { ExecutionResult } from "./IExecutor"
 
-export { type AuditEntry, type AuditReport, type IAudit }
+export { type AuditEntry, type AuditReport, type AuditWriteResult, type IAudit }
 
 let nextId = 0
 
@@ -16,11 +16,12 @@ export class Audit implements IAudit {
     this.maxEntries = maxEntries
   }
 
-  record(entry: AuditEntry): void {
+  record(entry: AuditEntry): AuditWriteResult {
     this.entries.push(entry)
     if (this.entries.length > this.maxEntries) {
       this.entries = this.entries.slice(-this.maxEntries)
     }
+    return { recorded: true }
   }
 
   updateEntry(id: string, updates: Partial<Pick<AuditEntry, "onChainHash" | "onChainTx" | "onChainStatus">>): boolean {

@@ -4,7 +4,7 @@ export type { IExecutor, ExecutionResult } from "./IExecutor"
 export type { IReputation, AgentStats } from "./IReputation"
 export type { ISafetyGuard, SafetyStatus } from "./ISafetyGuard"
 export type { IResourceManager, ResourceRequest, ResourceGrant, ResourceState } from "./IResourceManager"
-export type { IAudit, AuditEntry, AuditReport } from "./IAudit"
+export type { IAudit, AuditEntry, AuditReport, AuditWriteResult } from "./IAudit"
 export type { ICompliance, ComplianceCheck, CompliancePolicy } from "./ICompliance"
 export type { ILearningEngine, LearningFeedback, AgentParams } from "./ILearningEngine"
 
@@ -23,10 +23,17 @@ export type { TradeSignal } from "./trading-adapter"
 export type { AgentIntent, IntentRecord, IntentStatus, IntentFilter, IIntentPublisher } from "./intent-types"
 export { IntentPublisher } from "./intent-publisher"
 export { IntentDeduplicator } from "./intent-deduplicator"
-export { PolicyEngine, type PolicyRule, type PolicyEngineConfig } from "./policy-engine"
+export {
+  PolicyEngine,
+  type PolicyRule,
+  type PolicyEngineConfig,
+  type MinimumConfidenceNetworkOverride,
+  type MinimumConfidencePolicyConfig,
+  type EffectiveMinimumConfidencePolicy,
+} from "./policy-engine"
 export type { KnowledgeRequest, KnowledgeReport } from "./knowledge-types"
 export { KnowledgeService } from "./knowledge-service"
-export type { DecisionReport } from "./decision-report"
+export type { DecisionReport, RejectionStage, RejectedBy, RejectionCode, RejectionMetadata } from "./decision-report"
 export { SettlementRegistry } from "./settlement-registry"
 export type { SettlementRecord, SettlementSource, SettlementStatus, SettlementUpdate } from "./settlement-registry"
 export { frameworkReputation, frameworkAudit, frameworkIntents, frameworkKnowledge, frameworkPolicy, frameworkSettlementRegistry, frameworkCoordinator } from "./singletons"
