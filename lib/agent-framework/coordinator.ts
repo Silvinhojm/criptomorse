@@ -7,9 +7,10 @@ import type { IIntentPublisher, IntentStatus } from "./intent-types"
 import type { DecisionReport, RejectionMetadata } from "./decision-report"
 import { Voting, type VoteResult } from "./voting"
 import { Audit } from "./audit"
-import { frameworkReputation, frameworkKnowledge, frameworkSettlementRegistry, replaySettlementForCorrelationId } from "./singletons"
 import { IntentDeduplicator } from "./intent-deduplicator"
 import { PolicyEngine, type PolicyEngineConfig } from "./policy-engine"
+import type { KnowledgeReport, ResolvedKnowledgeContext } from "./knowledge-types"
+import { frameworkReputation, frameworkKnowledge, frameworkSettlementRegistry, replaySettlementForCorrelationId } from "./singletons"
 
 export interface DecisionReportWriteResult {
   saved: boolean
@@ -168,72 +169,16 @@ export class Coordinator implements ICoordinator {
     this._transitionIntent(intentId, "CREATED")
     console.log(`[${this.name}] 📋 Intent #${intentId} — ${proposal.agentId} → ${proposal.action}`)
 
-    // ── Knowledge stage ──
-    let knowledgeMod = (proposal.params?.knowledgeModifier as number | undefined) ?? 0
-    const agentKr = proposal.params?.knowledgeReport
-    let kr: Record<string, number> | undefined = agentKr as Record<string, number> | undefined
-    let canTrade = true
-
-    if (kr) {
-      dp.knowledgeStatus = "provided"
-      canTrade = (proposal.params?.knowledgeReport as any)?.canTrade ?? true
-    } else {
-      // No agent-provided knowledge — query canonical Knowledge Service
-      const fromToken = proposal.params?.fromToken as string | undefined
-      const toToken = proposal.params?.toToken as string | undefined
-      const network = proposal.params?.rede as string | undefined
-      if (fromToken && toToken && network) {
-        try {
-          const action = proposal.action?.toUpperCase() === "SELL" ? "SELL" : "BUY"
-          const report = await frameworkKnowledge.query({
-            pair: { from: fromToken, to: toToken },
-            network,
-            action,
-            agent: proposal.agentId,
-            amount: typeof proposal.params?.amountUsd === "number"
-              ? BigInt(Math.round(proposal.params.amountUsd * 100))
-              : 0n,
-          })
-          dp.knowledgeStatus = "queried"
-          canTrade = report.canTrade
-          knowledgeMod = report.confidenceModifier
-          proposal.params.knowledgeModifier = knowledgeMod
-          proposal.params.knowledgeWarnings = report.warnings
-          kr = {
-            liquidity: report.liquidity,
-            gasScore: report.gasScore,
-            routeScore: report.routeScore,
-            marketScore: report.marketScore,
-            riskScore: report.riskScore,
-            expectedValue: report.expectedValue,
-          }
-        } catch (e) {
-          dp.knowledgeStatus = "failed"
-          dp.knowledgeError = (e as Error).message
-          console.warn(`[${this.name}] ⚠️ Knowledge Service unavailable:`, (e as Error).message)
-        }
-      } else {
-        dp.knowledgeStatus = "unavailable"
-      }
-    }
-
-    if (kr) {
-      dp.knowledge = {
-        liquidity: kr.liquidity ?? 0,
-        gasScore: kr.gasScore ?? 0,
-        routeScore: kr.routeScore ?? 0,
-        marketScore: kr.marketScore ?? 0,
-        riskScore: kr.riskScore ?? 0,
-        expectedValue: kr.expectedValue ?? 0,
-        confidenceModifier: knowledgeMod,
-        warnings: (proposal.params?.knowledgeWarnings as string[]) ?? [],
-        recommendations: [],
-      }
-      console.log(`[${this.name}] 📊 Knowledge — 💧${dp.knowledge.liquidity} ⛽${dp.knowledge.gasScore} 🛣️${dp.knowledge.routeScore} 📊${dp.knowledge.marketScore} ⚠️${dp.knowledge.riskScore} modifier ${knowledgeMod >= 0 ? "+" : ""}${knowledgeMod.toFixed(0)}%`)
-    }
+    // ── Canonical Knowledge stage ──
+    const canonicalKnowledge = await this._resolveKnowledge(proposal)
+    const knowledgeMod = this.policyEngine.isAllowed("allowKnowledgeOverride", proposal.params?.rede as string | undefined)
+      ? canonicalKnowledge.modifier : 0
+    proposal.params.knowledgeModifier = knowledgeMod
+    proposal.params.knowledgeWarnings = canonicalKnowledge.warnings
+    this._applyKnowledgeToDecisionReport(dp, canonicalKnowledge, knowledgeMod)
 
     // ── canTrade gate ──
-    if (dp.knowledge && !canTrade) {
+    if (!canonicalKnowledge.canTrade) {
       dp.rejectedBy = "knowledge"
       const knowConsensus: ConsensusResult = {
         approved: false, action: proposal.action, confidence: 0,
@@ -281,12 +226,6 @@ export class Coordinator implements ICoordinator {
       })
       console.log(`[${this.name}] 🛑 Policy rejected (pre-vote): ${preVotePolicy.reason}`)
       return preVoteResult
-    }
-
-    // apply knowledge override policy
-    if (!this.policyEngine.isAllowed("allowKnowledgeOverride", proposal.params?.rede as string | undefined)) {
-      knowledgeMod = 0
-      proposal.params.knowledgeModifier = 0
     }
 
     let hasEnoughConsensus = false
@@ -623,35 +562,15 @@ export class Coordinator implements ICoordinator {
         proposal.params.decisionReportId = cycleDecisionReportId
         this._transitionIntent(cycleIntentId, "CREATED")
 
-        // ── Knowledge enforcement ──
-        let knowledgeMod = (proposal.params?.knowledgeModifier as number | undefined) ?? 0
-        if (!proposal.params?.knowledgeReport) {
-          const fromToken = proposal.params?.fromToken as string | undefined
-          const toToken = proposal.params?.toToken as string | undefined
-          const network = proposal.params?.rede as string | undefined
-          if (fromToken && toToken && network) {
-            try {
-              const action = proposal.action?.toUpperCase() === "SELL" ? "SELL" : "BUY"
-              const report = await frameworkKnowledge.query({
-                pair: { from: fromToken, to: toToken },
-                network, action,
-                agent: proposal.agentId,
-                amount: typeof proposal.params?.amountUsd === "number"
-                  ? BigInt(Math.round(proposal.params.amountUsd * 100))
-                  : 0n,
-              })
-              knowledgeMod = report.confidenceModifier
-              proposal.params.knowledgeModifier = knowledgeMod
-              proposal.params.knowledgeWarnings = report.warnings
-              proposal.params.knowledgeCanTrade = report.canTrade
-            } catch (e) {
-              console.warn(`[${this.name}] ⚠️ Knowledge Service unavailable in cycle:`, (e as Error).message)
-            }
-          }
-        }
+        // ── Canonical Knowledge enforcement ──
+        const canonicalKnowledge = await this._resolveKnowledge(proposal)
+        const knowledgeMod = this.policyEngine.isAllowed("allowKnowledgeOverride", proposal.params?.rede as string | undefined)
+          ? canonicalKnowledge.modifier : 0
+        proposal.params.knowledgeModifier = knowledgeMod
+        proposal.params.knowledgeWarnings = canonicalKnowledge.warnings
 
         // ── canTrade gate ──
-        if (proposal.params?.knowledgeCanTrade === false) {
+        if (!canonicalKnowledge.canTrade) {
           this._transitionIntent(cycleIntentId, "REJECTED")
           console.warn(`[${this.name}] 🛑 Knowledge rejected in cycle: canTrade=false`)
           report.errors++
@@ -802,6 +721,7 @@ export class Coordinator implements ICoordinator {
                 isProvisional: result.isProvisional,
               },
             }
+            this._applyKnowledgeToDecisionReport(dp, canonicalKnowledge, knowledgeMod)
             this.intentPublisher_.anchorDecision(cycleIntentId, dp).then(anchorResult => {
               if (anchorResult) {
                 dp.onChainHash = anchorResult.hash
@@ -822,6 +742,105 @@ export class Coordinator implements ICoordinator {
     }
 
     return report
+  }
+
+  private async _resolveKnowledge(proposal: AgentProposal): Promise<ResolvedKnowledgeContext> {
+    const action = this._classifyKnowledgeAction(proposal.action)
+
+    if (action === "UNKNOWN") {
+      return { canTrade: false, modifier: 0, source: "failed", status: "failed", warnings: [], error: "Knowledge resolution failed" }
+    }
+
+    const fromToken = proposal.params?.fromToken as string | undefined
+    const toToken = proposal.params?.toToken as string | undefined
+    const network = proposal.params?.rede as string | undefined
+
+    // Economic actions require fromToken, toToken, and network.
+    // Fail-closed before any other check — a provided report cannot
+    // authorize a malformed economic proposal.
+    if (action !== "NON_ECONOMIC" && (!fromToken || !toToken || !network)) {
+      return { canTrade: false, modifier: 0, source: "failed", status: "failed", warnings: [], error: "Knowledge resolution failed" }
+    }
+
+    // Provided report: skip duplicate query.
+    const provided = proposal.params?.knowledgeReport
+    if (provided !== undefined) {
+      const report = this._normalizeKnowledgeReport(provided)
+      if (report) {
+        return { report, canTrade: report.canTrade, modifier: report.confidenceModifier, source: "provided", status: "provided", warnings: [...report.warnings] }
+      }
+      return { canTrade: false, modifier: 0, source: "failed", status: "failed", warnings: [], error: "Knowledge resolution failed" }
+    }
+
+    // Non-economic actions: no pair/network needed. Allow pass-through.
+    if (action === "NON_ECONOMIC") {
+      return { canTrade: true, modifier: 0, source: "unavailable", status: "unavailable", warnings: [] }
+    }
+
+    try {
+      const queried = await frameworkKnowledge.query({
+        pair: { from: fromToken!, to: toToken! },
+        network: network!,
+        action,
+        agent: proposal.agentId,
+        amount: typeof proposal.params?.amountUsd === "number" ? BigInt(Math.round(proposal.params.amountUsd * 100)) : 0n,
+      })
+      const report = this._normalizeKnowledgeReport(queried)
+      if (!report) throw new Error("invalid KnowledgeReport")
+      return { report, canTrade: report.canTrade, modifier: report.confidenceModifier, source: "queried", status: "queried", warnings: [...report.warnings] }
+    } catch {
+      return { canTrade: false, modifier: 0, source: "failed", status: "failed", warnings: [], error: "Knowledge resolution failed" }
+    }
+  }
+
+  private _classifyKnowledgeAction(action: string): "BUY" | "SELL" | "NON_ECONOMIC" | "UNKNOWN" {
+    const normalized = action.trim().toUpperCase()
+    if (normalized === "BUY" || normalized === "SELL") return normalized
+    if (normalized === "HOLD" || normalized === "TEST") return "NON_ECONOMIC"
+    return "UNKNOWN"
+  }
+
+  private _normalizeKnowledgeReport(value: unknown): KnowledgeReport | undefined {
+    if (!value || typeof value !== "object") return undefined
+    const v = value as Record<string, unknown>
+    const numeric = ["liquidity", "gasScore", "routeScore", "marketScore", "riskScore", "expectedValue"]
+    if (typeof v.canTrade !== "boolean" || numeric.some(key => typeof v[key] !== "number" || !Number.isFinite(v[key]))) return undefined
+    const modifier = typeof v.confidenceModifier === "number" && Number.isFinite(v.confidenceModifier) ? v.confidenceModifier : 0
+    return {
+      canTrade: v.canTrade,
+      reason: typeof v.reason === "string" ? v.reason : undefined,
+      liquidity: v.liquidity as number,
+      gasScore: v.gasScore as number,
+      routeScore: v.routeScore as number,
+      marketScore: v.marketScore as number,
+      riskScore: v.riskScore as number,
+      expectedValue: v.expectedValue as number,
+      confidenceModifier: modifier,
+      warnings: Array.isArray(v.warnings) ? v.warnings.filter((item): item is string => typeof item === "string") : [],
+      recommendations: Array.isArray(v.recommendations) ? v.recommendations.filter((item): item is string => typeof item === "string") : [],
+      sources: (v.sources && typeof v.sources === "object" ? v.sources : { liquidity: false, route: false, gas: false, price: false, history: false, reputation: false }) as KnowledgeReport["sources"],
+      timestamp: typeof v.timestamp === "number" && Number.isFinite(v.timestamp) ? v.timestamp : Date.now(),
+    }
+  }
+
+  private _applyKnowledgeToDecisionReport(dp: DecisionReport, context: ResolvedKnowledgeContext, appliedModifier: number): void {
+    const report = context.report
+    dp.knowledgeStatus = context.status
+    dp.knowledgeError = context.error
+    dp.knowledge = {
+      canTrade: context.canTrade,
+      source: context.source,
+      liquidity: report?.liquidity ?? 0,
+      gasScore: report?.gasScore ?? 0,
+      routeScore: report?.routeScore ?? 0,
+      marketScore: report?.marketScore ?? 0,
+      riskScore: report?.riskScore ?? 0,
+      expectedValue: report?.expectedValue ?? 0,
+      confidenceModifier: appliedModifier,
+      warnings: [...context.warnings],
+      recommendations: [...(report?.recommendations ?? [])],
+      gasContext: report?.gasContext,
+    }
   }
 
   private async _saveDecisionReport(intentId: string, report: DecisionReport): Promise<DecisionReportWriteResult> {

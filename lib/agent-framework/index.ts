@@ -31,7 +31,7 @@ export {
   type MinimumConfidencePolicyConfig,
   type EffectiveMinimumConfidencePolicy,
 } from "./policy-engine"
-export type { KnowledgeRequest, KnowledgeReport } from "./knowledge-types"
+export type { KnowledgeRequest, KnowledgeReport, ResolvedKnowledgeContext } from "./knowledge-types"
 export { KnowledgeService } from "./knowledge-service"
 export type { DecisionReport, RejectionStage, RejectedBy, RejectionCode, RejectionMetadata } from "./decision-report"
 export type { DecisionReportWriteResult } from "./coordinator"

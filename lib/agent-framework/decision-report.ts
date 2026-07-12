@@ -43,6 +43,8 @@ export interface DecisionReport {
   params: Record<string, unknown>
 
   knowledge?: {
+    canTrade?: boolean
+    source?: "provided" | "queried" | "unavailable" | "failed"
     liquidity: number
     gasScore: number
     routeScore: number

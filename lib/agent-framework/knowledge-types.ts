@@ -38,3 +38,14 @@ export interface KnowledgeReport {
   }
   timestamp: number
 }
+
+export interface ResolvedKnowledgeContext {
+  report?: KnowledgeReport
+  canTrade: boolean
+  modifier: number
+  /** source identifies where the context came from; status identifies the operational resolution result. */
+  source: "provided" | "queried" | "unavailable" | "failed"
+  status: "provided" | "queried" | "unavailable" | "failed"
+  warnings: string[]
+  error?: string
+}
