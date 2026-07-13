@@ -4,13 +4,27 @@ import type { IExecutor } from "./IExecutor"
 import type { ISafetyGuard } from "./ISafetyGuard"
 import type { IAudit } from "./IAudit"
 import type { IIntentPublisher, IntentStatus } from "./intent-types"
-import type { DecisionReport, RejectionMetadata } from "./decision-report"
+import type { DecisionReport, RejectionMetadata, RejectionCode, RejectionStage, RejectedBy } from "./decision-report"
 import { Voting, type VoteResult } from "./voting"
 import { Audit } from "./audit"
 import { IntentDeduplicator } from "./intent-deduplicator"
 import { PolicyEngine, type PolicyEngineConfig } from "./policy-engine"
 import type { KnowledgeReport, ResolvedKnowledgeContext } from "./knowledge-types"
 import { frameworkReputation, frameworkKnowledge, frameworkSettlementRegistry, replaySettlementForCorrelationId } from "./singletons"
+
+/** Dedicated error for rejection evidence failures in cycle.
+ *  Public message is fixed; internal cause preserved but not exposed. */
+export class CycleRejectionEvidenceError extends Error {
+  readonly code: string
+  readonly cause?: Error
+
+  constructor(code: string, cause?: Error) {
+    super("Cycle rejection evidence failure")
+    this.name = "CycleRejectionEvidenceError"
+    this.code = code
+    this.cause = cause
+  }
+}
 
 export interface DecisionReportWriteResult {
   saved: boolean
@@ -340,7 +354,7 @@ export class Coordinator implements ICoordinator {
       return preExecResult
     }
 
-    const canExec = this.executor_.canExecute(proposal)
+    const canExec = this._safeCanExecute(proposal)
     if (!canExec.allowed) {
       const canExecConsensus: ConsensusResult = {
         ...consensus,
@@ -547,14 +561,23 @@ export class Coordinator implements ICoordinator {
       const cycleIntentId = `intent_${proposal.agentId}_${Date.now()}`
       const cycleDecisionReportId = `decision_cycle_${this.cycleCount}_${proposal.agentId}_${Date.now()}`
       try {
-        // Dedup check
+        // ── Gate 1: Dedup (intake) ──
         const dup = this.deduplicator.isDuplicate(proposal.agentId, proposal.action, proposal.params)
         if (dup.duplicate) {
           if (dup.count <= this.deduplicator.MAX_WARNINGS) {
             console.warn(`[${this.name}] 🚫 Duplicate intent from agent ${proposal.agentId} in cycle — discarded (×${dup.count})`)
           }
+          await this._recordCycleRejection({
+            proposal, cycleIntentId, cycleDecisionReportId,
+            rejectionCode: "DUPLICATE_INTENT",
+            rejectionStage: "intake",
+            rejectedBy: "deduplicator",
+            rejectionReason: `Duplicate intent from ${proposal.agentId} — discarded (×${dup.count})`,
+            report,
+          })
           continue
         }
+
         proposal.params.intentId = cycleIntentId
         proposal.params.correlationId = cycleIntentId
         proposal.params.settlementCorrelationId = cycleIntentId
@@ -569,27 +592,34 @@ export class Coordinator implements ICoordinator {
         proposal.params.knowledgeModifier = knowledgeMod
         proposal.params.knowledgeWarnings = canonicalKnowledge.warnings
 
-        // ── canTrade gate ──
+        // ── Gate 2: canTrade (knowledge) ──
         if (!canonicalKnowledge.canTrade) {
-          this._transitionIntent(cycleIntentId, "REJECTED")
-          console.warn(`[${this.name}] 🛑 Knowledge rejected in cycle: canTrade=false`)
-          report.errors++
+          await this._recordCycleRejection({
+            proposal, cycleIntentId, cycleDecisionReportId,
+            rejectionCode: "KNOWLEDGE_CAN_TRADE_FALSE",
+            rejectionStage: "knowledge",
+            rejectedBy: "knowledge",
+            rejectionReason: "Knowledge Service rejected proposal: canTrade=false",
+            report,
+            canonicalKnowledge,
+            appliedModifier: knowledgeMod,
+          })
           continue
         }
 
-        // ── Pre-vote policy check ──
+        // ── Gate 3: Pre-vote policy ──
         const preVotePolicy = this._checkPreVotePolicy(proposal)
         if (!preVotePolicy.allowed) {
-          this._transitionIntent(cycleIntentId, "REJECTED")
-          if (this.audit_) {
-            this.audit_.record(Audit.createEntry({
-              agentId: proposal.agentId, action: proposal.action, proposal,
-              result: null, approved: false, confidence: 0, voters: 0,
-              tags: ["policy_rejection", "pre_vote"],
-            }))
-          }
-          console.warn(`[${this.name}] 🛑 Policy rejected in cycle (pre-vote): ${preVotePolicy.reason}`)
-          report.errors++
+          await this._recordCycleRejection({
+            proposal, cycleIntentId, cycleDecisionReportId,
+            rejectionCode: "PRE_VOTE_POLICY_REJECTED",
+            rejectionStage: "pre_vote_policy",
+            rejectedBy: "policy",
+            rejectionReason: preVotePolicy.reason,
+            report,
+            canonicalKnowledge,
+            appliedModifier: knowledgeMod,
+          })
           continue
         }
 
@@ -617,124 +647,187 @@ export class Coordinator implements ICoordinator {
         // Resolve consensus
         const voteResult = this.voting.resolve(proposal)
         const consensus = this.mapVoteResultToConsensus(proposal, voteResult)
+
+        const votingSection = {
+          votes: votes.map(v => ({ agentId: v.agentId, approved: v.approved, confidence: v.confidence, reason: v.reason })),
+          totalVoters: this.agents.size,
+          approved: consensus.approved,
+          confidence: consensus.confidence,
+          reason: consensus.reason,
+          weightedConfidence: consensus.confidence,
+          minAgentsRequired: this.MIN_AGREEING_AGENTS,
+        }
+
+        // ── Gate 4: Voting ──
+        if (!consensus.approved) {
+          await this._recordCycleRejection({
+            proposal, cycleIntentId, cycleDecisionReportId,
+            rejectionCode: "VOTING_REJECTED",
+            rejectionStage: "voting",
+            rejectedBy: "voting",
+            rejectionReason: consensus.reason,
+            report,
+            canonicalKnowledge,
+            appliedModifier: knowledgeMod,
+            voting: votingSection,
+          })
+          continue
+        }
+
+        // ── Gate 5: Executor presence (capability) ──
+        if (!this.executor_) {
+          await this._recordCycleRejection({
+            proposal, cycleIntentId, cycleDecisionReportId,
+            rejectionCode: "NO_EXECUTOR",
+            rejectionStage: "capability",
+            rejectedBy: "coordinator",
+            rejectionReason: "No executor configured",
+            report,
+            canonicalKnowledge,
+            appliedModifier: knowledgeMod,
+            voting: votingSection,
+          })
+          continue
+        }
+
         report.consensusReached++
 
-        if (consensus.approved && this.executor_) {
-          // ── Pre-execution policy check ──
-          const preExecPolicy = this._checkPreExecPolicy(proposal)
-          if (!preExecPolicy.allowed) {
-            this._transitionIntent(cycleIntentId, "REJECTED")
-            if (this.audit_) {
-              this.audit_.record(Audit.createEntry({
-                agentId: proposal.agentId, action: proposal.action, proposal,
-                result: null, approved: false, confidence: 0, voters: 0,
-                tags: ["policy_rejection", "pre_exec"],
-              }))
-            }
-            console.warn(`[${this.name}] 🛑 Policy rejected in cycle (pre-exec): ${preExecPolicy.reason}`)
-            report.errors++
-            continue
-          }
+        // ── Gate 6: Pre-execution policy ──
+        const preExecPolicy = this._checkPreExecPolicy(proposal)
+        if (!preExecPolicy.allowed) {
+          await this._recordCycleRejection({
+            proposal, cycleIntentId, cycleDecisionReportId,
+            rejectionCode: "PRE_EXEC_POLICY_REJECTED",
+            rejectionStage: "pre_exec_policy",
+            rejectedBy: "policy",
+            rejectionReason: preExecPolicy.reason,
+            report,
+            canonicalKnowledge,
+            appliedModifier: knowledgeMod,
+            voting: votingSection,
+          })
+          continue
+        }
 
-          this._transitionIntent(cycleIntentId, "APPROVED")
+        // ── Gate 7: canExecute (execution_guard) ──
+        const canExec = this._safeCanExecute(proposal)
+        if (!canExec.allowed) {
+          await this._recordCycleRejection({
+            proposal, cycleIntentId, cycleDecisionReportId,
+            rejectionCode: "EXECUTOR_CAN_EXECUTE_FALSE",
+            rejectionStage: "execution_guard",
+            rejectedBy: "executor",
+            rejectionReason: canExec.reason,
+            report,
+            canonicalKnowledge,
+            appliedModifier: knowledgeMod,
+            voting: votingSection,
+          })
+          continue
+        }
+
+        // ── Execution stage (unchanged) ──
+        this._transitionIntent(cycleIntentId, "APPROVED")
+        this._transitionIntent(cycleIntentId, "EXECUTING")
+
+        // Execute
+        const result = await this.executor_.execute(proposal)
+        const isProvisionalDispatch = result.isProvisional === true || result.settlementStatus === "dispatched" || result.details?.isProvisional === true || result.details?.settlementStatus === "dispatched"
+        const isAdapterDispatchFailure = result.dispatchStatus === "failed" ||
+          result.details?.dispatchStatus === "failed"
+        if (isProvisionalDispatch && result.success) {
+          // IntentStatus has no PENDING_SETTLEMENT yet; keep cycle intents non-final while settlement is pending.
           this._transitionIntent(cycleIntentId, "EXECUTING")
+          this._registerPendingSettlement({
+            correlationId: result.correlationId ?? cycleIntentId,
+            intentId: result.intentId ?? cycleIntentId,
+            proposalId: result.proposalId ?? proposal.id,
+            decisionReportId: result.decisionReportId ?? cycleDecisionReportId,
+            ordemId: result.ordemId,
+            fromToken: proposal.params?.fromToken as string | undefined,
+            toToken: proposal.params?.toToken as string | undefined,
+            timestamp: Date.now(),
+            isTradingAdapter: this.executor_.name === "TradingAdapter",
+            isSuccessful: result.success === true,
+            isAcceptedDispatch: result.dispatchStatus === "dispatched",
+            isDispatchedSettlement: result.settlementStatus === "dispatched",
+            isProvisional: result.isProvisional === true,
+            synthetic: result.details?.synthetic === true,
+          })
+        } else {
+          this._transitionIntent(cycleIntentId, result.success ? "COMPLETED" : "FAILED")
+        }
+        report.executionsDispatched++
 
-          // Execute
-          const result = await this.executor_.execute(proposal)
-          const isProvisionalDispatch = result.isProvisional === true || result.settlementStatus === "dispatched" || result.details?.isProvisional === true || result.details?.settlementStatus === "dispatched"
-          const isAdapterDispatchFailure = result.dispatchStatus === "failed" ||
-            result.details?.dispatchStatus === "failed"
-          if (isProvisionalDispatch && result.success) {
-            // IntentStatus has no PENDING_SETTLEMENT yet; keep cycle intents non-final while settlement is pending.
-            this._transitionIntent(cycleIntentId, "EXECUTING")
-            this._registerPendingSettlement({
+        // Audit
+        if (this.audit_) {
+          this.audit_.record(Audit.createEntry({
+            agentId: proposal.agentId,
+            action: proposal.action,
+            proposal,
+            result,
+            approved: consensus.approved,
+            confidence: consensus.confidence,
+            voters: votes.length,
+            knowledgeModifier: knowledgeMod,
+          }))
+        }
+
+        // Feedback to agents
+        if (!isProvisionalDispatch && !isAdapterDispatchFailure) {
+          for (const agent of this.agents.values()) {
+            agent.onFeedback({
+              success: result.success,
+              profit: result.profit ?? 0,
+              reason: result.errorMsg,
+            })
+          }
+        }
+
+        // On-chain proof
+        if (result.success && !isProvisionalDispatch && this.intentPublisher_?.anchorDecision) {
+          const dp: DecisionReport = {
+            id: cycleDecisionReportId,
+            intentId: cycleIntentId,
+            agentId: proposal.agentId,
+            action: proposal.action,
+            params: proposal.params ?? {},
+            createdAt: Date.now(),
+            resolvedAt: Date.now(),
+            onChainStatus: "pending",
+            execution: {
+              success: result.success,
+              profit: result.profit ?? 0,
+              gasCost: result.gasCost ?? 0,
+              durationMs: 0,
+              txHash: result.txHash,
+              adapter: this.executor_?.name ?? "unknown",
               correlationId: result.correlationId ?? cycleIntentId,
               intentId: result.intentId ?? cycleIntentId,
               proposalId: result.proposalId ?? proposal.id,
               decisionReportId: result.decisionReportId ?? cycleDecisionReportId,
               ordemId: result.ordemId,
-              fromToken: proposal.params?.fromToken as string | undefined,
-              toToken: proposal.params?.toToken as string | undefined,
-              timestamp: Date.now(),
-              isTradingAdapter: this.executor_.name === "TradingAdapter",
-              isSuccessful: result.success === true,
-              isAcceptedDispatch: result.dispatchStatus === "dispatched",
-              isDispatchedSettlement: result.settlementStatus === "dispatched",
-              isProvisional: result.isProvisional === true,
-              synthetic: result.details?.synthetic === true,
-            })
-          } else {
-            this._transitionIntent(cycleIntentId, result.success ? "COMPLETED" : "FAILED")
+              dispatchStatus: result.dispatchStatus,
+              settlementStatus: result.settlementStatus,
+              isProvisional: result.isProvisional,
+            },
           }
-          report.executionsDispatched++
-
-          // Audit
-          if (this.audit_) {
-            this.audit_.record(Audit.createEntry({
-              agentId: proposal.agentId,
-              action: proposal.action,
-              proposal,
-              result,
-              approved: consensus.approved,
-              confidence: consensus.confidence,
-              voters: votes.length,
-              knowledgeModifier: knowledgeMod,
-            }))
-          }
-
-          // Feedback to agents
-          if (!isProvisionalDispatch && !isAdapterDispatchFailure) {
-            for (const agent of this.agents.values()) {
-              agent.onFeedback({
-                success: result.success,
-                profit: result.profit ?? 0,
-                reason: result.errorMsg,
-              })
+          this._applyKnowledgeToDecisionReport(dp, canonicalKnowledge, knowledgeMod)
+          this.intentPublisher_.anchorDecision(cycleIntentId, dp).then(anchorResult => {
+            if (anchorResult) {
+              dp.onChainHash = anchorResult.hash
+              dp.onChainTx = anchorResult.txHash
+              dp.onChainStatus = "confirmed"
+              console.log(`[${this.name}] 🔗 On-chain proof (cycle): tx:${anchorResult.txHash} block:${anchorResult.blockNumber}`)
             }
-          }
-
-          // On-chain proof
-          if (result.success && !isProvisionalDispatch && this.intentPublisher_?.anchorDecision) {
-            const dp: DecisionReport = {
-              id: cycleDecisionReportId,
-              intentId: cycleIntentId,
-              agentId: proposal.agentId,
-              action: proposal.action,
-              params: proposal.params ?? {},
-              createdAt: Date.now(),
-              resolvedAt: Date.now(),
-              onChainStatus: "pending",
-              execution: {
-                success: result.success,
-                profit: result.profit ?? 0,
-                gasCost: result.gasCost ?? 0,
-                durationMs: 0,
-                txHash: result.txHash,
-                adapter: this.executor_?.name ?? "unknown",
-                correlationId: result.correlationId ?? cycleIntentId,
-                intentId: result.intentId ?? cycleIntentId,
-                proposalId: result.proposalId ?? proposal.id,
-                decisionReportId: result.decisionReportId ?? cycleDecisionReportId,
-                ordemId: result.ordemId,
-                dispatchStatus: result.dispatchStatus,
-                settlementStatus: result.settlementStatus,
-                isProvisional: result.isProvisional,
-              },
-            }
-            this._applyKnowledgeToDecisionReport(dp, canonicalKnowledge, knowledgeMod)
-            this.intentPublisher_.anchorDecision(cycleIntentId, dp).then(anchorResult => {
-              if (anchorResult) {
-                dp.onChainHash = anchorResult.hash
-                dp.onChainTx = anchorResult.txHash
-                dp.onChainStatus = "confirmed"
-                console.log(`[${this.name}] 🔗 On-chain proof (cycle): tx:${anchorResult.txHash} block:${anchorResult.blockNumber}`)
-              }
-            }).catch(() => {})
-          }
-        } else {
-          this._transitionIntent(cycleIntentId, "REJECTED")
+          }).catch(() => {})
         }
       } catch (e) {
+        // Evidence failure: save/audit error inside _recordCycleRejection.
+        // Must abort cycle to prevent economic continuation without evidence.
+        if (e instanceof CycleRejectionEvidenceError) {
+          throw e
+        }
         report.errors++
         this._transitionIntent(cycleIntentId, "FAILED")
         console.warn(`[${this.name}] Cycle error on proposal ${proposal.id}:`, e)
@@ -888,10 +981,22 @@ export class Coordinator implements ICoordinator {
     rejection: RejectionMetadata
     consensus: ConsensusResult
   }): Promise<SubmissionResult> {
-    const { proposal, intentId, decisionReport: dp, rejection, consensus } = args
+    await this._recordRejectionCore(args)
+    return { consensus: args.consensus }
+  }
+
+  private async _recordRejectionCore(args: {
+    proposal: AgentProposal
+    intentId: string
+    decisionReport: DecisionReport
+    rejection: RejectionMetadata
+    consensus: ConsensusResult
+  }): Promise<void> {
+    const { proposal, intentId, decisionReport: dp, rejection } = args
 
     if (!rejection.rejectedBy || !rejection.rejectionCode || !rejection.rejectionStage || !rejection.sourcePath) {
-      throw new Error(`Invalid rejection metadata: missing required field in ${dp.id}`)
+      throw new CycleRejectionEvidenceError("INVALID_REJECTION_METADATA",
+        new Error(`Invalid rejection metadata: missing required field in ${dp.id}`))
     }
 
     dp.outcome = "rejected"
@@ -903,10 +1008,11 @@ export class Coordinator implements ICoordinator {
     let write: DecisionReportWriteResult
     try {
       write = await this._saveDecisionReport(intentId, dp)
-    } catch {
-      throw new Error("Failed to persist rejection decision report")
+    } catch (e) {
+      throw new CycleRejectionEvidenceError("SAVE_INITIAL_FAILED",
+        e instanceof Error ? e : new Error(String(e)))
     }
-    if (!write.saved) throw new Error("Failed to persist rejection decision report")
+    if (!write.saved) throw new CycleRejectionEvidenceError("SAVE_INITIAL_FAILED")
 
     this._transitionIntent(intentId, "REJECTED")
 
@@ -939,13 +1045,100 @@ export class Coordinator implements ICoordinator {
     let finalWrite: DecisionReportWriteResult
     try {
       finalWrite = await this._saveDecisionReport(intentId, dp)
-    } catch {
-      throw new Error("Failed to persist final rejection audit status")
+    } catch (e) {
+      throw new CycleRejectionEvidenceError("SAVE_FINAL_FAILED",
+        e instanceof Error ? e : new Error(String(e)))
     }
-    if (!finalWrite.saved) throw new Error("Failed to persist final rejection audit status")
-    if (!auditRecorded) throw new Error("Failed to record rejection audit")
+    if (!finalWrite.saved) throw new CycleRejectionEvidenceError("SAVE_FINAL_FAILED")
+    if (!auditRecorded) throw new CycleRejectionEvidenceError("AUDIT_RECORD_FAILED")
 
-    return { consensus }
+  }
+
+  /** Cycle rejection helper — matches _recordRejection contract.
+   *  Saves DecisionReport with outcome="rejected", rejection metadata, transitions
+   *  intent to REJECTED, creates Audit entry, increments report.errors.
+   *  Throws if evidence cannot be persisted or audited. */
+  private async _recordCycleRejection(args: {
+    proposal: AgentProposal
+    cycleIntentId: string
+    cycleDecisionReportId: string
+    rejectionCode: RejectionCode
+    rejectionStage: RejectionStage
+    rejectedBy: RejectedBy
+    rejectionReason: string
+    report: CycleReport
+    canonicalKnowledge?: ResolvedKnowledgeContext
+    appliedModifier?: number
+    voting?: DecisionReport["voting"]
+  }): Promise<void> {
+    const { proposal, cycleIntentId, cycleDecisionReportId, rejectionCode, rejectionStage, rejectedBy, rejectionReason, report, canonicalKnowledge, appliedModifier, voting } = args
+
+    const knowledge = canonicalKnowledge && appliedModifier !== undefined
+      ? this._buildCycleKnowledgeSection(canonicalKnowledge, appliedModifier)
+      : undefined
+
+    const dp: DecisionReport = {
+      id: cycleDecisionReportId,
+      intentId: cycleIntentId,
+      agentId: proposal.agentId,
+      action: proposal.action,
+      params: proposal.params ?? {},
+      createdAt: Date.now(),
+      knowledge,
+      voting,
+    }
+
+    const rejection: RejectionMetadata = {
+      rejectedBy,
+      rejectionCode,
+      rejectionStage,
+      rejectionReason,
+      sourcePath: "runCycle",
+      occurredAt: Date.now(),
+    }
+    const consensus: ConsensusResult = {
+      approved: false,
+      action: proposal.action,
+      confidence: 0,
+      agentVotes: [],
+      tiebreaker: "",
+      reason: rejectionReason,
+    }
+
+    await this._recordRejectionCore({ proposal, intentId: cycleIntentId, decisionReport: dp, rejection, consensus })
+
+    report.errors++
+  }
+
+  private _buildCycleKnowledgeSection(knowledge: ResolvedKnowledgeContext, modifier: number): DecisionReport["knowledge"] {
+    return {
+      canTrade: knowledge.canTrade,
+      source: knowledge.status,
+      liquidity: knowledge.report?.liquidity ?? 0,
+      gasScore: knowledge.report?.gasScore ?? 0,
+      routeScore: knowledge.report?.routeScore ?? 0,
+      marketScore: knowledge.report?.marketScore ?? 0,
+      riskScore: knowledge.report?.riskScore ?? 0,
+      expectedValue: knowledge.report?.expectedValue ?? 0,
+      confidenceModifier: modifier,
+      warnings: [...knowledge.warnings],
+      recommendations: [...(knowledge.report?.recommendations ?? [])],
+    }
+  }
+
+  /** Fail-closed canExecute: any exception, null, undefined, or non-boolean allowed
+   *  is treated as execution denied. Never throws, returns safe result. */
+  private _safeCanExecute(proposal: AgentProposal): { allowed: boolean; reason: string } {
+    if (!this.executor_) {
+      return { allowed: false, reason: "Executor cannot execute proposal" }
+    }
+    try {
+      const result = this.executor_.canExecute(proposal)
+      const allowed = result && typeof result === "object" && result.allowed === true
+      return { allowed, reason: allowed ? "" : "Executor cannot execute proposal" }
+    } catch {
+      return { allowed: false, reason: "Executor cannot execute proposal" }
+    }
   }
 
   /** Post-save settlement replay: sync any existing or queued settlement

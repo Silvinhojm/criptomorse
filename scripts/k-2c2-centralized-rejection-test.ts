@@ -1,4 +1,4 @@
-import { Coordinator, type DecisionReportWriteResult } from "../lib/agent-framework/coordinator"
+import { Coordinator, type DecisionReportWriteResult, CycleRejectionEvidenceError } from "../lib/agent-framework/coordinator"
 import { Audit } from "../lib/agent-framework/audit"
 import type { IAudit, AuditEntry, AuditWriteResult, AuditReport } from "../lib/agent-framework/IAudit"
 import type { IExecutor, ExecutionResult } from "../lib/agent-framework/IExecutor"
@@ -444,8 +444,9 @@ async function main() {
       await c.submitProposal(prop)
       assert("10a submitProposal should reject on audit failure", false)
     } catch (e) {
+      assert("10a submitProposal should reject with evidence error", e instanceof CycleRejectionEvidenceError)
       const msg = (e as Error).message
-      assertEqual("10a public audit error is sanitized", msg, "Failed to record rejection audit")
+      assertEqual("10a public audit error is sanitized", msg, "Cycle rejection evidence failure")
       assert("10b audit backend secret does not leak", !msg.includes("SECRET_AUDIT_BACKEND_DETAILS"))
       assert("10c executor not called", exe.executeCalls === 0)
       assertEqual("10d first cloned snapshot is not_attempted", publisher.savedSnapshots[0]?.auditStatus, "not_attempted")
@@ -467,8 +468,9 @@ async function main() {
       await c.submitProposal(prop)
       assert("11a submitProposal should reject when audit throws", false)
     } catch (e) {
+      assert("11a submitProposal should reject with evidence error", e instanceof CycleRejectionEvidenceError)
       const msg = (e as Error).message
-      assertEqual("11a thrown audit error is sanitized", msg, "Failed to record rejection audit")
+      assertEqual("11a thrown audit error is sanitized", msg, "Cycle rejection evidence failure")
       assert("11b thrown audit secret does not leak", !msg.includes("SECRET_AUDIT_BACKEND_DETAILS"))
       assert("11c executor not called", exe.executeCalls === 0)
       assertEqual("11d first cloned snapshot is not_attempted", publisher.savedSnapshots[0]?.auditStatus, "not_attempted")
@@ -489,8 +491,9 @@ async function main() {
       await c.submitProposal(prop)
       assert("12a submitProposal should reject when audit is null", false)
     } catch (e) {
+      assert("12a submitProposal should reject with evidence error", e instanceof CycleRejectionEvidenceError)
       const msg = (e as Error).message
-      assertEqual("12a unavailable audit error is sanitized", msg, "Failed to record rejection audit")
+      assertEqual("12a unavailable audit error is sanitized", msg, "Cycle rejection evidence failure")
       assert("12b executor not called", exe.executeCalls === 0)
       assertEqual("12c persisted snapshot is write_failed", publisher.getRecord(intentIdFor(prop))?.decisionReport?.auditStatus, "write_failed")
     }
@@ -524,7 +527,7 @@ async function main() {
       await c.submitProposal(prop)
       assert("14a second save failure must reject", false)
     } catch (e) {
-      assertEqual("14a second save failure is sanitized", (e as Error).message, "Failed to persist final rejection audit status")
+      assertEqual("14a second save failure is sanitized", (e as Error).message, "Cycle rejection evidence failure")
       assert("14b no public approval returned", true)
       assert("14c executor not called", exe.executeCalls === 0)
       assertEqual("14d attempted final snapshot is recorded", publisher.savedSnapshots[1]?.auditStatus, "recorded")
