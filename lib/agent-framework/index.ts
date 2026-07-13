@@ -1,5 +1,21 @@
 export type { IAgent, AgentProposal, AgentVote, AgentIdentity } from "./IAgent"
-export type { ICoordinator, ConsensusResult, CycleReport } from "./ICoordinator"
+export type {
+  ICoordinator,
+  ConsensusResult,
+  CycleReport,
+  SubmissionResult,
+  OperationalStatus,
+  OperationalEvidenceStatus,
+  OperationalUnavailableEvidenceStatus,
+  OperationalDegradationCode,
+  OperationalUnavailable,
+  OperationalStateSnapshot,
+  OperationalRecoveryAuthorizationContext,
+  OperationalRecoveryRequest,
+  OperationalRecoveryResult,
+  IOperationalRecoveryControl,
+  IOperationalRecoveryAuthorizer,
+} from "./ICoordinator"
 export type { IExecutor, ExecutionResult } from "./IExecutor"
 export type { IReputation, AgentStats } from "./IReputation"
 export type { ISafetyGuard, SafetyStatus } from "./ISafetyGuard"
@@ -17,7 +33,6 @@ export { LearningEngine } from "./learning-engine"
 export { OracleConditions } from "./oracle-conditions"
 export { Voting, type VoteRecord, type VoteResult } from "./voting"
 export { Coordinator, type CoordinatorConfig } from "./coordinator"
-export type { SubmissionResult } from "./ICoordinator"
 export { TradingAdapter } from "./trading-adapter"
 export type { TradeSignal } from "./trading-adapter"
 export type { AgentIntent, IntentRecord, IntentStatus, IntentFilter, IIntentPublisher } from "./intent-types"

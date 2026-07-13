@@ -24,6 +24,10 @@ export class Audit implements IAudit {
     return { recorded: true }
   }
 
+  getById(id: string): AuditEntry | null {
+    return this.entries.find(entry => entry.id === id) ?? null
+  }
+
   updateEntry(id: string, updates: Partial<Pick<AuditEntry, "onChainHash" | "onChainTx" | "onChainStatus">>): boolean {
     const entry = this.entries.find(e => e.id === id)
     if (!entry) return false

@@ -81,6 +81,7 @@ async function main(): Promise<void> {
   assert("canonical negative prevails over legacy true", negativeContext.canTrade === false)
   assert("canonical modifier preserved", negativeContext.modifier === 15)
   const negativeResult = await negativeCoordinator.submitProposal(negative)
+  assert("submit negative result kind is decision", negativeResult.kind === "decision")
   assert("submit rejects canonical negative", negativeResult.consensus.approved === false)
   assert("submit negative never executes", negativeExecutor.executeCalls === 0)
   const negativeDp = negativeCoordinator["intentPublisher_"]!.getRecord(`intent_${negative.agentId}_${negative.timestamp}`)?.decisionReport
@@ -109,6 +110,7 @@ async function main(): Promise<void> {
   const positiveContext = await resolved(positiveCoordinator, positiveProposal)
   assert("legacy false cannot negate canonical true", positiveContext.canTrade === true)
   const positiveResult = await positiveCoordinator.submitProposal(positiveProposal)
+  assert("positive result kind is decision", positiveResult.kind === "decision")
   assert("positive canonical context reaches later gates", positiveResult.consensus.approved === true)
   assert("positive canonical context executes", positiveExecutor.executeCalls === 1)
   assert("applied canonical modifier stored", positiveProposal.params.knowledgeModifier === 20)
@@ -151,6 +153,7 @@ async function main(): Promise<void> {
     assert(`BUY missing ${missing} has failed source/status`, context.source === "failed" && context.status === "failed")
     const result = await malformedCoordinator.submitProposal(malformed)
     const dp = malformedCoordinator["intentPublisher_"]!.getRecord(`intent_${malformed.agentId}_${malformed.timestamp}`)?.decisionReport
+    assert(`BUY missing ${missing} result kind is decision`, result.kind === "decision")
     assert(`BUY missing ${missing} keeps stable rejection`, result.consensus.approved === false && dp?.rejection?.rejectionCode === "KNOWLEDGE_CAN_TRADE_FALSE")
     assert(`BUY missing ${missing} never executes`, malformedExecutor.executeCalls === 0)
     assert(`BUY missing ${missing} ignores override and legacy true`, malformedCoordinator.policyEngine.isAllowed("allowKnowledgeOverride") && malformed.params.knowledgeCanTrade === true)
@@ -173,7 +176,9 @@ async function main(): Promise<void> {
   const sellExecutor = new Executor()
   const sellCoordinator = await coordinator(sellExecutor)
   assert("submit SELL incomplete fails closed", (await resolved(sellCoordinator, sellMalformed)).canTrade === false)
-  assert("submit SELL incomplete rejects", (await sellCoordinator.submitProposal(sellMalformed)).consensus.approved === false && sellExecutor.executeCalls === 0)
+  const sellResult = await sellCoordinator.submitProposal(sellMalformed)
+  assert("submit SELL incomplete result kind is decision", sellResult.kind === "decision")
+  assert("submit SELL incomplete rejects", sellResult.consensus.approved === false && sellExecutor.executeCalls === 0)
 
   const cycleSellMalformed = proposal(knowledge(true), true)
   cycleSellMalformed.action = "SELL"
@@ -218,6 +223,7 @@ async function main(): Promise<void> {
   const failureExecutor = new Executor()
   const failureCoordinator = await coordinator(failureExecutor)
   const failureResult = await failureCoordinator.submitProposal(queriedFailure)
+  assert("submit query failure result kind is decision", failureResult.kind === "decision")
   assert("submit query failure rejects", failureResult.consensus.approved === false)
   assert("submit query failure never executes", failureExecutor.executeCalls === 0)
   const failureDp = failureCoordinator["intentPublisher_"]!.getRecord(`intent_${queriedFailure.agentId}_${queriedFailure.timestamp}`)?.decisionReport
@@ -287,6 +293,7 @@ async function main(): Promise<void> {
 
   // submitProposal assertions
   const catchResult = await catchCoordinator.submitProposal(catchProposal)
+  assert("REAL_QUERY_EXCEPTION submit result kind is decision", catchResult.kind === "decision")
   assert("REAL_QUERY_EXCEPTION submit consensus.approved is false", catchResult.consensus.approved === false)
   assert("REAL_QUERY_EXCEPTION submit executeCalls is 0", catchExecutor.executeCalls === 0)
   const catchDp = catchCoordinator["intentPublisher_"]!.getRecord(`intent_${catchProposal.agentId}_${catchProposal.timestamp}`)?.decisionReport

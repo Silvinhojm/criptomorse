@@ -195,6 +195,7 @@ async function main() {
     const id = intentIdFor(prop)
     const dp = c["intentPublisher_"]!.getRecord(id)?.decisionReport
 
+    assertEqual("1a result kind is decision", result.kind, "decision")
     assertEqual("1a outcome is rejected", result.consensus.approved, false)
     assert("1b no execution result", !result.executionResult)
     assert("1c decision report exists", !!dp)
@@ -224,6 +225,7 @@ async function main() {
     await c.submitProposal(prop) // first — passes through
     const dupResult = await c.submitProposal(prop) // second — dup
 
+    assertEqual("2a result kind is decision", dupResult.kind, "decision")
     assertEqual("2a outcome is rejected", dupResult.consensus.approved, false)
 
     const auditEntries = audit.getRecent(100)
@@ -265,6 +267,7 @@ async function main() {
     const id = intentIdFor(prop)
     const dp = c["intentPublisher_"]!.getRecord(id)?.decisionReport
 
+    assertEqual("3a result kind is decision", result.kind, "decision")
     assertEqual("3a outcome is rejected", result.consensus.approved, false)
     assertEqual("3b outcome", dp?.outcome, "rejected")
     assertEqual("3c rejection code", dp?.rejection?.rejectionCode, "KNOWLEDGE_CAN_TRADE_FALSE")
@@ -291,6 +294,7 @@ async function main() {
     const id = intentIdFor(prop)
     const dp = c["intentPublisher_"]!.getRecord(id)?.decisionReport
 
+    assertEqual("4a result kind is decision", result.kind, "decision")
     assertEqual("4a outcome is rejected", result.consensus.approved, false)
     assertEqual("4b rejection code", dp?.rejection?.rejectionCode, "PRE_VOTE_POLICY_REJECTED")
     assertEqual("4c rejected by", dp?.rejection?.rejectedBy, "policy")
@@ -311,6 +315,7 @@ async function main() {
     const id = intentIdFor(prop)
     const dp = c["intentPublisher_"]!.getRecord(id)?.decisionReport
 
+    assertEqual("5a result kind is decision", result.kind, "decision")
     assertEqual("5a outcome is rejected", result.consensus.approved, false)
     assertEqual("5b rejection code", dp?.rejection?.rejectionCode, "VOTING_REJECTED")
     assertEqual("5c rejected by", dp?.rejection?.rejectedBy, "voting")
@@ -333,6 +338,7 @@ async function main() {
     const id = intentIdFor(prop)
     const dp = c["intentPublisher_"]!.getRecord(id)?.decisionReport
 
+    assertEqual("6a result kind is decision", result.kind, "decision")
     assertEqual("6a outcome is rejected", result.consensus.approved, false)
     assertEqual("6b rejection code", dp?.rejection?.rejectionCode, "NO_EXECUTOR")
     assertEqual("6c rejected by", dp?.rejection?.rejectedBy, "coordinator")
@@ -364,6 +370,7 @@ async function main() {
     const id = intentIdFor(prop)
     const dp = c["intentPublisher_"]!.getRecord(id)?.decisionReport
 
+    assertEqual("7a result kind is decision", result.kind, "decision")
     assertEqual("7a outcome is rejected", result.consensus.approved, false)
     assertEqual("7b rejection code", dp?.rejection?.rejectionCode, "PRE_EXEC_POLICY_REJECTED")
     assertEqual("7c rejected by", dp?.rejection?.rejectedBy, "policy")
@@ -394,6 +401,7 @@ async function main() {
     const id = intentIdFor(prop)
     const dp = c["intentPublisher_"]!.getRecord(id)?.decisionReport
 
+    assertEqual("8a result kind is decision", result.kind, "decision")
     assertEqual("8a outcome is rejected", result.consensus.approved, false)
     assertEqual("8b rejection code", dp?.rejection?.rejectionCode, "EXECUTOR_CAN_EXECUTE_FALSE")
     assertEqual("8c rejected by", dp?.rejection?.rejectedBy, "executor")
@@ -420,15 +428,27 @@ async function main() {
     c.registerAgent(new MockAgent("agent_b"))
     const prop = makeProposal({ confidence: 80 })
 
-    try {
-      await c.submitProposal(prop)
-      assert("9a submitProposal should reject on save failure", false)
-    } catch (e) {
-      const msg = (e as Error).message
-      assertEqual("9a submitProposal rejects with sanitized save error", msg, "Failed to persist execution decision report")
-      assert("9b publisher secret does not leak", !msg.includes("SECRET_DATABASE_DETAILS"))
-      assert("9c executor was called", exe.executeCalls > 0)
+    const result = await c.submitProposal(prop)
+    assertEqual("9a executor called exactly once", exe.executeCalls, 1)
+    assertEqual("9b operational result kind", result.kind, "operational_unavailable")
+    if (result.kind === "operational_unavailable") {
+      assertEqual("9c execution occurred", result.executionOccurred, true)
+      assert("9d original execution result exists", !!result.executionResult)
+      assertEqual("9e execution success preserved", result.executionResult?.success, true)
+      assertEqual("9f execution action preserved", result.executionResult?.action, prop.action)
+      assertEqual("9g execution profit preserved", result.executionResult?.profit, 0)
+      assertEqual("9h execution gas preserved", result.executionResult?.gasCost, 0)
+      assertEqual("9i operational status", result.operationalStatus, "RECOVERY_REQUIRED")
+      assertEqual("9j evidence status", result.evidenceStatus, "unproven")
+      assertEqual("9k fixed public reason", result.publicReason, "Operational recovery required")
+      assert("9l publisher secret does not leak", !result.publicReason.includes("SECRET_"))
+    } else {
+      assert("9c-9l unavailable result required", false)
     }
+
+    const nextResult = await c.submitProposal(makeProposal({ confidence: 80 }))
+    assertEqual("9m subsequent call remains unavailable", nextResult.kind, "operational_unavailable")
+    assertEqual("9n subsequent call does not execute", exe.executeCalls, 1)
   }
 
   // ── 10. Audit returns false ──
@@ -508,6 +528,7 @@ async function main() {
     const c = freshCoordinator({ audit: new Audit(`clone-audit-${Date.now()}`, 20), executor: exe, safetyGuard: sg, publisher })
     const prop = makeProposal()
     const result = await c.submitProposal(prop)
+    assertEqual("13a result kind is decision", result.kind, "decision")
     assertEqual("13a cloned success remains rejected", result.consensus.approved, false)
     assertEqual("13b first save is not_attempted", publisher.savedSnapshots[0]?.auditStatus, "not_attempted")
     assertEqual("13c second save is recorded", publisher.savedSnapshots[1]?.auditStatus, "recorded")
@@ -554,6 +575,7 @@ async function main() {
 
     const result = await c.submitProposal(prop)
 
+    assertEqual("15a result kind is decision", result.kind, "decision")
     assertEqual("13a success result approved", result.consensus.approved, true)
     assert("13b execution result present", !!result.executionResult)
     assertEqual("13c execution succeeded", result.executionResult!.success, true)

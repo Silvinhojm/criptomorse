@@ -44,6 +44,8 @@ export interface AuditWriteResult {
 export interface IAudit {
   readonly name: string
   record(entry: AuditEntry): AuditWriteResult
+  /** Optional for compatibility; operational recovery requires this real read-back. */
+  getById?(id: string): AuditEntry | null
   updateEntry(id: string, updates: Partial<Pick<AuditEntry, "onChainHash" | "onChainTx" | "onChainStatus">>): boolean
   getRecent(count: number): AuditEntry[]
   getByAgent(agentId: string, limit?: number): AuditEntry[]

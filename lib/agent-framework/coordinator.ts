@@ -1,4 +1,17 @@
-import type { ICoordinator, ConsensusResult, CycleReport, SubmissionResult } from "./ICoordinator"
+import type {
+  ICoordinator,
+  ConsensusResult,
+  CycleReport,
+  SubmissionResult,
+  OperationalUnavailable,
+  OperationalStateSnapshot,
+  OperationalEvidenceStatus,
+  OperationalDegradationCode,
+  IOperationalRecoveryControl,
+  IOperationalRecoveryAuthorizer,
+  OperationalRecoveryRequest,
+  OperationalRecoveryResult,
+} from "./ICoordinator"
 import type { IAgent, AgentProposal, AgentVote } from "./IAgent"
 import type { IExecutor } from "./IExecutor"
 import type { ISafetyGuard } from "./ISafetyGuard"
@@ -44,9 +57,10 @@ export interface CoordinatorConfig {
   dedupWindowMs?: number
   intentPublisher?: IIntentPublisher
   policyEngine?: PolicyEngine
+  recoveryAuthorizer?: IOperationalRecoveryAuthorizer
 }
 
-export class Coordinator implements ICoordinator {
+export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
   readonly name: string
   private agents: Map<string, IAgent> = new Map()
   private proposals: AgentProposal[] = []
@@ -61,6 +75,16 @@ export class Coordinator implements ICoordinator {
   readonly deduplicator: IntentDeduplicator
   private intentPublisher_: IIntentPublisher | null
   readonly policyEngine: PolicyEngine
+  private operationalStatus_: "OPERATIONAL" | "RECOVERY_REQUIRED"
+  private degradedAt_: number | undefined
+  private degradationCode_: OperationalDegradationCode | undefined
+  private operationalEvidenceStatus_: OperationalEvidenceStatus
+  private readonly recoveryAuthorizer_: IOperationalRecoveryAuthorizer | null
+  private recoveryInProgress_: Promise<OperationalRecoveryResult> | null = null
+  private recoveryProbeSequence_ = 0
+
+  private static readonly OPERATIONAL_PUBLIC_REASON = "Operational recovery required" as const
+  private static readonly RESTART_LIMITATION = "HIGH: restart may clear RECOVERY_REQUIRED; not production-ready without durable operational state" as const
 
   constructor(config: CoordinatorConfig) {
     this.name = config.name
@@ -68,10 +92,19 @@ export class Coordinator implements ICoordinator {
     this.voting = new Voting(config.name, this.MIN_AGREEING_AGENTS, this.WEIGHTED_CONFIDENCE_THRESHOLD)
     this.executor_ = config.executor ?? null
     this.safetyGuard_ = config.safetyGuard ?? null
+    const auditConfigurationProvided = config.audit !== undefined
     this.audit_ = config.audit ?? null
     this.deduplicator = new IntentDeduplicator(config.dedupWindowMs ?? 120_000)
     this.intentPublisher_ = config.intentPublisher ?? null
     this.policyEngine = config.policyEngine ?? new PolicyEngine()
+    this.recoveryAuthorizer_ = config.recoveryAuthorizer ?? null
+    // Omitted Audit is a supported compatibility construction that starts
+    // degraded. An explicitly injected invalid null (legacy tests via cast) is
+    // detected by the first evidence write and preserves the typed K-2c.4 throw.
+    this.operationalStatus_ = auditConfigurationProvided ? "OPERATIONAL" : "RECOVERY_REQUIRED"
+    this.degradedAt_ = auditConfigurationProvided ? undefined : Date.now()
+    this.degradationCode_ = auditConfigurationProvided ? undefined : "AUDIT_UNAVAILABLE"
+    this.operationalEvidenceStatus_ = auditConfigurationProvided ? "available" : "unavailable"
   }
 
   registerAgent(agent: IAgent): void {
@@ -107,6 +140,7 @@ export class Coordinator implements ICoordinator {
   }
 
   setAudit(a: IAudit): void {
+    if (this.operationalStatus_ === "RECOVERY_REQUIRED") return
     this.audit_ = a
   }
 
@@ -114,7 +148,242 @@ export class Coordinator implements ICoordinator {
     return this.policyEngine
   }
 
+  getOperationalStatus(): OperationalStateSnapshot {
+    return {
+      operationalStatus: this.operationalStatus_,
+      degradedAt: this.degradedAt_,
+      degradationCode: this.degradationCode_,
+      publicReason: this.operationalStatus_ === "RECOVERY_REQUIRED" ? Coordinator.OPERATIONAL_PUBLIC_REASON : undefined,
+      evidenceStatus: this.operationalEvidenceStatus_,
+      durability: "instance_memory",
+      restartLimitation: Coordinator.RESTART_LIMITATION,
+    }
+  }
+
+  /**
+   * K-2c.5 operational state is deliberately instance-memory only.
+   * A process restart can erase RECOVERY_REQUIRED. Severity: HIGH.
+   * This limitation remains active and is not production-ready until a future,
+   * separately authorized durable operational-state phase is implemented.
+   */
+  private _enterRecoveryRequired(code: OperationalDegradationCode, evidenceStatus: OperationalEvidenceStatus): void {
+    if (this.operationalStatus_ === "RECOVERY_REQUIRED") return
+    this.operationalStatus_ = "RECOVERY_REQUIRED"
+    this.degradedAt_ = Date.now()
+    this.degradationCode_ = code
+    this.operationalEvidenceStatus_ = evidenceStatus
+  }
+
+  private _getOperationalReadiness(sourcePath: "submitProposal" | "runCycle", executionOccurred = false):
+    | { operational: true }
+    | { operational: false; unavailable: OperationalUnavailable } {
+    if (this.operationalStatus_ === "OPERATIONAL") return { operational: true }
+    return {
+      operational: false,
+      unavailable: {
+        kind: "operational_unavailable",
+        operationalStatus: "RECOVERY_REQUIRED",
+        degradedAt: this.degradedAt_ ?? 0,
+        degradationCode: this.degradationCode_ ?? "AUDIT_UNAVAILABLE",
+        publicReason: Coordinator.OPERATIONAL_PUBLIC_REASON,
+        recoveryRequired: true,
+        evidenceStatus: this.operationalEvidenceStatus_ === "available" ? "unavailable" : this.operationalEvidenceStatus_,
+        sourcePath,
+        executionOccurred,
+        durability: "instance_memory",
+        restartLimitation: Coordinator.RESTART_LIMITATION,
+      },
+    }
+  }
+
+  private _operationalConsensus(action: string): ConsensusResult {
+    return {
+      approved: false,
+      action,
+      confidence: 0,
+      agentVotes: [],
+      tiebreaker: "",
+      reason: Coordinator.OPERATIONAL_PUBLIC_REASON,
+    }
+  }
+
+  private _operationalSubmission(
+    proposal: AgentProposal,
+    unavailable: OperationalUnavailable,
+    consensus?: ConsensusResult,
+    executionResult?: SubmissionResult["executionResult"],
+  ): SubmissionResult {
+    return {
+      ...unavailable,
+      consensus: {
+        ...(consensus ?? this._operationalConsensus(proposal.action)),
+        reason: Coordinator.OPERATIONAL_PUBLIC_REASON,
+      },
+      executionResult,
+    }
+  }
+
+  private _operationalCycle(report: Omit<Extract<CycleReport, { kind: "cycle_report" }>, "kind">, unavailable: OperationalUnavailable): CycleReport {
+    return { ...report, ...unavailable }
+  }
+
+  async attemptOperationalRecovery(request: OperationalRecoveryRequest): Promise<OperationalRecoveryResult> {
+    if (this.operationalStatus_ === "OPERATIONAL") {
+      return this._recoveryResult("already_operational", true, "available")
+    }
+
+    // Runtime authorization is the security boundary. Interface hiding is not.
+    const authorizer = this.recoveryAuthorizer_
+    if (!authorizer) {
+      return this._recoveryResult("denied", false, this.operationalEvidenceStatus_)
+    }
+
+    let authorized = false
+    try {
+      authorized = authorizer.authorizeOperationalRecovery({
+        coordinatorName: this.name,
+        requestedBy: request.requestedBy,
+        degradedAt: this.degradedAt_ ?? 0,
+        degradationCode: this.degradationCode_ ?? "AUDIT_UNAVAILABLE",
+      }) === true
+    } catch {
+      authorized = false
+    }
+    if (!authorized) {
+      return this._recoveryResult("denied", false, this.operationalEvidenceStatus_)
+    }
+
+    if (this.recoveryInProgress_) {
+      return this._recoveryResult("recovery_in_progress", false, this.operationalEvidenceStatus_)
+    }
+
+    const candidateAudit = request.candidateAudit ?? this.audit_
+    if (!candidateAudit) {
+      return this._recoveryResult("failed", false, this.operationalEvidenceStatus_)
+    }
+
+    const recoveryAttempt = this._performOperationalRecovery(request.requestedBy, candidateAudit)
+    this.recoveryInProgress_ = recoveryAttempt
+    try {
+      return await recoveryAttempt
+    } finally {
+      if (this.recoveryInProgress_ === recoveryAttempt) this.recoveryInProgress_ = null
+    }
+  }
+
+  private async _performOperationalRecovery(requestedBy: string, candidateAudit: IAudit): Promise<OperationalRecoveryResult> {
+    const recoveryProbeId = `operational_recovery_${this.name}_${++this.recoveryProbeSequence_}`
+    const now = Date.now()
+    const proposal: AgentProposal = {
+      id: `proposal_${recoveryProbeId}`,
+      agentId: "operational_recovery_control",
+      action: "TEST",
+      params: { recoveryProbeId, requestedBy },
+      confidence: 100,
+      timestamp: now,
+    }
+    const decisionReport: DecisionReport = {
+      id: `decision_${recoveryProbeId}`,
+      intentId: recoveryProbeId,
+      agentId: proposal.agentId,
+      action: proposal.action,
+      params: { recoveryProbeId, requestedBy },
+      auditStatus: "not_attempted",
+      createdAt: now,
+      resolvedAt: now,
+    }
+
+    let initialWrite: DecisionReportWriteResult
+    try {
+      initialWrite = await this._saveDecisionReport(recoveryProbeId, decisionReport)
+    } catch {
+      return this._recoveryResult("failed", false, this.operationalEvidenceStatus_, recoveryProbeId)
+    }
+    if (!initialWrite.saved) {
+      return this._recoveryResult("failed", false, this.operationalEvidenceStatus_, recoveryProbeId)
+    }
+
+    const auditEntry = Audit.createEntry({
+      agentId: proposal.agentId,
+      action: proposal.action,
+      proposal,
+      result: null,
+      approved: false,
+      confidence: 100,
+      voters: 0,
+      tags: ["operational_recovery_probe", `recovery_probe:${recoveryProbeId}`],
+    })
+    let auditRecorded = false
+    try {
+      auditRecorded = candidateAudit.record(auditEntry)?.recorded === true
+    } catch {
+      auditRecorded = false
+    }
+    if (!auditRecorded) {
+      return this._recoveryResult("failed", false, this.operationalEvidenceStatus_, recoveryProbeId)
+    }
+
+    decisionReport.auditId = auditEntry.id
+    decisionReport.auditStatus = "recorded"
+    let finalWrite: DecisionReportWriteResult
+    try {
+      finalWrite = await this._saveDecisionReport(recoveryProbeId, decisionReport)
+    } catch {
+      return this._recoveryResult("failed", false, this.operationalEvidenceStatus_, recoveryProbeId)
+    }
+    if (!finalWrite.saved) {
+      return this._recoveryResult("failed", false, this.operationalEvidenceStatus_, recoveryProbeId)
+    }
+
+    const persistedReport = this.intentPublisher_?.getRecord(recoveryProbeId)?.decisionReport
+    const persistedAudit = candidateAudit.getById?.(auditEntry.id) ?? null
+    const reportReadBackValid = persistedReport?.id === decisionReport.id &&
+      persistedReport.auditStatus === "recorded" &&
+      persistedReport.auditId === auditEntry.id &&
+      persistedReport.params?.recoveryProbeId === recoveryProbeId
+    const auditReadBackValid = persistedAudit?.id === auditEntry.id &&
+      persistedAudit.tags.includes(`recovery_probe:${recoveryProbeId}`)
+    if (!reportReadBackValid || !auditReadBackValid) {
+      return this._recoveryResult("failed", false, this.operationalEvidenceStatus_, recoveryProbeId)
+    }
+
+    // Candidate backend installation and OPERATIONAL transition happen only
+    // after both independent read-backs have succeeded, while mutex is held.
+    this.audit_ = candidateAudit
+    this.operationalStatus_ = "OPERATIONAL"
+    this.degradedAt_ = undefined
+    this.degradationCode_ = undefined
+    this.operationalEvidenceStatus_ = "available"
+    return this._recoveryResult("recovered", true, "available", recoveryProbeId)
+  }
+
+  private _recoveryResult(
+    status: OperationalRecoveryResult["status"],
+    recovered: boolean,
+    evidenceStatus: OperationalEvidenceStatus,
+    recoveryProbeId?: string,
+  ): OperationalRecoveryResult {
+    return {
+      kind: "operational_recovery_result",
+      status,
+      operationalStatus: this.operationalStatus_,
+      publicReason: status === "recovery_in_progress"
+        ? "Recovery already in progress"
+        : this.operationalStatus_ === "OPERATIONAL" ? "Operational" : Coordinator.OPERATIONAL_PUBLIC_REASON,
+      recovered,
+      evidenceStatus,
+      recoveryProbeId,
+      durability: "instance_memory",
+      restartLimitation: Coordinator.RESTART_LIMITATION,
+    }
+  }
+
   async submitProposal(proposal: AgentProposal): Promise<SubmissionResult> {
+    const primaryOperationalReadiness = this._getOperationalReadiness("submitProposal")
+    if (!primaryOperationalReadiness.operational) {
+      return this._operationalSubmission(proposal, primaryOperationalReadiness.unavailable)
+    }
+
     const startTime = Date.now()
     const intentId = `intent_${proposal.agentId}_${proposal.timestamp ?? startTime}`
 
@@ -382,7 +651,12 @@ export class Coordinator implements ICoordinator {
     this._transitionIntent(intentId, "EXECUTING")
     const execStart = Date.now()
     console.log(`[${this.name}] ⚡ Executing — ${proposal.action} via ${this.executor_.name}`)
-    const executionResult = await this.executor_.execute(proposal)
+    const finalOperationalReadiness = this._getOperationalReadiness("submitProposal")
+    if (!finalOperationalReadiness.operational) {
+      return this._operationalSubmission(proposal, finalOperationalReadiness.unavailable, consensus)
+    }
+    const executionPromise = this.executor_.execute(proposal)
+    const executionResult = await executionPromise
     const execDuration = Date.now() - execStart
     const isProvisionalDispatch = executionResult.isProvisional === true || executionResult.settlementStatus === "dispatched" || executionResult.details?.isProvisional === true || executionResult.details?.settlementStatus === "dispatched"
     const isAdapterDispatchFailure = executionResult.dispatchStatus === "failed" ||
@@ -436,9 +710,12 @@ export class Coordinator implements ICoordinator {
       console.log(`[${this.name}] ${executionResult.success ? "✅" : "❌"} Executed — ${execDuration}ms profit $${(executionResult.profit ?? 0).toFixed(4)}${executionResult.txHash ? ` tx:${executionResult.txHash.slice(0, 14)}` : ""}`)
     }
 
-    // ── Audit stage ──
+    // ── Mandatory execution evidence stage ──
     let auditId: string | undefined
-    if (this.audit_) {
+    let executionEvidenceFailure: OperationalDegradationCode | undefined
+    if (!this.audit_) {
+      executionEvidenceFailure = "AUDIT_UNAVAILABLE"
+    } else {
       const entry = Audit.createEntry({
         agentId: proposal.agentId, action: proposal.action, proposal,
         result: executionResult, approved: consensus.approved,
@@ -446,9 +723,42 @@ export class Coordinator implements ICoordinator {
         knowledgeModifier: knowledgeMod,
         onChainStatus: isProvisionalDispatch ? "skipped" : "pending",
       })
-      this.audit_.record(entry)
-      auditId = entry.id
-      dp.auditId = auditId
+      try {
+        const write = this.audit_.record(entry)
+        if (write?.recorded === true) {
+          auditId = entry.id
+          dp.auditId = auditId
+        } else {
+          executionEvidenceFailure = "AUDIT_WRITE_REJECTED"
+        }
+      } catch {
+        executionEvidenceFailure = "AUDIT_WRITE_EXCEPTION"
+      }
+    }
+
+    if (executionEvidenceFailure) {
+      this._enterRecoveryRequired(executionEvidenceFailure, "unproven")
+    }
+
+    dp.outcome = "approved"
+    dp.auditStatus = auditId ? "recorded" : "write_failed"
+    dp.resolvedAt = Date.now()
+    dp.durationMs = dp.resolvedAt - startTime
+    let executionReportSaved = false
+    try {
+      executionReportSaved = (await this._saveDecisionReport(intentId, dp)).saved
+    } catch {
+      executionReportSaved = false
+    }
+    if (!executionReportSaved) {
+      this._enterRecoveryRequired("EXECUTION_EVIDENCE_PERSISTENCE_FAILED", "unproven")
+    }
+
+    if (executionEvidenceFailure || !executionReportSaved) {
+      const unavailable = this._getOperationalReadiness("submitProposal", true)
+      if (!unavailable.operational) {
+        return this._operationalSubmission(proposal, unavailable.unavailable, consensus, executionResult)
+      }
     }
 
     // ── Feedback ──
@@ -461,11 +771,6 @@ export class Coordinator implements ICoordinator {
         })
       }
     }
-
-    dp.resolvedAt = Date.now()
-    dp.durationMs = dp.resolvedAt - startTime
-    const execWrite = await this._saveDecisionReport(intentId, dp)
-    if (!execWrite.saved) throw new Error("Failed to persist execution decision report")
 
     // ── On-chain proof ──
     if (executionResult.success && !isProvisionalDispatch && this.intentPublisher_?.anchorDecision) {
@@ -483,7 +788,7 @@ export class Coordinator implements ICoordinator {
       }).catch(() => {})
     }
 
-    return { consensus, executionResult }
+    return { kind: "decision", consensus, executionResult }
   }
 
   private async collectProposals(ctx: Record<string, unknown>): Promise<AgentProposal[]> {
@@ -529,8 +834,21 @@ export class Coordinator implements ICoordinator {
   }
 
   async runCycle(): Promise<CycleReport> {
+    const primaryOperationalReadiness = this._getOperationalReadiness("runCycle")
+    if (!primaryOperationalReadiness.operational) {
+      return this._operationalCycle({
+        cycleId: this.cycleCount,
+        proposalsSubmitted: 0,
+        consensusReached: 0,
+        executionsDispatched: 0,
+        errors: 0,
+        timestamp: Date.now(),
+      }, primaryOperationalReadiness.unavailable)
+    }
+
     this.cycleCount++
-    const report: CycleReport = {
+    const report: Extract<CycleReport, { kind: "cycle_report" }> = {
+      kind: "cycle_report",
       cycleId: this.cycleCount,
       proposalsSubmitted: 0,
       consensusReached: 0,
@@ -731,7 +1049,12 @@ export class Coordinator implements ICoordinator {
         this._transitionIntent(cycleIntentId, "EXECUTING")
 
         // Execute
-        const result = await this.executor_.execute(proposal)
+        const finalOperationalReadiness = this._getOperationalReadiness("runCycle")
+        if (!finalOperationalReadiness.operational) {
+          return this._operationalCycle(report, finalOperationalReadiness.unavailable)
+        }
+        const executionPromise = this.executor_.execute(proposal)
+        const result = await executionPromise
         const isProvisionalDispatch = result.isProvisional === true || result.settlementStatus === "dispatched" || result.details?.isProvisional === true || result.details?.settlementStatus === "dispatched"
         const isAdapterDispatchFailure = result.dispatchStatus === "failed" ||
           result.details?.dispatchStatus === "failed"
@@ -759,9 +1082,42 @@ export class Coordinator implements ICoordinator {
         }
         report.executionsDispatched++
 
-        // Audit
-        if (this.audit_) {
-          this.audit_.record(Audit.createEntry({
+        const cycleDecisionReport: DecisionReport = {
+          id: cycleDecisionReportId,
+          intentId: cycleIntentId,
+          agentId: proposal.agentId,
+          action: proposal.action,
+          params: proposal.params ?? {},
+          outcome: "approved",
+          createdAt: Date.now(),
+          resolvedAt: Date.now(),
+          onChainStatus: isProvisionalDispatch ? "skipped" : "pending",
+          execution: {
+            success: result.success,
+            profit: result.profit ?? 0,
+            gasCost: result.gasCost ?? 0,
+            durationMs: 0,
+            txHash: result.txHash,
+            errorMsg: result.errorMsg,
+            adapter: this.executor_?.name ?? "unknown",
+            correlationId: result.correlationId ?? cycleIntentId,
+            intentId: result.intentId ?? cycleIntentId,
+            proposalId: result.proposalId ?? proposal.id,
+            decisionReportId: result.decisionReportId ?? cycleDecisionReportId,
+            ordemId: result.ordemId,
+            dispatchStatus: result.dispatchStatus,
+            settlementStatus: result.settlementStatus,
+            isProvisional: result.isProvisional,
+          },
+        }
+        this._applyKnowledgeToDecisionReport(cycleDecisionReport, canonicalKnowledge, knowledgeMod)
+
+        // Mandatory execution evidence
+        let cycleEvidenceFailure: OperationalDegradationCode | undefined
+        if (!this.audit_) {
+          cycleEvidenceFailure = "AUDIT_UNAVAILABLE"
+        } else {
+          const auditEntry = Audit.createEntry({
             agentId: proposal.agentId,
             action: proposal.action,
             proposal,
@@ -770,7 +1126,35 @@ export class Coordinator implements ICoordinator {
             confidence: consensus.confidence,
             voters: votes.length,
             knowledgeModifier: knowledgeMod,
-          }))
+          })
+          try {
+            const auditWrite = this.audit_.record(auditEntry)
+            if (auditWrite?.recorded === true) {
+              cycleDecisionReport.auditId = auditEntry.id
+            } else {
+              cycleEvidenceFailure = "AUDIT_WRITE_REJECTED"
+            }
+          } catch {
+            cycleEvidenceFailure = "AUDIT_WRITE_EXCEPTION"
+          }
+        }
+        cycleDecisionReport.auditStatus = cycleDecisionReport.auditId ? "recorded" : "write_failed"
+        if (cycleEvidenceFailure) {
+          this._enterRecoveryRequired(cycleEvidenceFailure, "unproven")
+        }
+
+        let cycleReportSaved = false
+        try {
+          cycleReportSaved = (await this._saveDecisionReport(cycleIntentId, cycleDecisionReport)).saved
+        } catch {
+          cycleReportSaved = false
+        }
+        if (!cycleReportSaved) {
+          this._enterRecoveryRequired("EXECUTION_EVIDENCE_PERSISTENCE_FAILED", "unproven")
+        }
+        if (cycleEvidenceFailure || !cycleReportSaved) {
+          const unavailable = this._getOperationalReadiness("runCycle", true)
+          if (!unavailable.operational) return this._operationalCycle(report, unavailable.unavailable)
         }
 
         // Feedback to agents
@@ -786,38 +1170,11 @@ export class Coordinator implements ICoordinator {
 
         // On-chain proof
         if (result.success && !isProvisionalDispatch && this.intentPublisher_?.anchorDecision) {
-          const dp: DecisionReport = {
-            id: cycleDecisionReportId,
-            intentId: cycleIntentId,
-            agentId: proposal.agentId,
-            action: proposal.action,
-            params: proposal.params ?? {},
-            createdAt: Date.now(),
-            resolvedAt: Date.now(),
-            onChainStatus: "pending",
-            execution: {
-              success: result.success,
-              profit: result.profit ?? 0,
-              gasCost: result.gasCost ?? 0,
-              durationMs: 0,
-              txHash: result.txHash,
-              adapter: this.executor_?.name ?? "unknown",
-              correlationId: result.correlationId ?? cycleIntentId,
-              intentId: result.intentId ?? cycleIntentId,
-              proposalId: result.proposalId ?? proposal.id,
-              decisionReportId: result.decisionReportId ?? cycleDecisionReportId,
-              ordemId: result.ordemId,
-              dispatchStatus: result.dispatchStatus,
-              settlementStatus: result.settlementStatus,
-              isProvisional: result.isProvisional,
-            },
-          }
-          this._applyKnowledgeToDecisionReport(dp, canonicalKnowledge, knowledgeMod)
-          this.intentPublisher_.anchorDecision(cycleIntentId, dp).then(anchorResult => {
+          this.intentPublisher_.anchorDecision(cycleIntentId, cycleDecisionReport).then(anchorResult => {
             if (anchorResult) {
-              dp.onChainHash = anchorResult.hash
-              dp.onChainTx = anchorResult.txHash
-              dp.onChainStatus = "confirmed"
+              cycleDecisionReport.onChainHash = anchorResult.hash
+              cycleDecisionReport.onChainTx = anchorResult.txHash
+              cycleDecisionReport.onChainStatus = "confirmed"
               console.log(`[${this.name}] 🔗 On-chain proof (cycle): tx:${anchorResult.txHash} block:${anchorResult.blockNumber}`)
             }
           }).catch(() => {})
@@ -982,7 +1339,7 @@ export class Coordinator implements ICoordinator {
     consensus: ConsensusResult
   }): Promise<SubmissionResult> {
     await this._recordRejectionCore(args)
-    return { consensus: args.consensus }
+    return { kind: "decision", consensus: args.consensus }
   }
 
   private async _recordRejectionCore(args: {
@@ -995,6 +1352,7 @@ export class Coordinator implements ICoordinator {
     const { proposal, intentId, decisionReport: dp, rejection } = args
 
     if (!rejection.rejectedBy || !rejection.rejectionCode || !rejection.rejectionStage || !rejection.sourcePath) {
+      this._enterRecoveryRequired("INVALID_REJECTION_METADATA", "unavailable")
       throw new CycleRejectionEvidenceError("INVALID_REJECTION_METADATA",
         new Error(`Invalid rejection metadata: missing required field in ${dp.id}`))
     }
@@ -1009,15 +1367,22 @@ export class Coordinator implements ICoordinator {
     try {
       write = await this._saveDecisionReport(intentId, dp)
     } catch (e) {
+      this._enterRecoveryRequired("DECISION_REPORT_INITIAL_SAVE_FAILED", "unavailable")
       throw new CycleRejectionEvidenceError("SAVE_INITIAL_FAILED",
         e instanceof Error ? e : new Error(String(e)))
     }
-    if (!write.saved) throw new CycleRejectionEvidenceError("SAVE_INITIAL_FAILED")
+    if (!write.saved) {
+      this._enterRecoveryRequired("DECISION_REPORT_INITIAL_SAVE_FAILED", "unavailable")
+      throw new CycleRejectionEvidenceError("SAVE_INITIAL_FAILED")
+    }
 
     this._transitionIntent(intentId, "REJECTED")
 
     let auditRecorded = false
-    if (this.audit_) {
+    let auditFailureCode: OperationalDegradationCode | undefined
+    if (!this.audit_) {
+      auditFailureCode = "AUDIT_UNAVAILABLE"
+    } else {
       const entry = Audit.createEntry({
         agentId: proposal.agentId,
         action: proposal.action,
@@ -1035,21 +1400,30 @@ export class Coordinator implements ICoordinator {
         ],
       })
       try {
-        auditRecorded = this.audit_.record(entry)?.recorded === true
+        const auditWrite = this.audit_.record(entry)
+        auditRecorded = auditWrite?.recorded === true
+        if (!auditRecorded) auditFailureCode = "AUDIT_WRITE_REJECTED"
       } catch {
         auditRecorded = false
+        auditFailureCode = "AUDIT_WRITE_EXCEPTION"
       }
     }
+
+    if (auditFailureCode) this._enterRecoveryRequired(auditFailureCode, "unavailable")
 
     dp.auditStatus = auditRecorded ? "recorded" : "write_failed"
     let finalWrite: DecisionReportWriteResult
     try {
       finalWrite = await this._saveDecisionReport(intentId, dp)
     } catch (e) {
+      this._enterRecoveryRequired("DECISION_REPORT_FINAL_SAVE_FAILED", "unavailable")
       throw new CycleRejectionEvidenceError("SAVE_FINAL_FAILED",
         e instanceof Error ? e : new Error(String(e)))
     }
-    if (!finalWrite.saved) throw new CycleRejectionEvidenceError("SAVE_FINAL_FAILED")
+    if (!finalWrite.saved) {
+      this._enterRecoveryRequired("DECISION_REPORT_FINAL_SAVE_FAILED", "unavailable")
+      throw new CycleRejectionEvidenceError("SAVE_FINAL_FAILED")
+    }
     if (!auditRecorded) throw new CycleRejectionEvidenceError("AUDIT_RECORD_FAILED")
 
   }

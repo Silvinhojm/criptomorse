@@ -294,6 +294,12 @@ class Pregão {
 
     try {
       const result = await frameworkCoordinator.submitProposal(proposal)
+      if (result.kind === "operational_unavailable") {
+        this.log(
+          `[FRAMEWORK] Indisponibilidade operacional: ${result.publicReason}`
+        )
+        return false
+      }
       if (!result.consensus.approved) {
         this.log(`[FRAMEWORK] Sinal rejeitado pelo Coordinator: ${signal.pregueiro} -> ${signal.par} (${result.consensus.reason})`)
         return false
