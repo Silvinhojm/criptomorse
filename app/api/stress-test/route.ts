@@ -17,20 +17,19 @@ async function getLifiQuote(fromToken: string, toToken: string, amount: string, 
   return res.json()
 }
 
-export async function POST(req: Request) {
+export async function POST() {
   try {
-    const body = await req.json()
-    const privateKey = body.privateKey || process.env.PRIVATE_KEY_STRESS || process.env.PRIVATE_KEY
+    const stressPrivateKey = process.env.PRIVATE_KEY_STRESS
     
-    if (!privateKey || privateKey.length < 64) {
+    if (!stressPrivateKey || !/^(?:0x)?[0-9a-fA-F]{64}$/.test(stressPrivateKey)) {
       return NextResponse.json(
-        { success: false, error: "PRIVATE_KEY não fornecida ou inválida" },
-        { status: 400 }
+        { success: false, error: "Stress test não configurado" },
+        { status: 503 }
       )
     }
 
     const provider = new ethers.JsonRpcProvider(ARC_RPC_URL)
-    const signer = new ethers.Wallet(privateKey, provider)
+    const signer = new ethers.Wallet(stressPrivateKey, provider)
     const address = await signer.getAddress()
     const nonceManager = NonceManager.getInstance()
     console.log(`🔑 Stress Test signer: ${address}`)
@@ -89,13 +88,13 @@ export async function POST(req: Request) {
           duration: Date.now() - startTime,
           error: result.error || undefined
         })
-      } catch (error) {
+      } catch {
         results.push({
           operation: op,
           txHash: "",
           success: false,
           duration: Date.now() - startTime,
-          error: error instanceof Error ? error.message : String(error)
+          error: "Operação de stress test falhou"
         })
       }
     }
@@ -108,10 +107,10 @@ export async function POST(req: Request) {
       success: true,
       result: { total, success, failed, results }
     })
-  } catch (error) {
-    console.error("❌ Stress Test API error:", error)
+  } catch {
+    console.error("❌ Stress Test API indisponível")
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : String(error) },
+      { success: false, error: "Stress test indisponível" },
       { status: 500 }
     )
   }
