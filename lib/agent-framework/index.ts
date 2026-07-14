@@ -1,5 +1,8 @@
-export type { IAgent, AgentProposal, AgentVote, AgentIdentity } from "./IAgent"
 export type {
+  IAgent,
+  AgentProposal,
+  AgentVote,
+  AgentIdentity,
   ICoordinator,
   ConsensusResult,
   CycleReport,
@@ -15,41 +18,49 @@ export type {
   OperationalRecoveryResult,
   IOperationalRecoveryControl,
   IOperationalRecoveryAuthorizer,
-} from "./ICoordinator"
-export type { IExecutor, ExecutionResult } from "./IExecutor"
-export type { IReputation, AgentStats } from "./IReputation"
-export type { ISafetyGuard, SafetyStatus } from "./ISafetyGuard"
-export type { IResourceManager, ResourceRequest, ResourceGrant, ResourceState } from "./IResourceManager"
-export type { IAudit, AuditEntry, AuditReport, AuditWriteResult } from "./IAudit"
-export type { ICompliance, ComplianceCheck, CompliancePolicy } from "./ICompliance"
-export type { ILearningEngine, LearningFeedback, AgentParams } from "./ILearningEngine"
-
-export { ResourceManager } from "./resource-manager"
-export { SafetyGuard, type SafetyGuardConfig } from "./safety-guard"
-export { Audit } from "./audit"
-export { Reputation } from "./reputation"
-export { Compliance } from "./compliance"
-export { LearningEngine } from "./learning-engine"
-export { OracleConditions } from "./oracle-conditions"
-export { Voting, type VoteRecord, type VoteResult } from "./voting"
-export { Coordinator, type CoordinatorConfig } from "./coordinator"
-export { TradingAdapter } from "./trading-adapter"
-export type { TradeSignal } from "./trading-adapter"
-export type { AgentIntent, IntentRecord, IntentStatus, IntentFilter, IIntentPublisher } from "./intent-types"
-export { IntentPublisher } from "./intent-publisher"
-export { IntentDeduplicator } from "./intent-deduplicator"
-export {
-  PolicyEngine,
-  type PolicyRule,
-  type PolicyEngineConfig,
-  type MinimumConfidenceNetworkOverride,
-  type MinimumConfidencePolicyConfig,
-  type EffectiveMinimumConfidencePolicy,
-} from "./policy-engine"
-export type { KnowledgeRequest, KnowledgeReport, ResolvedKnowledgeContext } from "./knowledge-types"
-export { KnowledgeService } from "./knowledge-service"
-export type { DecisionReport, RejectionStage, RejectedBy, RejectionCode, RejectionMetadata } from "./decision-report"
-export type { DecisionReportWriteResult } from "./coordinator"
-export { SettlementRegistry } from "./settlement-registry"
-export type { SettlementRecord, SettlementSource, SettlementStatus, SettlementUpdate } from "./settlement-registry"
-export { frameworkReputation, frameworkAudit, frameworkIntents, frameworkKnowledge, frameworkPolicy, frameworkSettlementRegistry, frameworkCoordinator } from "./singletons"
+  IExecutor,
+  ExecutionResult,
+  IReputation,
+  AgentStats,
+  ISafetyGuard,
+  SafetyStatus,
+  IResourceManager,
+  ResourceRequest,
+  ResourceGrant,
+  ResourceState,
+  IAudit,
+  AuditEntry,
+  AuditReport,
+  AuditWriteResult,
+  ICompliance,
+  ComplianceCheck,
+  CompliancePolicy,
+  ILearningEngine,
+  LearningFeedback,
+  AgentParams,
+  AgentIntent,
+  IntentRecord,
+  IntentStatus,
+  IntentFilter,
+  IIntentPublisher,
+  KnowledgeRequest,
+  KnowledgeReport,
+  ResolvedKnowledgeContext,
+  DecisionReport,
+  RejectionStage,
+  RejectedBy,
+  RejectionCode,
+  RejectionMetadata,
+  PolicyRule,
+  PolicyEngineConfig,
+  MinimumConfidenceNetworkOverride,
+  MinimumConfidencePolicyConfig,
+  EffectiveMinimumConfidencePolicy,
+  SettlementRecord,
+  SettlementSource,
+  SettlementStatus,
+  SettlementUpdate,
+  SafetyGuardConfig,
+  VoteRecord,
+  VoteResult,
+} from "./types"
