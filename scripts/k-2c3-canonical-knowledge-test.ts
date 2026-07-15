@@ -3,6 +3,7 @@ import { IntentPublisher } from "../lib/agent-framework/intent-publisher"
 import type { IAgent, AgentIdentity, AgentProposal, AgentVote } from "../lib/agent-framework/IAgent"
 import type { IExecutor, ExecutionResult } from "../lib/agent-framework/IExecutor"
 import type { KnowledgeReport, ResolvedKnowledgeContext } from "../lib/agent-framework/knowledge-types"
+import type { CoordinatorDecisionDependencies } from "../lib/agent-framework/coordinator-dependencies"
 
 let passed = 0
 let failed = 0
@@ -40,6 +41,31 @@ function knowledge(canTrade: boolean, modifier = 15, warnings = ["canonical-warn
   }
 }
 
+let injectedKnowledgeQueryCalls = 0
+let injectedReputationScoreCalls = 0
+function decisionDependencies(): CoordinatorDecisionDependencies {
+  return {
+    reputation: {
+      getScore: () => {
+        injectedReputationScoreCalls++
+        return 0
+      },
+    },
+    knowledge: {
+      query: async request => {
+        injectedKnowledgeQueryCalls++
+        if (request.pair.from === "__K2C3_THROW__") {
+          const testGlobal = globalThis as typeof globalThis & { __k2c3QueryCounter?: { count: number } }
+          const counter = (testGlobal.__k2c3QueryCounter ??= { count: 0 })
+          counter.count++
+          throw new Error("SECRET_KNOWLEDGE_QUERY_FAILURE")
+        }
+        return knowledge(false, 0, [])
+      },
+    },
+  }
+}
+
 let sequence = 0
 function proposal(report?: unknown, legacy?: boolean): AgentProposal {
   sequence++
@@ -62,7 +88,10 @@ async function getCoordinatorClass(): Promise<any> {
 
 async function coordinator(executor: Executor, cycleProposal: AgentProposal | null = null): Promise<any> {
   const C = await getCoordinatorClass()
-  const c = new C({ name: `k2c3-${sequence}`, minAgents: 1, executor, audit: new Audit(`k2c3-audit-${sequence}`, 100), intentPublisher: new IntentPublisher(`k2c3-intents-${sequence}`, 100) })
+  const c = new C(
+    { name: `k2c3-${sequence}`, minAgents: 1, executor, audit: new Audit(`k2c3-audit-${sequence}`, 100), intentPublisher: new IntentPublisher(`k2c3-intents-${sequence}`, 100) },
+    decisionDependencies(),
+  )
   c.registerAgent(new Agent("agent-a", cycleProposal))
   c.registerAgent(new Agent("agent-b"))
   return c
@@ -76,11 +105,13 @@ async function main(): Promise<void> {
   const negative = proposal(knowledge(false), true)
   const negativeExecutor = new Executor()
   const negativeCoordinator = await coordinator(negativeExecutor)
+  const providedQueryCallsBefore = injectedKnowledgeQueryCalls
   const negativeContext = await resolved(negativeCoordinator, negative)
   assert("provided context is canonical", negativeContext.source === "provided")
   assert("canonical negative prevails over legacy true", negativeContext.canTrade === false)
   assert("canonical modifier preserved", negativeContext.modifier === 15)
   const negativeResult = await negativeCoordinator.submitProposal(negative)
+  assert("provided Knowledge does not call injected query", injectedKnowledgeQueryCalls === providedQueryCallsBefore)
   assert("submit negative result kind is decision", negativeResult.kind === "decision")
   assert("submit rejects canonical negative", negativeResult.consensus.approved === false)
   assert("submit negative never executes", negativeExecutor.executeCalls === 0)
@@ -109,7 +140,9 @@ async function main(): Promise<void> {
   const positiveCoordinator = await coordinator(positiveExecutor)
   const positiveContext = await resolved(positiveCoordinator, positiveProposal)
   assert("legacy false cannot negate canonical true", positiveContext.canTrade === true)
+  const submitReputationCallsBefore = injectedReputationScoreCalls
   const positiveResult = await positiveCoordinator.submitProposal(positiveProposal)
+  assert("submit reads injected Reputation once per collected vote", injectedReputationScoreCalls - submitReputationCallsBefore === 2)
   assert("positive result kind is decision", positiveResult.kind === "decision")
   assert("positive canonical context reaches later gates", positiveResult.consensus.approved === true)
   assert("positive canonical context executes", positiveExecutor.executeCalls === 1)
@@ -216,7 +249,9 @@ async function main(): Promise<void> {
   const queriedFailure = proposal(undefined, true)
   queriedFailure.params = { fromToken: "THROW", toToken: "USDC", rede: "polygon", knowledgeCanTrade: true }
   const qfC = await coordinator(new Executor())
+  const queriedCallsBefore = injectedKnowledgeQueryCalls
   const failureContext = await resolved(qfC, queriedFailure)
+  assert("queried Knowledge calls injected resolver exactly once", injectedKnowledgeQueryCalls - queriedCallsBefore === 1)
   assert("query for unknown pair returns canTrade=false", failureContext.canTrade === false)
   assert("query for unknown pair status is queried (not failed)", failureContext.status === "queried")
 
@@ -264,7 +299,9 @@ async function main(): Promise<void> {
   const cyclePositiveExecutor = new Executor()
   const cyclePositive = proposal(knowledge(true, 10), false)
   const cyclePositiveC = await coordinator(cyclePositiveExecutor, cyclePositive)
+  const cycleReputationCallsBefore = injectedReputationScoreCalls
   const cyclePositiveReport = await cyclePositiveC.runCycle()
+  assert("cycle reads injected Reputation once per collected vote", injectedReputationScoreCalls - cycleReputationCallsBefore === 2)
   assert("runCycle canonical positive executes", cyclePositiveReport.executionsDispatched === 1 && cyclePositiveExecutor.executeCalls === 1)
 
   assert("submit and cycle share one resolver", typeof (negativeCoordinator as unknown as { _resolveKnowledge?: unknown })._resolveKnowledge === "function")

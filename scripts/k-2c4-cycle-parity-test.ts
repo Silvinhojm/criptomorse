@@ -5,6 +5,8 @@ import type { IAgent, AgentProposal, AgentVote, AgentIdentity } from "../lib/age
 import { IntentPublisher } from "../lib/agent-framework/intent-publisher"
 import type { DecisionReport } from "../lib/agent-framework/decision-report"
 import { CycleRejectionEvidenceError } from "../lib/agent-framework/coordinator"
+import type { CoordinatorDecisionDependencies } from "../lib/agent-framework/coordinator-dependencies"
+import type { KnowledgeReport } from "../lib/agent-framework/knowledge-types"
 
 let passed = 0
 let failed = 0
@@ -16,6 +18,27 @@ function assert(label: string, condition: boolean): void {
 
 function assertEqual(label: string, actual: unknown, expected: unknown): void {
   assert(`${label}: expected "${expected}", got "${actual}"`, actual === expected)
+}
+
+function decisionDependencies(): CoordinatorDecisionDependencies {
+  const report: KnowledgeReport = {
+    canTrade: true,
+    liquidity: 100,
+    gasScore: 100,
+    routeScore: 100,
+    marketScore: 100,
+    riskScore: 0,
+    expectedValue: 1,
+    confidenceModifier: 0,
+    warnings: [],
+    recommendations: [],
+    sources: { liquidity: true, route: true, gas: true, price: true, history: false, reputation: false },
+    timestamp: Date.now(),
+  }
+  return {
+    reputation: { getScore: () => 0 },
+    knowledge: { query: async () => report },
+  }
 }
 
 // ── Mocks ──
@@ -103,7 +126,7 @@ async function freshCoordinator(overrides?: {
     executor: overrides?.executor ?? undefined,
     audit: overrides?.audit !== undefined ? overrides.audit : new Audit(`k2c4-audit-${Date.now()}`, 500),
     intentPublisher: overrides?.publisher ?? new IntentPublisher(`k2c4-${Date.now()}`, 500),
-  })
+  }, decisionDependencies())
 }
 
 async function twoAgents(overrides?: {

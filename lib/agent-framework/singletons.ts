@@ -16,7 +16,10 @@ export const frameworkKnowledge = new KnowledgeService()
 export const frameworkPolicy = new PolicyEngine()
 export const frameworkSettlementRegistry = new SettlementRegistry()
 frameworkSettlementRegistry.setRecordListener(updateDecisionReportFromSettlement)
-export const frameworkCoordinator = new Coordinator({ name: "ArcCoordinator", audit: frameworkAudit, policyEngine: frameworkPolicy, intentPublisher: frameworkIntents })
+export const frameworkCoordinator = new Coordinator(
+  { name: "ArcCoordinator", audit: frameworkAudit, policyEngine: frameworkPolicy, intentPublisher: frameworkIntents },
+  { reputation: frameworkReputation, knowledge: frameworkKnowledge },
+)
 
 // ── Pending settlement replay queue ──────────────────────────────────────
 // Holds settlement updates that arrived before the matching DecisionReport

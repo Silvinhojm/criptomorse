@@ -6,6 +6,8 @@ import type { ISafetyGuard, SafetyStatus } from "../lib/agent-framework/ISafetyG
 import type { IAgent, AgentProposal, AgentVote, AgentIdentity } from "../lib/agent-framework/IAgent"
 import { IntentPublisher } from "../lib/agent-framework/intent-publisher"
 import type { DecisionReport } from "../lib/agent-framework/decision-report"
+import type { CoordinatorDecisionDependencies } from "../lib/agent-framework/coordinator-dependencies"
+import type { KnowledgeReport } from "../lib/agent-framework/knowledge-types"
 
 let passed = 0
 let failed = 0
@@ -22,6 +24,27 @@ function assert(label: string, condition: boolean): void {
 
 function assertEqual(label: string, actual: unknown, expected: unknown): void {
   assert(`${label}: expected "${expected}", got "${actual}"`, actual === expected)
+}
+
+function decisionDependencies(): CoordinatorDecisionDependencies {
+  const report: KnowledgeReport = {
+    canTrade: true,
+    liquidity: 100,
+    gasScore: 100,
+    routeScore: 100,
+    marketScore: 100,
+    riskScore: 0,
+    expectedValue: 1,
+    confidenceModifier: 0,
+    warnings: [],
+    recommendations: [],
+    sources: { liquidity: true, route: true, gas: true, price: true, history: false, reputation: false },
+    timestamp: Date.now(),
+  }
+  return {
+    reputation: { getScore: () => 0 },
+    knowledge: { query: async () => report },
+  }
 }
 
 // ── Mocks ──
@@ -160,7 +183,7 @@ function freshCoordinator(overrides?: {
     safetyGuard: overrides?.safetyGuard ?? new MockSafetyGuard(),
     audit: overrides?.audit !== undefined ? overrides.audit : new Audit(`k2c2-audit-${Date.now()}`, 500),
     intentPublisher: overrides?.publisher ?? new IntentPublisher(`k2c2-${Date.now()}`, 500),
-  })
+  }, decisionDependencies())
 }
 
 function twoAgents(overrides?: {
@@ -181,6 +204,30 @@ function twoAgents(overrides?: {
 console.log("\n=== K-2c.2: Centralized Rejection Tests ===\n")
 
 async function main() {
+
+  // Eager dependency validation requires no proposal submission.
+  {
+    const config = { name: "k2c2-invalid-deps" }
+    const valid = decisionDependencies()
+    const cases: Array<{ label: string; deps: unknown; expected: string }> = [
+      { label: "missing reputation", deps: { knowledge: valid.knowledge }, expected: "deps.reputation.getScore" },
+      { label: "missing knowledge", deps: { reputation: valid.reputation }, expected: "deps.knowledge.query" },
+      { label: "invalid reputation", deps: { reputation: { getScore: 1 }, knowledge: valid.knowledge }, expected: "deps.reputation.getScore" },
+      { label: "invalid knowledge", deps: { reputation: valid.reputation, knowledge: { query: 1 } }, expected: "deps.knowledge.query" },
+    ]
+    for (const testCase of cases) {
+      let caught: unknown
+      try {
+        // Deliberately bypass the static contract only for invalid-construction coverage.
+        new Coordinator(config, testCase.deps as CoordinatorDecisionDependencies)
+      } catch (error) {
+        caught = error
+      }
+      assert(`${testCase.label} fails during construction`, caught instanceof TypeError)
+      assert(`${testCase.label} identifies the invalid dependency`, (caught as Error)?.message.includes(testCase.expected))
+    }
+    assert("invalid dependencies are detected without proposal submission", true)
+  }
 
   // ── 1. Safety guard ──
   {
@@ -358,7 +405,7 @@ async function main() {
       safetyGuard: sg,
       audit,
       intentPublisher: new IntentPublisher(`k2c2-prex-${Date.now()}`, 500),
-    })
+    }, decisionDependencies())
     c.registerAgent(new MockAgent("agent_a"))
     c.registerAgent(new MockAgent("agent_b"))
     const prop = makeProposal({
@@ -392,7 +439,7 @@ async function main() {
       safetyGuard: sg,
       audit,
       intentPublisher: new IntentPublisher(`k2c2-cex-${Date.now()}`, 500),
-    })
+    }, decisionDependencies())
     c.registerAgent(new MockAgent("agent_a"))
     c.registerAgent(new MockAgent("agent_b"))
     const prop = makeProposal({ confidence: 80, params: {} })
@@ -423,7 +470,7 @@ async function main() {
       safetyGuard: sg,
       audit,
       intentPublisher: fb,
-    })
+    }, decisionDependencies())
     c.registerAgent(new MockAgent("agent_a"))
     c.registerAgent(new MockAgent("agent_b"))
     const prop = makeProposal({ confidence: 80 })
@@ -568,7 +615,7 @@ async function main() {
       safetyGuard: sg,
       audit,
       intentPublisher: new IntentPublisher(`k2c2-ok-${Date.now()}`, 500),
-    })
+    }, decisionDependencies())
     c.registerAgent(new MockAgent("agent_a"))
     c.registerAgent(new MockAgent("agent_b"))
     const prop = makeProposal({ confidence: 80, params: {} })

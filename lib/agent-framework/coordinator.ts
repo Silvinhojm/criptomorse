@@ -23,7 +23,12 @@ import { Audit } from "./audit"
 import { IntentDeduplicator } from "./intent-deduplicator"
 import { PolicyEngine, type PolicyEngineConfig } from "./policy-engine"
 import type { KnowledgeReport, ResolvedKnowledgeContext } from "./knowledge-types"
-import { frameworkReputation, frameworkKnowledge, frameworkSettlementRegistry, replaySettlementForCorrelationId } from "./singletons"
+import type {
+  CoordinatorDecisionDependencies,
+  CoordinatorKnowledgeResolver,
+  CoordinatorReputationReader,
+} from "./coordinator-dependencies"
+import { frameworkSettlementRegistry, replaySettlementForCorrelationId } from "./singletons"
 
 /** Dedicated error for rejection evidence failures in cycle.
  *  Public message is fixed; internal cause preserved but not exposed. */
@@ -80,13 +85,33 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
   private degradationCode_: OperationalDegradationCode | undefined
   private operationalEvidenceStatus_: OperationalEvidenceStatus
   private readonly recoveryAuthorizer_: IOperationalRecoveryAuthorizer | null
+  private readonly reputation_: CoordinatorReputationReader
+  private readonly knowledge_: CoordinatorKnowledgeResolver
   private recoveryInProgress_: Promise<OperationalRecoveryResult> | null = null
   private recoveryProbeSequence_ = 0
 
   private static readonly OPERATIONAL_PUBLIC_REASON = "Operational recovery required" as const
   private static readonly RESTART_LIMITATION = "HIGH: restart may clear RECOVERY_REQUIRED; not production-ready without durable operational state" as const
 
-  constructor(config: CoordinatorConfig) {
+  constructor(config: CoordinatorConfig, deps: CoordinatorDecisionDependencies) {
+    if (!deps || typeof deps !== "object") {
+      throw new TypeError("Coordinator requires deps to be an object")
+    }
+    if (!deps.reputation) {
+      throw new TypeError("Coordinator requires deps.reputation.getScore to be a function")
+    }
+    if (typeof deps.reputation.getScore !== "function") {
+      throw new TypeError("Coordinator requires deps.reputation.getScore to be a function")
+    }
+    if (!deps.knowledge) {
+      throw new TypeError("Coordinator requires deps.knowledge.query to be a function")
+    }
+    if (typeof deps.knowledge.query !== "function") {
+      throw new TypeError("Coordinator requires deps.knowledge.query to be a function")
+    }
+
+    this.reputation_ = deps.reputation
+    this.knowledge_ = deps.knowledge
     this.name = config.name
     this.minAgents = config.minAgents ?? 2
     this.voting = new Voting(config.name, this.MIN_AGREEING_AGENTS, this.WEIGHTED_CONFIDENCE_THRESHOLD)
@@ -522,7 +547,7 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
       this.voting.clearVotes(proposal.id)
       const votes = await this.collectVotes(proposal)
       for (const v of votes) {
-        const repScore = frameworkReputation.getScore(v.agentId)
+        const repScore = this.reputation_.getScore(v.agentId)
         const repWeight = Math.max(0.5, Math.min(1.0, repScore / 100))
         this.voting.recordVote({
           agentId: v.agentId, proposalId: proposal.id,
@@ -948,7 +973,7 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
         this.voting.clearVotes(proposal.id)
         const votes = await this.collectVotes(proposal)
         for (const v of votes) {
-          const repScore = frameworkReputation.getScore(v.agentId)
+          const repScore = this.reputation_.getScore(v.agentId)
           const repWeight = Math.max(0.5, Math.min(1.0, repScore / 100))
           this.voting.recordVote({
             agentId: v.agentId,
@@ -1228,7 +1253,7 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
     }
 
     try {
-      const queried = await frameworkKnowledge.query({
+      const queried = await this.knowledge_.query({
         pair: { from: fromToken!, to: toToken! },
         network: network!,
         action,

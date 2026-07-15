@@ -8,6 +8,8 @@ import type { IExecutor, ExecutionResult } from "../lib/agent-framework/IExecuto
 import type { IAgent, AgentIdentity, AgentProposal, AgentVote } from "../lib/agent-framework/IAgent"
 import type { ISafetyGuard, SafetyStatus } from "../lib/agent-framework/ISafetyGuard"
 import type { IOperationalRecoveryAuthorizer } from "../lib/agent-framework/ICoordinator"
+import type { CoordinatorDecisionDependencies } from "../lib/agent-framework/coordinator-dependencies"
+import type { KnowledgeReport } from "../lib/agent-framework/knowledge-types"
 
 let passed = 0
 let failed = 0
@@ -17,6 +19,27 @@ function assert(label: string, condition: boolean): void {
 }
 function equal(label: string, actual: unknown, expected: unknown): void {
   assert(`${label}: expected ${String(expected)}, got ${String(actual)}`, actual === expected)
+}
+
+function decisionDependencies(): CoordinatorDecisionDependencies {
+  const report: KnowledgeReport = {
+    canTrade: true,
+    liquidity: 100,
+    gasScore: 100,
+    routeScore: 100,
+    marketScore: 100,
+    riskScore: 0,
+    expectedValue: 1,
+    confidenceModifier: 0,
+    warnings: [],
+    recommendations: [],
+    sources: { liquidity: true, route: true, gas: true, price: true, history: false, reputation: false },
+    timestamp: Date.now(),
+  }
+  return {
+    reputation: { getScore: () => 0 },
+    knowledge: { query: async () => report },
+  }
 }
 
 class Guard implements ISafetyGuard {
@@ -119,8 +142,8 @@ function coordinator(options: { audit?: IAudit; omitAudit?: boolean; executor?: 
     recoveryAuthorizer: options.authorizer,
   }
   return options.omitAudit
-    ? new Coordinator(config)
-    : new Coordinator({ ...config, audit: options.audit ?? new Audit(`audit_${sequence}`, 500) })
+    ? new Coordinator(config, decisionDependencies())
+    : new Coordinator({ ...config, audit: options.audit ?? new Audit(`audit_${sequence}`, 500) }, decisionDependencies())
 }
 function registerVoters(c: Coordinator, cycleProposal: AgentProposal | null = null): Agent[] {
   const agents = [new Agent("a", cycleProposal), new Agent("b")]
