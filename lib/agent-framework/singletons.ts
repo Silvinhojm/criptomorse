@@ -18,7 +18,12 @@ export const frameworkSettlementRegistry = new SettlementRegistry()
 frameworkSettlementRegistry.setRecordListener(updateDecisionReportFromSettlement)
 export const frameworkCoordinator = new Coordinator(
   { name: "ArcCoordinator", audit: frameworkAudit, policyEngine: frameworkPolicy, intentPublisher: frameworkIntents },
-  { reputation: frameworkReputation, knowledge: frameworkKnowledge },
+  {
+    reputation: frameworkReputation,
+    knowledge: frameworkKnowledge,
+    settlementRegistry: frameworkSettlementRegistry,
+    settlementReplay: { replayForCorrelationId: replaySettlementForCorrelationId },
+  },
 )
 
 // ── Pending settlement replay queue ──────────────────────────────────────

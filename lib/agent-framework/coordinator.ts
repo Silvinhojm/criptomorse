@@ -27,8 +27,9 @@ import type {
   CoordinatorDecisionDependencies,
   CoordinatorKnowledgeResolver,
   CoordinatorReputationReader,
+  CoordinatorSettlementRegistry,
+  CoordinatorSettlementReplay,
 } from "./coordinator-dependencies"
-import { frameworkSettlementRegistry, replaySettlementForCorrelationId } from "./singletons"
 
 /** Dedicated error for rejection evidence failures in cycle.
  *  Public message is fixed; internal cause preserved but not exposed. */
@@ -87,6 +88,8 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
   private readonly recoveryAuthorizer_: IOperationalRecoveryAuthorizer | null
   private readonly reputation_: CoordinatorReputationReader
   private readonly knowledge_: CoordinatorKnowledgeResolver
+  private readonly settlementRegistry_: CoordinatorSettlementRegistry
+  private readonly settlementReplay_: CoordinatorSettlementReplay
   private recoveryInProgress_: Promise<OperationalRecoveryResult> | null = null
   private recoveryProbeSequence_ = 0
 
@@ -109,9 +112,17 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
     if (typeof deps.knowledge.query !== "function") {
       throw new TypeError("Coordinator requires deps.knowledge.query to be a function")
     }
+    if (!deps.settlementRegistry || typeof deps.settlementRegistry.registerPending !== "function") {
+      throw new TypeError("Coordinator requires deps.settlementRegistry.registerPending to be a function")
+    }
+    if (!deps.settlementReplay || typeof deps.settlementReplay.replayForCorrelationId !== "function") {
+      throw new TypeError("Coordinator requires deps.settlementReplay.replayForCorrelationId to be a function")
+    }
 
     this.reputation_ = deps.reputation
     this.knowledge_ = deps.knowledge
+    this.settlementRegistry_ = deps.settlementRegistry
+    this.settlementReplay_ = deps.settlementReplay
     this.name = config.name
     this.minAgents = config.minAgents ?? 2
     this.voting = new Voting(config.name, this.MIN_AGREEING_AGENTS, this.WEIGHTED_CONFIDENCE_THRESHOLD)
@@ -1544,7 +1555,7 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
    *  records into the just-saved DecisionReport.  Idempotent and safe —
    *  confirmed canonical settlement cannot be downgraded by stale updates. */
   private _syncSettlementFromRegistry(intentId: string): void {
-    replaySettlementForCorrelationId(intentId)
+    this.settlementReplay_.replayForCorrelationId(intentId)
   }
 
   private _transitionIntent(intentId: string, status: IntentStatus): void {
@@ -1588,7 +1599,7 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
   }): void {
     if (!args.correlationId || !args.isTradingAdapter || !args.isSuccessful || !args.isAcceptedDispatch || !args.isDispatchedSettlement || !args.isProvisional) return
 
-    const record = frameworkSettlementRegistry.registerPending({
+    const record = this.settlementRegistry_.registerPending({
       settlementId: `settlement_${args.correlationId}`,
       correlationId: args.correlationId,
       intentId: args.intentId,

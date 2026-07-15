@@ -44,6 +44,8 @@ function decisionDependencies(): CoordinatorDecisionDependencies {
   return {
     reputation: { getScore: () => 0 },
     knowledge: { query: async () => report },
+    settlementRegistry: { registerPending: record => record },
+    settlementReplay: { replayForCorrelationId: () => {} },
   }
 }
 
@@ -214,6 +216,10 @@ async function main() {
       { label: "missing knowledge", deps: { reputation: valid.reputation }, expected: "deps.knowledge.query" },
       { label: "invalid reputation", deps: { reputation: { getScore: 1 }, knowledge: valid.knowledge }, expected: "deps.reputation.getScore" },
       { label: "invalid knowledge", deps: { reputation: valid.reputation, knowledge: { query: 1 } }, expected: "deps.knowledge.query" },
+      { label: "missing settlement registry", deps: { reputation: valid.reputation, knowledge: valid.knowledge, settlementReplay: valid.settlementReplay }, expected: "deps.settlementRegistry.registerPending" },
+      { label: "invalid settlement registry", deps: { ...valid, settlementRegistry: { registerPending: 1 } }, expected: "deps.settlementRegistry.registerPending" },
+      { label: "missing settlement replay", deps: { reputation: valid.reputation, knowledge: valid.knowledge, settlementRegistry: valid.settlementRegistry }, expected: "deps.settlementReplay.replayForCorrelationId" },
+      { label: "invalid settlement replay", deps: { ...valid, settlementReplay: { replayForCorrelationId: 1 } }, expected: "deps.settlementReplay.replayForCorrelationId" },
     ]
     for (const testCase of cases) {
       let caught: unknown
@@ -604,6 +610,85 @@ async function main() {
   }
 
   // ── 15. Success path still reaches execute ──
+  {
+    const events: string[] = []
+    const registered: Array<{ correlationId: string; status: string; source?: string }> = []
+    const replayed: string[] = []
+    const prop = makeProposal({
+      action: "BUY",
+      confidence: 80,
+      params: { fromToken: "USDC", toToken: "WETH", rede: "polygon" },
+    })
+    const correlationId = intentIdFor(prop)
+    const executor: IExecutor = {
+      name: "TradingAdapter",
+      canExecute: () => ({ allowed: true, reason: "" }),
+      estimateCost: () => 0,
+      execute: async () => {
+        events.push("dispatch")
+        return {
+          success: true,
+          action: prop.action,
+          profit: 0,
+          gasCost: 0,
+          correlationId,
+          intentId: correlationId,
+          proposalId: prop.id,
+          decisionReportId: `decision_${correlationId}`,
+          dispatchStatus: "dispatched",
+          settlementStatus: "dispatched",
+          isProvisional: true,
+        }
+      },
+    }
+    const audit = new class extends Audit {
+      record(entry: AuditEntry): AuditWriteResult {
+        events.push("audit")
+        return super.record(entry)
+      }
+    }(`p2b-order-audit-${Date.now()}`, 20)
+    const publisher = new class extends IntentPublisher {
+      setDecisionReport(id: string, report: DecisionReport): boolean {
+        events.push("save")
+        return super.setDecisionReport(id, report)
+      }
+    }(`p2b-order-publisher-${Date.now()}`, 20)
+    const deps = decisionDependencies()
+    deps.settlementRegistry = {
+      registerPending: record => {
+        events.push("registerPending")
+        registered.push(record)
+        return record
+      },
+    }
+    deps.settlementReplay = {
+      replayForCorrelationId: id => {
+        events.push("replay")
+        replayed.push(id)
+      },
+    }
+    const c = new Coordinator({
+      name: "k2c2-p2b-order",
+      minAgents: 1,
+      executor,
+      safetyGuard: new MockSafetyGuard(),
+      audit,
+      intentPublisher: publisher,
+    }, deps)
+    c.registerAgent(new MockAgent("agent_a"))
+    c.registerAgent(new MockAgent("agent_b"))
+
+    const result = await c.submitProposal(prop)
+
+    assertEqual("15a P2b lifecycle order", events.join(" -> "), "dispatch -> registerPending -> audit -> save -> replay")
+    assertEqual("15b pending registration count", registered.length, 1)
+    assert("15c pending identity and canonical fields preserved",
+      registered[0]?.correlationId === correlationId && registered[0]?.status === "dispatched" && registered[0]?.source === "coordinator")
+    assert("15d replay uses the saved intent correlation", replayed.length === 1 && replayed[0] === correlationId)
+    assertEqual("15e provisional result remains a decision", result.kind, "decision")
+  }
+
+  // ── 16. Success path still reaches execute ──
   {
     const audit = new Audit(`audit-ok-${Date.now()}`, 500)
     const exe = new MockExecutor()

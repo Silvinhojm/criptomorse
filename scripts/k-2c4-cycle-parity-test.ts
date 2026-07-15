@@ -38,6 +38,8 @@ function decisionDependencies(): CoordinatorDecisionDependencies {
   return {
     reputation: { getScore: () => 0 },
     knowledge: { query: async () => report },
+    settlementRegistry: { registerPending: record => record },
+    settlementReplay: { replayForCorrelationId: () => {} },
   }
 }
 

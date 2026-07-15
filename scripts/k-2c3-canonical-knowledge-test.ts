@@ -63,6 +63,8 @@ function decisionDependencies(): CoordinatorDecisionDependencies {
         return knowledge(false, 0, [])
       },
     },
+    settlementRegistry: { registerPending: record => record },
+    settlementReplay: { replayForCorrelationId: () => {} },
   }
 }
 

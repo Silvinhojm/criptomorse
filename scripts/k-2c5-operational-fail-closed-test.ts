@@ -39,6 +39,8 @@ function decisionDependencies(): CoordinatorDecisionDependencies {
   return {
     reputation: { getScore: () => 0 },
     knowledge: { query: async () => report },
+    settlementRegistry: { registerPending: record => record },
+    settlementReplay: { replayForCorrelationId: () => {} },
   }
 }
 
@@ -303,6 +305,11 @@ async function main(): Promise<void> {
   }
 
   const source = readFileSync(resolve(process.cwd(), "lib/agent-framework/coordinator.ts"), "utf8")
+  assert("P2b Coordinator has no singletons import", !source.includes('from "./singletons"') && !source.includes("from './singletons'"))
+  assert("P2b Coordinator has no framework settlement registry reference", !source.includes("frameworkSettlementRegistry"))
+  assert("P2b Coordinator has no global replay reference", !source.includes("replaySettlementForCorrelationId"))
+  assert("P2b Coordinator validates settlement registry eagerly", source.includes("deps.settlementRegistry.registerPending"))
+  assert("P2b Coordinator validates settlement replay eagerly", source.includes("deps.settlementReplay.replayForCorrelationId"))
   const executeMatches = [...source.matchAll(/const finalOperationalReadiness = this\._getOperationalReadiness\([^\n]+\)[\s\S]*?const executionPromise = this\.executor_\.execute\(proposal\)/g)]
   equal("AI both execute sites have final readiness", executeMatches.length, 2)
   for (const [index, match] of executeMatches.entries()) {
