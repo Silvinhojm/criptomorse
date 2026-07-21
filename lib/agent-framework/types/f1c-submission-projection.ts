@@ -319,7 +319,7 @@ export interface AuthoritativeSubmissionChildSetEntry {
   readonly evidenceAndOutcomeDigest: SubmissionEvidenceAndOutcomeDigest
 }
 
-export interface ChildRevisionAndDigestEntry extends AuthoritativeSubmissionChildSetEntry {}
+export type ChildRevisionAndDigestEntry = AuthoritativeSubmissionChildSetEntry;
 
 export interface CompleteSubmissionChildSnapshotProof {
   readonly completeSnapshotProofId: CompleteSubmissionChildSnapshotProofId
