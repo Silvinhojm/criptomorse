@@ -1,51 +1,19 @@
-import { ethers } from "ethers";
-import { NonceManager } from "@/lib/nonce-manager";
-
-// Manual/admin signing utility only. Autonomous ArcFlow runtime decisions
-// must not call this route directly; they must enter through Coordinator.
-const NETWORK_RPCS = {
-  137: "https://polygon.publicnode.com",
-  8453: "https://mainnet.base.org",
-  42161: "https://arb1.arbitrum.io/rpc",
-  1: "https://eth.llamarpc.com",
-  5042002: "https://rpc.testnet.arc.network",
-};
-
-function getSigner(chainId) {
-  const raw = process.env.PRIVATE_KEY;
-  if (!raw || raw.length < 64) return null;
-  const pk = raw.startsWith("0x") ? raw : "0x" + raw;
-  const rpc = NETWORK_RPCS[chainId];
-  if (!rpc) return null;
-  return new ethers.Wallet(pk, new ethers.JsonRpcProvider(rpc));
+// BLOQUEIO TEMPORÁRIO (RI-BANK-2) — esta rota assinava e enviava QUALQUER
+// transação arbitrária fornecida pelo chamador com a PRIVATE_KEY do
+// servidor, sem nenhum controle de acesso. Bloqueada incondicionalmente
+// até uma solução de autenticação real ser desenhada. Não remover sem
+// decisão explícita equivalente.
+function blocked() {
+  return Response.json(
+    { error: "Rota desativada temporariamente por bloqueio de segurança." },
+    { status: 403 },
+  );
 }
 
-export async function POST(req) {
-  try {
-    const { tx, chainId } = await req.json();
-    if (!tx || !chainId) return Response.json({ error: "tx e chainId obrigatorios" }, { status: 400 });
-
-    const signer = getSigner(chainId);
-    if (!signer) return Response.json({ error: "PRIVATE_KEY nao configurada ou rede sem suporte" }, { status: 503 });
-
-    const address = await signer.getAddress();
-    const nonce = await NonceManager.getInstance().getNonce(signer.provider, chainId, address).catch(() => undefined);
-
-    const signedTx = await signer.sendTransaction({
-      to: tx.to,
-      data: tx.data,
-      value: BigInt(tx.value ?? "0"),
-      gasLimit: tx.gasLimit ? BigInt(tx.gasLimit) : undefined,
-      nonce,
-    });
-
-    return Response.json({ hash: signedTx.hash });
-  } catch (err) {
-    return Response.json({ error: err.message || "Erro ao assinar" }, { status: 500 });
-  }
-}
-
-export async function GET() {
-  const hasKey = !!(process.env.PRIVATE_KEY && process.env.PRIVATE_KEY.length >= 64);
-  return Response.json({ autoSignAvailable: hasKey });
-}
+export const GET = blocked;
+export const POST = blocked;
+export const PUT = blocked;
+export const PATCH = blocked;
+export const DELETE = blocked;
+export const HEAD = blocked;
+export const OPTIONS = blocked;
