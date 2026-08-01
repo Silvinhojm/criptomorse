@@ -1,0 +1,152 @@
+RI-BANK-13 — MANDATO: TESTE FALTANTE (RI-BANK-12) + COORDENAÇÃO
+ATÔMICA ENTRE INSTÂNCIAS (risk-boxes.ts E trading-budget.ts)
+
+```
+DOCUMENT_KIND=MANDATE
+STATUS=RASCUNHO — AGUARDANDO CONFIRMAÇÃO DO SILVIO ANTES DE ENVIAR
+CODE_CHANGE_AUTHORIZED=SIM (ver escopo por trilha)
+EXECUTION_AUTHORIZED=NO (nenhum trade real; testes só memória/mock)
+DESTINATÁRIO=CODEX / GPT CODE (salvar tudo na pasta
+  "codex-executor" no repositório, conforme convenção definida pelo
+  Silvio)
+DATE=2026-07-31
+DEPENDE_DE=RI-BANK-12-STAGE-2-EXECUTION-REPORT-CODEX.md
+BLOQUEIA=RI-BANK-10 Estágio 4+ (cron real) e D3 (números de orçamento)
+```
+
+======================================================================
+0. CONTEXTO — POR QUE ESTE MANDATO EXISTE
+======================================================================
+
+O RI-BANK-12 foi revisado e a maior parte confirmada por leitura direta
+do código (não só do relatório): os gates estão realmente no caminho de
+execução, a propagação de `riskBox` está correta, e as correções do
+RI-BANK-11 estão persistidas. Duas coisas ficaram pendentes:
+
+1. O arquivo de teste
+   (`lib/security/ri-bank-12-risk-boxes-verification.test.ts`) que
+   prova o resultado 30/30→0/30 do A4b e o isolamento de Redis (D5)
+   não foi incluído no pacote enviado — precisa ser anexado no próximo
+   relatório pra revisão real, não só descrito.
+
+2. O próprio relatório do RI-BANK-12 já sinalizou (seção "Limitação
+   residual explícita"): a fila de serialização resolve concorrência
+   DENTRO de um processo, mas a persistência no Redis ainda é um
+   snapshot do objeto inteiro — sem CAS/lock entre instâncias. Isso
+   importa especificamente para este projeto porque o objetivo final
+   (RI-BANK-10) é um cron rodando em ambiente serverless (Vercel), onde
+   múltiplas invocações paralelas são processos SEPARADOS — a fila
+   local de um processo não protege contra duas instâncias lendo e
+   escrevendo o mesmo JSON do Redis ao mesmo tempo.
+
+======================================================================
+1. ACHADO ADICIONAL DESTE MANDATO (a confirmar/investigar) — o mesmo
+problema provavelmente também existe em trading-budget.ts
+======================================================================
+
+`lib/circuit-breaker.ts` já resolveu esse tipo de problema para os
+próprios campos (totalProfit/totalLoss/consecutiveLosses) usando
+incrementos atômicos do Redis (`HINCRBY`/`HINCRBYFLOAT` via
+`cbCounterOp`, conforme o próprio relatório do RI-BANK-11 registrou).
+
+Só que `lib/trading-budget.ts` (`persist()`, função `hset` que grava
+`spentToday` como string calculada em memória) e `lib/risk-boxes.ts`
+(`persist()`, `JSON.stringify(state)` do objeto inteiro) **não** usam
+esse padrão — ambos leem o estado inteiro, calculam em memória, e
+gravam o objeto inteiro de volta. Isso é exatamente a mesma classe de
+corrida que o circuit breaker já resolveu para si mesmo, só que
+reaberta em dois módulos mais novos.
+
+PRIMEIRA TAREFA DESTE MANDATO: confirmar, por leitura de código, se
+essa suspeita está certa — `trading-budget.ts` tem hoje o mesmo risco
+de corrida entre instâncias que `risk-boxes.ts` tem? Documentar com
+certeza antes de decidir o que corrigir.
+
+======================================================================
+2. ESTÁGIOS
+======================================================================
+
+ESTÁGIO 1 — Confirmar o escopo real do problema:
+  - Ler como `cbCounterOp`/`HINCRBY` funciona hoje em
+    `circuit-breaker.ts` — qual é o padrão que já funciona e já está
+    em produção.
+  - Confirmar se `trading-budget.ts` tem o mesmo problema (seção 1
+    acima).
+  - Para `risk-boxes.ts`: identificar quais campos são "cumulativos/
+    delta" (podem virar incremento atômico, ex:
+    `perdaAcumulada`, `saldo`, `spentToday`) e quais são "de
+    configuração" (não são incrementos, ex: `riscoPercentual`,
+    `investir`, `valorPrincipal` — esses mudam por substituição
+    completa, não por soma).
+
+ESTÁGIO 2 — Propor e implementar a correção, preferindo reaproveitar o
+  padrão já validado em produção (`cbCounterOp`) a inventar um
+  mecanismo novo:
+  - Campos cumulativos/delta → incrementos atômicos (`HINCRBY`/
+    `HINCRBYFLOAT`), mesmo padrão do circuit breaker.
+  - Campos de configuração → não precisam de incremento atômico, mas
+    precisam de proteção contra "leitura-modificação-escrita"
+    concorrente entre instâncias (ex: `WATCH`/`MULTI` do Redis,
+    otimistic locking com o campo `version` que `risk-boxes.ts` já
+    tem, ou equivalente). Documentar qual mecanismo foi escolhido e
+    por quê.
+  - Aplicar a mesma correção em `trading-budget.ts` SE o Estágio 1
+    confirmar que ele tem o mesmo problema.
+
+ESTÁGIO 3 — Testes obrigatórios:
+  - Reproduzir a corrida ENTRE INSTÂNCIAS antes da correção — não a
+    corrida dentro do mesmo processo (essa já está coberta pela fila,
+    RI-BANK-12). O teste precisa simular duas "instâncias" separadas
+    (dois processos, ou pelo menos dois clients Redis independentes
+    sem compartilhar a fila em memória) operando ao mesmo tempo sobre
+    a mesma chave.
+  - Mesmo padrão antes/depois já usado em toda a trilha: reproduzir a
+    perda de atualização primeiro (prova que o problema existe), depois
+    provar que a correção elimina isso.
+  - Testes rodam contra um Redis real de teste (não mock) já que o
+    problema é especificamente sobre coordenação real entre clientes —
+    mas usando uma chave/namespace isolado de teste, nunca a chave de
+    produção, e nunca com dinheiro/trade real envolvido. Se não houver
+    Redis de teste disponível no ambiente, documentar isso como
+    limitação e propor a melhor alternativa (ex: simular com dois
+    clients apontando pro mesmo Redis de desenvolvimento, nunca
+    produção).
+
+======================================================================
+3. ANEXAR O TESTE FALTANTE
+======================================================================
+
+Junto com o relatório deste mandato, incluir o conteúdo completo de
+`lib/security/ri-bank-12-risk-boxes-verification.test.ts` (o arquivo
+que faltou no pacote anterior) — preciso revisar essa prova
+diretamente, não só a descrição dela.
+
+======================================================================
+4. O QUE ESTE MANDATO NÃO AUTORIZA
+======================================================================
+
+- Nenhuma conexão do cron a trading real.
+- Nenhum trade real ou de teste em nenhum momento.
+- Nenhum valor real de `dailyLimitUsd` (isso continua D3, RI-BANK-10).
+- Nenhuma mudança na lógica de negócio das caixas de risco (isso é só
+  sobre a camada de persistência/concorrência, não sobre as regras já
+  fechadas no RI-BANK-12).
+
+======================================================================
+5. ONDE SALVAR
+======================================================================
+
+Pasta `codex-executor` no repositório (convenção definida pelo
+Silvio) — relatório final e qualquer arquivo de apoio.
+
+======================================================================
+6. FORMATO DO RELATÓRIO ESPERADO
+======================================================================
+
+Mesmo padrão de sempre. Destaque no topo: (a) confirmação se
+`trading-budget.ts` tinha ou não o mesmo problema, (b) prova
+antes/depois da corrida entre instâncias, (c) qual mecanismo de
+coordenação foi escolhido e por quê. Anexar o teste do RI-BANK-12 que
+faltou.
+
+Fim do mandato do RI-BANK-13.

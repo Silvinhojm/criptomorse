@@ -8,6 +8,8 @@ import { NETWORKS, realSwap, isStable, PRICE_DIVIDERS, type NetworkKey, type Tok
 import { pregão } from "./pregão";
 import { gasPriceOracle } from "./gas-price-oracle";
 import { COIN_IDS } from "./coin-ids";
+import { savePositionsState, loadPositionsState } from "./persistence";
+import type { RiskBoxId } from "./risk-boxes";
 
 function isArcLab(): boolean {
   return realSwap.getNetworkKey() === "arc"
@@ -31,11 +33,11 @@ export interface OpenPosition {
   closeTimestamp?: number;
   profitUsd?: number;
   profitPercent?: number;
+  riskBox?: RiskBoxId;
 }
 
 const MAX_POSITION_AGE_MS = 12 * 60 * 60 * 1000;
 const MAX_CLOSED_POSITIONS = 200;
-const POSITIONS_STORAGE_KEY = "arcflow_open_positions";
 const MAX_LOSS_PERCENT = -15;
 const STALE_FORCE_CLOSE_MS = 5 * 60 * 1000;
 const STALE_FORCE_CLOSE_ARC = 30 * 1000;
@@ -73,7 +75,19 @@ class PositionManager {
   private onStaircaseCloseCallbacks: Array<(position: OpenPosition) => void> = [];
 
   constructor() {
-    if (typeof window !== 'undefined') this.loadPositions();
+    // RI-BANK-5 Stage 1 found loadPositions()/savePositions() calling raw
+    // localStorage.setItem/getItem with NO `typeof window` guard at all —
+    // server-side that threw a ReferenceError, silently swallowed by a
+    // generic catch. Both are now routed through lib/persistence.ts's
+    // savePositionsState/loadPositionsState, which have the guard (and a
+    // real server-side backend: Redis, or the .data/ fs fallback when
+    // Upstash isn't configured). The constructor still only auto-hydrates
+    // client-side on construction (unchanged behavior) — server-side
+    // hydration-on-cold-start isn't wired to any call site yet (same open
+    // item flagged in RI-BANK-5 Stage 2A).
+    if (typeof window !== 'undefined') {
+      this.loadPositions().catch((e) => console.error("[position-manager] initial loadPositions failed:", e))
+    }
   }
 
   onClose(cb: (position: OpenPosition) => void) {
@@ -93,7 +107,8 @@ class PositionManager {
     paidToken: TokenSymbol,
     amountBought: number,
     amountPaid: number,
-    entryPrice: number
+    entryPrice: number,
+    riskBox?: RiskBoxId
   ): OpenPosition | null {
     // Só abrir posição na rede ativa — evitar posições fantasmas em redes inativas
     const redeAtiva = realSwap.getNetworkKey()
@@ -115,9 +130,10 @@ class PositionManager {
       currentPrice: entryPrice,
       currentProfitPercent: 0,
       status: "open",
+      riskBox,
     };
     this.positions.set(id, pos);
-    this.savePositions();
+    this.savePositions().catch((e) => console.error("[position-manager] savePositions (openPosition) failed:", e));
     console.log(`Posicao ABERTA: ${boughtToken} @ $${entryPrice.toFixed(4)} (${id})`);
     return pos;
   }
@@ -139,7 +155,7 @@ class PositionManager {
       pos.profitUsd = 0;
     }
     for (const cb of this.onCloseCallbacks) cb(pos);
-    this.savePositions();
+    this.savePositions().catch((e) => console.error("[position-manager] savePositions (closePosition) failed:", e));
     console.log(`Posicao FECHADA: ${pos.boughtToken} lucro ${pos.profitPercent.toFixed(2)}% ($${pos.profitUsd.toFixed(4)})`);
     return pos;
   }
@@ -324,12 +340,25 @@ class PositionManager {
 
   // ─── Persistência ───
 
-  public savePositions(): void {
-    try {
-      this._purgeClosed()
-      const open = this.getOpenPositions();
-      localStorage.setItem(POSITIONS_STORAGE_KEY, JSON.stringify(open));
-    } catch { /* localStorage indisponível (SSR, etc.) */ }
+  // Async now (real I/O — Redis/fs server-side, localStorage+authenticated
+  // sync POST client-side). The one external caller
+  // (lib/agentes-do-pregão.ts) awaits this; internal callers below
+  // (openPosition/closePosition/cleanupInactiveNetworks) stay synchronous
+  // methods and use fire-and-forget with a logged .catch instead of
+  // cascading `async` through their own public signatures — those are hot
+  // trading primitives called from many places, out of this migration's
+  // scope (RI-BANK-5 Stage 2A/2B only covers the persistence layer
+  // itself). Never silent either way: every failure is logged inside
+  // savePositionsState/loadPositionsState.
+  public async savePositions(): Promise<boolean> {
+    this._purgeClosed()
+    const open: Record<string, OpenPosition> = {}
+    const deleteIds: string[] = []
+    for (const [id, pos] of this.positions) {
+      if (pos.status === "open") open[id] = pos
+      else deleteIds.push(id)
+    }
+    return savePositionsState(open, deleteIds)
   }
 
   // Remove closed positions excedentes (mantém só as MAX_CLOSED_POSITIONS mais recentes)
@@ -343,20 +372,17 @@ class PositionManager {
     }
   }
 
-  private loadPositions(): void {
-    try {
-      const raw = localStorage.getItem(POSITIONS_STORAGE_KEY);
-      if (!raw) return;
-      const saved: OpenPosition[] = JSON.parse(raw);
-      for (const pos of saved) {
-        if (pos.status === "open") {
-          this.positions.set(pos.id, pos);
-        }
+  private async loadPositions(): Promise<void> {
+    const saved = await loadPositionsState()
+    const entries = Object.values(saved) as OpenPosition[]
+    for (const pos of entries) {
+      if (pos && pos.status === "open") {
+        this.positions.set(pos.id, pos);
       }
-      if (saved.length > 0) {
-        console.log(`🧠 Posições restauradas do localStorage: ${saved.filter(p => p.status === "open").length} abertas`);
-      }
-    } catch { /* primeiro uso ou dados corrompidos */ }
+    }
+    if (entries.length > 0) {
+      console.log(`🧠 Posições restauradas: ${entries.filter(p => p?.status === "open").length} abertas`);
+    }
   }
 
   // Remove posições fantasmas de redes onde o sistema não opera mais
@@ -371,7 +397,7 @@ class PositionManager {
       }
     }
     if (cleaned > 0) {
-      this.savePositions()
+      this.savePositions().catch((e) => console.error("[position-manager] savePositions (cleanupInactiveNetworks) failed:", e))
       console.log(`🧹 Limpeza: ${cleaned} posições de redes inativas removidas`)
     }
     return cleaned

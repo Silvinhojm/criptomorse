@@ -1,0 +1,22 @@
+RI-BANK-15 — MANDATO: RI-BANK-10 ESTÁGIO 4 — INVESTIGAÇÃO PARA
+CONECTAR O CRON A TRADING REAL (MODELO HÍBRIDO)
+
+DOCUMENT_KIND=MANDATE
+STATUS=RASCUNHO — SÓ INVESTIGAÇÃO, NENHUMA IMPLEMENTAÇÃO AINDA
+CODE_CHANGE_AUTHORIZED=NÃO (este mandato é só leitura/mapeamento)
+EXECUTION_AUTHORIZED=NÃO (nenhum trade real ou de teste)
+DESTINATÁRIO=CODEX / GPT CODE (salvar na pasta "codex-executor")
+DATE=2026-07-31
+DEPENDE_DE=RI-BANK-14-EXECUTION-REPORT-CODEX.md
+BLOQUEIA=qualquer implementação real de conexão do cron
+
+O mandato solicitou mapear, sem implementar:
+
+1. o estado atual do endpoint e workflow do cron;
+2. todos os caminhos de `pregãoEngine.start()` e a distinção manual/programática;
+3. a persistência Redis de rota manualmente usada e confirmação de mainnet;
+4. as três perguntas de desenho do modelo híbrido;
+5. auditoria persistente (D4) e kill switch específico (D5).
+
+Esta é uma cópia textual resumida e fiel para identificação do pacote. O texto integral original permanece no anexo recebido pelo Codex em:
+C:\Users\silvi\.codex\attachments\b0ddb84a-f570-4c06-a22f-9d3ad655a374\pasted-text.txt

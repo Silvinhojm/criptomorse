@@ -49,3 +49,5 @@ next-env.d.ts
 
 # temp research
 _temp_*/
+
+.env.test.local

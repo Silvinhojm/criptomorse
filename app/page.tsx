@@ -4,6 +4,7 @@ import { useSection } from "@/app/components/SectionContext"
 import { RealAutomatedTrader } from "./components/RealAutomatedTrader";
 import { PregãoDashboard } from "./components/PregãoDashboard";
 import { SalaDeAula } from "./components/SalaDeAula";
+import { PanicButton } from "./components/PanicButton";
 import { NETWORKS } from "@/lib/real-swap-executor";
 
 import { realSwap, type NetworkKey } from "@/lib/real-swap-executor";
@@ -824,6 +825,13 @@ export default function Home() {
   return (
     <DashboardShell account={account} networkName={currentNetwork.name} isTestnet={currentNetwork.isTestnet} currentNetworkKey={currentNetworkKey} onNetworkChange={handleNetworkKeyChange} onConnect={connect}>
       <Toaster position="top-center" />
+
+      {/* RI-BANK-7 — renderizado fora de qualquer SectionMatch, de propósito:
+          RI-BANK-6 confirmou que este é um controle que precisa estar sempre
+          visível, não só na seção "operator". Posicionamento definitivo fica
+          para o redesenho do RI-UX-1 — por ora, garante que apareça em
+          qualquer seção. */}
+      <PanicButton />
 
       <SectionMatch section="operator">
         {/* Tabs de Navegação */}

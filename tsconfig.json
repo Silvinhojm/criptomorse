@@ -37,6 +37,7 @@
   ],
   "exclude": [
     "node_modules",
-    "arc-wallet-subgraph"
+    "arc-wallet-subgraph",
+    "app-mobile"
   ]
 }

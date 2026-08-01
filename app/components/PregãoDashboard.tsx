@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react"
 import { applyCircleProxyFix } from "@/lib/circle-proxy-fix"
 applyCircleProxyFix()
 import { pregão, type OrdemExecucao, type CashBoxState } from "@/lib/pregão"
+import { pregãoEngine } from "@/lib/pregão-engine"
 import { escriturário } from "@/lib/escriturario"
 import { corretor } from "@/lib/corretor"
 // Display-only constant avoids static import of pregueiro.ts (HMR bug)
@@ -16,12 +17,11 @@ const PREGUEIROS_DISPLAY = [
 import { NETWORKS, realSwap } from "@/lib/real-swap-executor"
 import type { NetworkKey } from "@/lib/real-swap-executor"
 import { caixa } from "@/lib/caixa"
-import { resumeFromPanic, setTestnetMode } from "@/lib/circuit-breaker"
-import { AGENTES_NOMES, AGENTE_CORES, getPregãoAllowedBalance, setPregãoAllowedBalance, isPaperMode, setPaperMode } from "@/lib/agentes-do-pregão"
+import { resumeFromPanic } from "@/lib/circuit-breaker"
+import { AGENTES_NOMES, AGENTE_CORES, getPregãoAllowedBalance, setPregãoAllowedBalance } from "@/lib/agentes-do-pregão"
 import { positionManager } from "@/lib/position-manager"
 import { narrador } from "@/lib/narrator"
 import { modoGrao } from "@/lib/modo-grão"
-import { poolScannerExecutor } from "@/lib/pool-scanner-executor"
 import { escolaRobos, MIN_JOBS_PROVA, type RoboEscolar } from "@/lib/escola-robos"
 import { professor } from "@/lib/professor"
 import { volatilityTracker } from "@/lib/volatility-tracker"
@@ -62,9 +62,10 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
   })
 
   const logRef = useRef<HTMLDivElement>(null)
-  const cicloRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [cicloAtivo, setCicloAtivo] = useState(false)
   const [cicloIntervalo, setCicloIntervalo] = useState(10)
+  const [mostrarConfirmMainnet, setMostrarConfirmMainnet] = useState(false)
+  const [autoInicioPausadoMainnet, setAutoInicioPausadoMainnet] = useState(false)
   const [openPositions, setOpenPositions] = useState(0)
   const [openPositionsData, setOpenPositionsData] = useState<ReturnType<typeof positionManager.getOpenPositions>>([])
   const [recentTrades, setRecentTrades] = useState<ReturnType<typeof positionManager.getRecentTrades>>([])
@@ -107,15 +108,27 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
 
     const net = NETWORKS[rede as NetworkKey]
     const isArc = net?.name?.includes("Arc") && net?.isTestnet
+    const isTestnetRede = net?.isTestnet ?? true
 
     if (isArc) {
-      setCicloIntervalo(3)
+      pregãoEngine.setCicloIntervalo(3)
       addLog(`🧪 Arc Lab Mode: ciclo ultra-rápido a cada 3s, parâmetros agressivos ativos`)
     }
 
+    // [RI-BANK-8 Estágio 5, D3 Opção A+C] Mainnet nunca auto-inicia — exige
+    // sempre o clique manual + confirmação (D2), em todo carregamento de
+    // página, sem exceção. Apenas avisa visualmente que o auto-início
+    // "teria" acontecido, em vez de simplesmente não fazer nada visível.
+    if (!isTestnetRede) {
+      setAutoInicioPausadoMainnet(true)
+      return
+    }
+    setAutoInicioPausadoMainnet(false)
+
     const t = setTimeout(() => {
-      if (!cicloRef.current && !cicloAtivo) {
-        alternarCiclo()
+      pregãoEngine.setRede(rede)
+      if (!pregãoEngine.getState().ativo) {
+        pregãoEngine.start()
       }
     }, isArc ? 1000 : 3000)
 
@@ -126,6 +139,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     const unsubLog1 = pregão.onLog(addLog)
     const unsubLog2 = escriturário.onLog(addLog)
     const unsubLog3 = corretor.onLog(addLog)
+    const unsubLog4 = pregãoEngine.onLog(addLog)
 
     const unsubOrdem = pregão.onOrdem(async (ordem) => {
       setOrdens([...pregão.getTodasOrdens()])
@@ -158,6 +172,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       unsubLog1()
       unsubLog2()
       unsubLog3()
+      unsubLog4()
       unsubOrdem()
       unsubTrade()
       unsubCashBox()
@@ -187,6 +202,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
 
   useEffect(() => {
     redeRef.current = rede
+    pregãoEngine.setRede(rede)
     const netConf = NETWORKS[rede as NetworkKey]
     if (!netConf) return
 
@@ -299,72 +315,27 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     setCashBox(pregão.getCashBox())
   }, [])
 
-  const cicloVisRef = useRef<(() => void) | null>(null)
-
-  const alternarCiclo = async () => {
-    if (cicloAtivo) {
-      if (cicloRef.current) {
-        clearInterval(cicloRef.current)
-        cicloRef.current = null
-      }
-      if (cicloVisRef.current) {
-        cicloVisRef.current()
-        cicloVisRef.current = null
-      }
-      setCicloAtivo(false)
-      poolScannerExecutor.stop()
-      if (NETWORKS[redeRef.current as NetworkKey]?.isTestnet) {
-        import("@/lib/pregao-arc").then(m => m.parar()).catch(e => addLog(`⚠️ Erro ao parar pregao-arc: ${e instanceof Error ? e.message : e}`))
-      }
-      addLog("⏹️ Ciclo dos Pregueiros parado")
-      return
+  // [RI-BANK-8 Estágio 5, D2] Wrapper fino sobre pregãoEngine.toggle(): se o
+  // motor recusar iniciar por exigir confirmação de mainnet, revela o
+  // painel inline de confirmação em vez de tentar iniciar direto — mesmo
+  // padrão de fricção já usado por PanicButton.tsx (primeiro clique abre
+  // confirmação, segundo clique confirma).
+  const iniciarOuPararPregueiros = () => {
+    pregãoEngine.setRede(rede)
+    const result = pregãoEngine.toggle()
+    if (result.started === false && result.reason === "mainnet_confirmation_required") {
+      setMostrarConfirmMainnet(true)
     }
+  }
 
-    setCicloAtivo(true)
-    const net = NETWORKS[redeRef.current as NetworkKey]
-    const isTestnet = net?.isTestnet ?? true
-    const agenteRede = redeRef.current
-    pregão.setRedeAtiva(agenteRede)
-    resumeFromPanic()
-    setTestnetMode(isTestnet)
-    pregão.limparOrdensTravadas()
-    poolScannerExecutor.connect(pregão)
-    poolScannerExecutor.start()
+  const confirmarInicioMainnet = () => {
+    pregãoEngine.setRede(rede)
+    pregãoEngine.start({ confirmMainnet: true })
+    setMostrarConfirmMainnet(false)
+  }
 
-    if (isTestnet) {
-      const { iniciar } = await import("@/lib/pregao-arc")
-      iniciar()
-    }
-    addLog(`🔁 Ciclo dos Pregueiros iniciado na rede ${redeRef.current} (a cada ${cicloIntervalo}s)`)
-    addLog(`🔄 Circuit breaker resetado — modo ${isTestnet ? 'testnet' : 'mainnet'}`)
-    addLog(`🌐 Agentes: ${isTestnet ? 'single-network' : `single-network (${redeRef.current})`}`)
-
-    atualizarTudo()
-
-    const runCycle = async () => {
-      resumeFromPanic()
-      pregão.limparOrdensTravadas()
-      try {
-      const { executarCicloPregueiros } = await import("@/lib/pregueiro")
-      const { executarCicloAgentes } = await import("@/lib/agentes-do-pregão")
-      const { professor } = await import("@/lib/professor")
-      await executarCicloPregueiros(redeRef.current).catch(e => addLog(`❌ Pregoeiros: ${e?.message ?? e}`))
-      await executarCicloAgentes(agenteRede).catch(e => addLog(`❌ Agentes: ${e?.message ?? e}`))
-      if (!isTestnet) {
-        await professor.gerarPacotes().catch(e => addLog(`❌ Professor: ${e?.message ?? e}`))
-        await pregão.executarPacotes().catch(e => addLog(`❌ Pacote: ${e?.message ?? e}`))
-      }
-      if (isTestnet) {
-        const { executarCiclo: executarArc } = await import("@/lib/pregao-arc")
-        await executarArc()
-      }
-      } catch (e) {
-        addLog(`❌ Ciclo: ${e instanceof Error ? e.message : e}`)
-      }
-      atualizarTudo()
-    }
-
-    cicloRef.current = setInterval(runCycle, cicloIntervalo * 1000)
+  const cancelarInicioMainnet = () => {
+    setMostrarConfirmMainnet(false)
   }
 
   const fecharPosicao = async () => {
@@ -403,7 +374,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
   }
 
   const rodarUmCiclo = async () => {
-    resumeFromPanic()
+    await resumeFromPanic()
     pregão.limparOrdensTravadas()
     const netRede = NETWORKS[redeRef.current as NetworkKey]
     const isTestRede = netRede?.isTestnet ?? true
@@ -466,20 +437,23 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
     return () => clearInterval(timer)
   }, [addLog])
 
-  // ─── CLEANUP ─────────────────────────────────────────────────────────────────
+  // ─── Motor do Pregão (lib/pregão-engine.ts) ─────────────────────────────────
+  // [RI-BANK-8 Estágio 5] O ciclo em si (start/stop/loop) pertence só ao
+  // motor agora — não há mais nenhuma referência local para limpar no
+  // unmount deste componente, porque o motor não pertence ao seu ciclo de
+  // vida. Este efeito só espelha o estado do motor na UI, mesmo padrão já
+  // usado abaixo para modoGrao.onChange.
 
   useEffect(() => {
-    return () => {
-      if (cicloRef.current) {
-        clearInterval(cicloRef.current)
-        cicloRef.current = null
-      }
-      if (balanceTimerRef.current) {
-        clearInterval(balanceTimerRef.current)
-        balanceTimerRef.current = null
-      }
-    }
-  }, [])
+    const unsub = pregãoEngine.onChange(() => {
+      const state = pregãoEngine.getState()
+      setCicloAtivo(state.ativo)
+      setCicloIntervalo(state.cicloIntervaloSegundos)
+      if (state.ativo) setAutoInicioPausadoMainnet(false)
+      atualizarTudo()
+    })
+    return () => unsub()
+  }, [atualizarTudo])
 
   // ─── Modo Grão ────────────────────────────────────────────────────────────────
 
@@ -614,7 +588,7 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-        <button onClick={alternarCiclo} style={{
+        <button onClick={iniciarOuPararPregueiros} style={{
           flex: 1, padding: "8px 0", fontSize: 11, fontWeight: "bold",
           background: cicloAtivo ? "#ef4444" : COR_PREGÃO, color: "#fff",
           border: "none", borderRadius: 8, cursor: "pointer"
@@ -637,26 +611,56 @@ export function PregãoDashboard({ rede }: PregãoDashboardProps) {
             🔒 Fechar Posição ({openPositions})
           </button>
         )}
-        <button
-          onClick={() => {
-            const novo = !isPaperMode()
-            setPaperMode(novo)
-            addLog(`📝 Modo Papel ${novo ? "ativado" : "desativado"} — trades serão ${novo ? "simulados sem gas" : "executados na rede"}`)
-          }}
-          style={{
-            padding: "8px 12px", fontSize: 11, fontWeight: "bold",
-            background: isPaperMode() ? "#f59e0b" : "rgba(255,255,255,0.1)",
-            color: "#fff", border: isPaperMode() ? "1px solid #f59e0b" : "1px solid rgba(255,255,255,0.2)",
-            borderRadius: 8, cursor: "pointer"
-          }}>
-          📝 Papel
-        </button>
       </div>
+
+      {/* [RI-BANK-8 Estágio 5, D2] Painel de confirmação de mainnet — mesmo
+          padrão visual de fricção do PanicButton.tsx (primeiro clique abre,
+          segundo confirma), não um window.confirm() genérico. */}
+      {mostrarConfirmMainnet && (
+        <div style={{
+          background: "#111827", border: "1px solid rgba(239,68,68,0.4)",
+          borderRadius: 10, padding: 10, marginBottom: 12,
+        }}>
+          <div style={{ fontSize: 11, color: "#f87171", fontWeight: 700, marginBottom: 6 }}>
+            ⚠️ Confirmar início em mainnet
+          </div>
+          <div style={{ fontSize: 10, color: "#e5e7eb", marginBottom: 8 }}>
+            Você está prestes a iniciar operações REAIS em mainnet, com dinheiro real. Confirmar?
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={confirmarInicioMainnet} style={{
+              flex: 1, padding: "6px 0", fontSize: 11, fontWeight: 700,
+              background: "#ef4444", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer",
+            }}>
+              Confirmar
+            </button>
+            <button onClick={cancelarInicioMainnet} style={{
+              padding: "6px 10px", fontSize: 11, background: "rgba(255,255,255,0.1)",
+              color: "#e5e7eb", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 6, cursor: "pointer",
+            }}>
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* [RI-BANK-8 Estágio 5, D3 Opção C] Auto-início nunca acontece
+          silenciosamente em mainnet — este badge avisa que ele "teria"
+          disparado, para que o usuário perceba que precisa agir. */}
+      {autoInicioPausadoMainnet && !cicloAtivo && !mostrarConfirmMainnet && (
+        <div style={{
+          fontSize: 9, color: "#fbbf24", background: "rgba(251,191,36,0.1)",
+          border: "1px solid rgba(251,191,36,0.3)", borderRadius: 8,
+          padding: "4px 8px", marginBottom: 12,
+        }}>
+          ⏸️ Pregão pausado — confirme início em mainnet
+        </div>
+      )}
 
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 9, color: "#94a3b8", marginBottom: 4 }}>Intervalo entre ciclos: {cicloIntervalo}s</div>
         <input type="range" min={3} max={60} step={1} value={cicloIntervalo}
-          onChange={(e) => setCicloIntervalo(Number(e.target.value))}
+          onChange={(e) => pregãoEngine.setCicloIntervalo(Number(e.target.value))}
           style={{ width: "100%" }}
         />
       </div>

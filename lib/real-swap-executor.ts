@@ -409,7 +409,7 @@ class RealSwapExecutor {
       }
 
       await this.refreshAllBalances();
-      setTestnetMode(NETWORKS[networkKey].isTestnet);
+      await setTestnetMode(NETWORKS[networkKey].isTestnet);
       return true;
     } catch (err) {
       console.error("❌ Erro ao inicializar:", err);
@@ -431,7 +431,7 @@ class RealSwapExecutor {
       this.userAddress = userAddress;
       console.log(`✅ RealSwapExecutor (external signer): ${net.name} | ${this.userAddress}`);
       await this.refreshAllBalances();
-      setTestnetMode(NETWORKS[networkKey].isTestnet);
+      await setTestnetMode(NETWORKS[networkKey].isTestnet);
       return true;
     } catch (err) {
       console.error("❌ Erro ao inicializar:", err);
@@ -449,7 +449,7 @@ class RealSwapExecutor {
     }
     this.priceCache.clear();
     await this.refreshAllBalances();
-    setTestnetMode(net.isTestnet);
+    await setTestnetMode(net.isTestnet);
     console.log(`🔀 RealSwapExecutor switch: ${net.name}`);
   }
 
@@ -1245,17 +1245,17 @@ class RealSwapExecutor {
       const result = await bestRoute.execute();
 
       if (result.success) {
-        onRouteSuccess(bestRoute.label);
+        await onRouteSuccess(bestRoute.label);
       }
 
       if (!result.success) {
-        recordRouteError(bestRoute.label);
+        await recordRouteError(bestRoute.label);
         const fallbackRoute = routes.find(r => r.label !== bestRoute.label);
         if (fallbackRoute) {
           log(`⚠️ ${bestRoute.label} falhou, tentando ${fallbackRoute.label}...`);
           const fallbackResult = await fallbackRoute.execute();
           if (!fallbackResult.success) {
-            recordError("executeSwap", `Ambas rotas falharam: ${bestRoute.label} + ${fallbackRoute.label}`);
+            await recordError("executeSwap", `Ambas rotas falharam: ${bestRoute.label} + ${fallbackRoute.label}`);
             return this._fail(fromToken, toToken, amountUsd,
               `Ambas rotas falharam: ${bestRoute.label} + ${fallbackRoute.label}`, timestamp);
           }
@@ -1323,7 +1323,7 @@ class RealSwapExecutor {
         : err?.message?.includes("insufficient") ? "Saldo insuficiente para gas"
         : err?.message?.slice(0, 200) || "Erro desconhecido";
       log(`❌ ${msg}`);
-      recordError("executeSwap", msg);
+      await recordError("executeSwap", msg);
       return this._fail(fromToken, toToken, amountUsd, msg, timestamp);
     }
   }
@@ -1358,7 +1358,10 @@ class RealSwapExecutor {
       this.privateKey = key
       this.userAddress = (this.signer as ethers.Wallet).address
       console.log(`✅ Signer injetado via private key: ${this.userAddress.slice(0, 6)}...${this.userAddress.slice(-4)}`)
-      setTestnetMode(NETWORKS[this.networkKey].isTestnet)
+      // setSignerFromPrivateKey stays sync (3 call sites across UI
+      // components aren't async) — fire-and-forget setTestnetMode, but
+      // never swallow a failure silently.
+      setTestnetMode(NETWORKS[this.networkKey].isTestnet).catch((e) => console.error("[real-swap-executor] setTestnetMode persist failed:", e))
       return true
     } catch (err) {
       console.error("❌ setSignerFromPrivateKey:", err)

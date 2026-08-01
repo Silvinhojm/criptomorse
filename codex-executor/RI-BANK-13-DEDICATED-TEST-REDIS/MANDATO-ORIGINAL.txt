@@ -1,0 +1,115 @@
+RI-BANK-13 — MANDATO: ISOLAR CREDENCIAIS DE TESTE/DEV DO REDIS
+(variáveis dedicadas, nunca reaproveitar KV_REST_API_URL/TOKEN)
+
+```
+DOCUMENT_KIND=MANDATE
+STATUS=RASCUNHO — AGUARDANDO O SILVIO CRIAR O BANCO NO UPSTASH ANTES
+  DE ENVIAR (ver seção 1, passos manuais do Silvio)
+CODE_CHANGE_AUTHORIZED=SIM (só o arquivo de teste + um helper de leitura
+  de env, nada de produção)
+EXECUTION_AUTHORIZED=SIM, mas só depois que o Silvio confirmar que as
+  credenciais novas estão configuradas e apontam pro banco de teste
+  dedicado (ver seção 2)
+DESTINATÁRIO=CODEX / GPT CODE (salvar na pasta "codex-executor")
+DATE=2026-07-31
+DEPENDE_DE=RI-BANK-13-REDIS-EXECUTION-REPORT-CODEX.md
+```
+
+======================================================================
+0. POR QUE ESTE MANDATO EXISTE
+======================================================================
+
+A tentativa anterior de rodar `ri-bank-13-cross-instance-redis.test.ts`
+foi corretamente recusada: as credenciais `KV_REST_API_URL`/
+`KV_REST_API_TOKEN` disponíveis apontam para o mesmo banco físico
+Upstash usado por produção (`ace-labrador-88457.upstash.io`), só
+separado por ambiente lógico (`VERCEL_ENV`) — não por infraestrutura
+separada. Um namespace de chave isolado no teste não elimina o risco
+de erro humano ou de bug acidentalmente tocar dados reais.
+
+Solução: um banco Upstash FISICAMENTE separado, com nome de variável
+de ambiente DIFERENTE — não uma versão "trocada" de
+`KV_REST_API_URL`/`TOKEN`, mas um par novo, dedicado só a teste. Isso
+não depende de ninguém lembrar de checar nada — a proteção está no
+próprio nome da variável.
+
+======================================================================
+1. PASSOS MANUAIS DO SILVIO (fora do escopo da Claude Code/Codex —
+fazer ANTES de enviar este mandato)
+======================================================================
+
+1. No painel do Upstash, criar um banco Redis novo, nomeado de forma
+   inconfundível (ex: `arcflow-test-dev`) — separado do banco de
+   produção já existente.
+2. Copiar a URL REST e o token desse banco novo (o Upstash mostra isso
+   na tela de criação/detalhes do banco).
+3. Guardar essas duas credenciais em um arquivo separado, nunca
+   commitado (ex: `.env.test.local`, seguindo a mesma disciplina já
+   usada pro `.env.local` de produção — adicionar ao `.gitignore` se
+   ainda não estiver coberto por um padrão existente).
+4. Definir os nomes das variáveis como:
+   - `ARCFLOW_TEST_REDIS_URL`
+   - `ARCFLOW_TEST_REDIS_TOKEN`
+5. Confirmar que esse banco novo está vazio/dedicado — não é um banco
+   que já tem outro uso.
+
+Só envie este mandato pro Codex/Claude Code depois de completar os 5
+passos acima.
+
+======================================================================
+2. O QUE O CODEX/CLAUDE CODE DEVE FAZER
+======================================================================
+
+D1 — Criar um helper explícito de leitura das credenciais de teste,
+  separado de `lib/kv.ts` (que continua servindo só produção/preview/
+  dev normais via `KV_REST_API_URL`/`TOKEN`). Sugestão de nome:
+  `lib/security/test-redis-client.ts`, com uma função que:
+  - lê `ARCFLOW_TEST_REDIS_URL`/`ARCFLOW_TEST_REDIS_TOKEN`;
+  - lança erro claro se qualquer uma estiver ausente (nunca cair para
+    as variáveis de produção como fallback silencioso);
+  - nunca importa nem referencia `KV_REST_API_URL`/`TOKEN` neste
+    arquivo — a separação precisa ser total, não só de nome de
+    variável.
+
+D2 — Atualizar `lib/security/ri-bank-13-cross-instance-redis.test.ts`
+  para usar esse helper novo em vez de ler `KV_REST_API_URL`/`TOKEN`
+  diretamente. Manter todos os guards já existentes (namespace efêmero,
+  checagem de ambiente, limpeza no `finally`) — só trocar a fonte das
+  credenciais.
+
+D3 — Antes de rodar, confirmar por leitura de código (não por
+  suposição) que:
+  - o helper novo realmente não importa nada de `lib/kv.ts`;
+  - o teste, depois de atualizado, não tem nenhum caminho que ainda
+    leia `KV_REST_API_URL`/`TOKEN` como fallback.
+
+D4 — Rodar o teste contra o banco de teste dedicado. Reportar a
+  evidência real (mesmo formato `[CROSS_INSTANCE AFTER] ...` já usado),
+  confirmar que as chaves de teste foram limpas ao final, e confirmar
+  explicitamente qual variável de ambiente foi usada (pra deixar
+  registrado que não foi a de produção).
+
+======================================================================
+3. O QUE ESTE MANDATO NÃO AUTORIZA
+======================================================================
+
+- Nenhuma mudança em `lib/kv.ts` ou em qualquer credencial de produção.
+- Nenhum trade real ou de teste.
+- Nenhuma conexão do cron a trading real.
+- Se as credenciais de teste (`ARCFLOW_TEST_REDIS_URL`/`TOKEN`) não
+  estiverem configuradas quando este mandato chegar: parar e reportar
+  isso, não usar nenhum fallback.
+
+======================================================================
+4. FORMATO DO RELATÓRIO ESPERADO
+======================================================================
+
+Mesmo padrão de sempre, mas pode ser curto — isso é uma mudança de
+infraestrutura de teste, não uma investigação. Confirmar: (a) o helper
+novo foi criado e não referencia `lib/kv.ts`, (b) o teste roda contra
+o banco dedicado com evidência real, (c) as chaves de teste foram
+removidas ao final.
+
+Salvar na pasta `codex-executor`.
+
+Fim do mandato.

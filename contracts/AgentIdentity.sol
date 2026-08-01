@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 /**
  * @title AgentIdentity
- * @notice ERC-8004 Identity Registry para agentes do CriptoMorse-Arc
+ * @notice ERC-8004 Identity Registry para os agentes do CriptoMorse, integrados à Arc Network
  * @dev Implementa ERC-721 + registry de identidade de agentes autônomos
  *      Compatível com a spec oficial: https://eips.ethereum.org/EIPS/eip-8004
  */

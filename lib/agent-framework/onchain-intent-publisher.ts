@@ -62,6 +62,17 @@ export class OnChainIntentPublisher {
       if (result) {
         this.pendingProofs.delete(id)
         resolved++
+        // RI-BANK-3 item 2: a successful retry previously vanished
+        // silently -- the report never got onChainHash/onChainTx/
+        // onChainStatus. Re-read the latest report (not the possibly
+        // stale `entry.report` snapshot) before persisting the proof.
+        const latest = this.getRecord(id)?.decisionReport ?? entry.report
+        this.setDecisionReport(id, {
+          ...latest,
+          onChainHash: result.hash,
+          onChainTx: result.txHash,
+          onChainStatus: "confirmed",
+        })
       } else {
         entry.retries++
         if (entry.retries >= this.MAX_RETRIES) {

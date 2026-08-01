@@ -1,0 +1,26 @@
+RI-BANK-17 — FOLHA DE VALORES PÚBLICOS/NÃO SECRETOS
+
+Preencha sem incluir senha, access key, token, MFA ou private key.
+
+AWS_ACCOUNT_ID=
+AWS_REGION=us-east-1
+
+VERCEL_TEAM_SLUG=
+VERCEL_PROJECT_NAME=
+
+CRON_KMS_KEY_ARN=
+AWS_ROLE_ARN=
+CRON_EXPECTED_SIGNER_ADDRESS=
+
+Conferência:
+[ ] KMS key: Asymmetric / SIGN_VERIFY / ECC_SECG_P256K1
+[ ] Material da chave gerado dentro do AWS KMS
+[ ] OIDC issuer mode: Team
+[ ] Trust: projeto exato + environment:production
+[ ] Role: somente kms:GetPublicKey e kms:Sign na chave exata
+[ ] Endereço novo, diferente das wallets anteriores
+[ ] Variáveis Vercel somente em Production
+[ ] Nenhum NEXT_PUBLIC_
+[ ] Nenhuma AWS access key
+[ ] NENHUM FUNDO TRANSFERIDO
+

@@ -1,0 +1,132 @@
+RI-BANK-14 — MANDATO: FECHAR D3 (NÚMEROS REAIS) + TETO POR TRADE
+NA CAIXA A + VERIFICAR FREIO GLOBAL COMO BACKSTOP DE EMERGÊNCIA
+
+```
+DOCUMENT_KIND=MANDATE
+STATUS=NÚMEROS CONFIRMADOS PELO SILVIO — PRONTO PARA EXECUÇÃO
+CODE_CHANGE_AUTHORIZED=SIM
+EXECUTION_AUTHORIZED=NO (nenhum trade real; testes memória/mock, mesmo
+  padrão de sempre — a prova cross-instance real já foi feita no
+  RI-BANK-13, não precisa repetir aqui)
+DESTINATÁRIO=CODEX / GPT CODE (salvar na pasta "codex-executor")
+DATE=2026-07-31
+DEPENDE_DE=RI-BANK-13-DEDICATED-REDIS-EXECUTION-REPORT-CODEX.md
+BLOQUEIA=RI-BANK-10 Estágio 4+ (conexão do cron a trading real)
+```
+
+======================================================================
+0. DECISÕES FECHADAS PELO SILVIO (D3, RI-BANK-10)
+======================================================================
+
+1. **Orçamento diário (`dailyLimitUsd`, `trading-budget.ts`): $50.**
+   Ponto de partida conservador, ancorado nos valores já testados ao
+   vivo (~$5-10/trade) — dá margem pra 5-10 trades/dia antes de exigir
+   reset manual. Ajustável depois com histórico real; não travar como
+   valor permanente no código, só como configuração inicial.
+
+2. **Teto de valor por trade individual: $15.** Aplicado às DUAS
+   caixas igualmente — cinto de segurança independente da lógica de
+   porcentagem, pra que nenhum trade sozinho (nem por bug de cálculo)
+   consuma mais que esse valor de uma vez.
+
+3. **Freio de drawdown global (`circuit-breaker.ts`,
+   `maxDrawdownPercent`) vira backstop de EMERGÊNCIA, não mais a
+   primeira linha de defesa: subir de 10% para 60% em mainnet.**
+   Justificativa: está acima do máximo que qualquer caixa pode aceitar
+   (Caixa B chega a 50%), então nunca compete com o risco que o
+   cliente escolheu conscientemente nas caixas — só dispara se algo
+   genuinamente anormal acontecer (bug, volatilidade extrema fora do
+   que a lógica das caixas already trata). Testnet pode manter a
+   proporção já usada (relaxado em relação a mainnet) ou espelhar o
+   mesmo valor — decidir no Estágio 1 abaixo com base no que já existe.
+
+======================================================================
+1. ESTÁGIO 1 — VERIFICAÇÃO OBRIGATÓRIA ANTES DE MUDAR QUALQUER NÚMERO
+======================================================================
+
+Confirmar, por leitura de código (não por suposição): `circuit-
+breaker.ts` (`recordTradeResult()`, o mecanismo global de drawdown)
+ainda está sendo chamado em paralelo às caixas de risco no caminho
+real de settlement em `corretor.ts`? Ou a introdução do RI-BANK-12
+acabou desconectando essa chamada sem ninguém perceber (mesma classe
+de achado que o RI-BANK-7 fez com o botão de pânico órfão)?
+
+Se NÃO estiver mais conectado: reportar isso como achado crítico
+separado antes de prosseguir — mudar o valor de um mecanismo
+desconectado não teria efeito nenhum, e isso precisaria virar outro
+mandato (reconectar, não só ajustar o número).
+
+Se AINDA estiver conectado: prosseguir com o Estágio 2.
+
+======================================================================
+2. ESTÁGIO 2 — IMPLEMENTAÇÃO
+======================================================================
+
+E1 — `lib/circuit-breaker.ts`: alterar `maxDrawdownPercent` inicial de
+  10 para 60 (mainnet). Documentar no comentário do código a mudança
+  de papel: de "primeira linha de defesa" para "backstop de
+  emergência, acima do máximo configurável pelas caixas de risco" —
+  mesmo padrão de comentário explicativo já usado em outras decisões
+  conscientes desta trilha (ex: o baseline fixo da Caixa B).
+
+E2 — `lib/trading-budget.ts`: chamar `setTradingBudgetDaily(50)` como
+  valor inicial — confirmar que isso é feito de um jeito que não
+  reseta acidentalmente se já houver um valor configurado (idempotente
+  ou com proteção, documentar a escolha).
+
+E3 — Adicionar teto de $15 por trade individual, aplicado a ambas as
+  caixas — este é código NOVO, porque hoje só a Caixa B tem checagem
+  de valor (`amountUsd > state.caixaB.saldo`); a Caixa A não tem
+  nenhuma checagem de valor por trade, só de estado `esgotada`. Local
+  sugerido: dentro de `authorizeRiskBoxTrade()` (`lib/risk-boxes.ts`),
+  como uma checagem adicional antes do retorno `{ allowed: true }` em
+  ambos os ramos (A e B) — motivo de bloqueio sugerido:
+  `"trade_amount_exceeds_per_trade_cap"`. Tornar o valor configurável
+  (não hardcoded), mesmo padrão de `dailyLimitUsd` (`null` por padrão
+  até configurado, ou já inicializado em 15 conforme decisão acima —
+  documentar qual escolha foi feita e por quê).
+
+======================================================================
+3. ESTÁGIO 3 — TESTES OBRIGATÓRIOS
+======================================================================
+
+- `[BEHAVIORAL]` trade de valor igual ao teto ($15): permitido.
+- `[BEHAVIORAL]` trade acima do teto ($15.01 ou mais): bloqueado com o
+  motivo correto, para AMBAS as caixas (A e B) — hoje só B tem esse
+  tipo de teste, A precisa ganhar cobertura equivalente.
+- `[BEHAVIORAL]` orçamento diário de $50: confirma que acumula
+  corretamente e bloqueia ao esgotar (reaproveitar teste já existente
+  do RI-BANK-11, só atualizando o valor esperado).
+- `[STRUCTURAL]` confirma que o teto por trade está de fato checado
+  ANTES do swap, no caminho real — mesmo cuidado de sempre, não basta
+  a função existir.
+- Se o Estágio 1 confirmar que o circuit breaker global ainda está
+  conectado: teste confirmando que 60% de drawdown dispara e que
+  valores abaixo disso (ex: 20%, dentro do que uma caixa poderia
+  aceitar) NÃO disparam o freio global — prova de que ele realmente
+  virou um backstop, não compete mais com a escolha do cliente.
+
+======================================================================
+4. O QUE ESTE MANDATO NÃO AUTORIZA
+======================================================================
+
+- Nenhuma conexão do cron a trading real (continua Estágio 4+ do
+  RI-BANK-10 — este mandato fecha o último pré-requisito de números,
+  mas não é a conexão em si).
+- Nenhum trade real ou de teste.
+- Nenhum texto ou interface de divulgação de risco pro cliente — isso
+  é uma frente separada (produto + revisão jurídica), não faz parte
+  deste mandato técnico.
+
+======================================================================
+5. FORMATO DO RELATÓRIO ESPERADO
+======================================================================
+
+Mesmo padrão de sempre. Destaque no topo: (a) resultado do Estágio 1
+(circuit breaker global ainda conectado ou não), (b) confirmação dos 3
+valores aplicados com citação de arquivo/linha, (c) resultado dos
+testes, especialmente o novo teste de teto por trade na Caixa A.
+
+Salvar na pasta `codex-executor`.
+
+Fim do mandato do RI-BANK-14.

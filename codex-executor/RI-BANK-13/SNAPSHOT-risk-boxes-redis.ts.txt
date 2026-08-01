@@ -1,0 +1,154 @@
+// RI-BANK-13 — coordenação atômica cross-instance das caixas de risco.
+// Lua é usado porque cada mutação precisa preservar invariantes acopladas
+// (saldo + perda + baseline + esgotada + version) em um único comando Redis.
+
+export interface RiskBoxesRedisClient {
+  eval<TArgs extends unknown[], TData = unknown>(script: string, keys: string[], args: TArgs): Promise<TData>
+  hgetall<TData extends Record<string, unknown>>(key: string): Promise<TData | null>
+}
+
+export type RiskBoxesRedisOperation =
+  | "configure"
+  | "set_a_principal"
+  | "set_a_risk"
+  | "set_b_invest"
+  | "set_b_risk"
+  | "set_mode"
+  | "resume_a"
+  | "loss_a"
+  | "loss_b"
+  | "profit_b"
+
+const ENSURE_HASH_SCRIPT = `
+local key = KEYS[1]
+local kind = redis.call('TYPE', key)
+if type(kind) == 'table' then kind = kind['ok'] end
+
+local function nullable(value)
+  if value == nil or value == cjson.null then return '' end
+  return tostring(value)
+end
+
+if kind == 'string' then
+  local raw = redis.call('GET', key)
+  local ok, old = pcall(cjson.decode, raw)
+  if not ok then return redis.error_reply('invalid legacy risk-boxes JSON') end
+  redis.call('DEL', key)
+  redis.call('HSET', key,
+    'version', tostring(old.version or 0),
+    'isTestnet', tostring(old.isTestnet == true),
+    'a.valorPrincipal', tostring(old.caixaA.valorPrincipal or 0),
+    'a.riscoPercentual', nullable(old.caixaA.riscoPercentual),
+    'a.perdaAcumulada', tostring(old.caixaA.perdaAcumulada or 0),
+    'a.esgotada', tostring(old.caixaA.esgotada == true),
+    'b.saldo', tostring(old.caixaB.saldo or 0),
+    'b.investir', nullable(old.caixaB.investir),
+    'b.riscoPercentual', nullable(old.caixaB.riscoPercentual),
+    'b.baseline', tostring(old.caixaB.baseline or 0),
+    'b.perdaAcumulada', tostring(old.caixaB.perdaAcumulada or 0))
+elseif kind == 'none' then
+  redis.call('HSET', key,
+    'version', '0', 'isTestnet', 'false',
+    'a.valorPrincipal', '0', 'a.riscoPercentual', '',
+    'a.perdaAcumulada', '0', 'a.esgotada', 'false',
+    'b.saldo', '0', 'b.investir', '', 'b.riscoPercentual', '',
+    'b.baseline', '0', 'b.perdaAcumulada', '0')
+elseif kind ~= 'hash' then
+  return redis.error_reply('unsupported risk-boxes key type: ' .. kind)
+end
+return 1
+`
+
+const MUTATE_HASH_SCRIPT = `
+local key = KEYS[1]
+local op = ARGV[1]
+local function getnum(field) return tonumber(redis.call('HGET', key, field) or '0') end
+local function bump() return redis.call('HINCRBY', key, 'version', 1) end
+
+if op == 'configure' then
+  redis.call('HSET', key,
+    'a.valorPrincipal', ARGV[2], 'a.riscoPercentual', ARGV[3],
+    'a.perdaAcumulada', '0', 'a.esgotada', 'false',
+    'b.saldo', ARGV[4], 'b.investir', ARGV[5],
+    'b.riscoPercentual', ARGV[6], 'b.baseline', ARGV[4],
+    'b.perdaAcumulada', '0')
+elseif op == 'set_a_principal' then
+  redis.call('HSET', key, 'a.valorPrincipal', ARGV[2])
+elseif op == 'set_a_risk' then
+  redis.call('HSET', key, 'a.riscoPercentual', ARGV[2])
+elseif op == 'set_b_invest' then
+  local riskRaw = redis.call('HGET', key, 'b.riscoPercentual')
+  if ARGV[2] == 'true' and (riskRaw == false or riskRaw == '') then
+    return redis.error_reply('Caixa B com investir=true exige riscoPercentual configurado')
+  end
+  local saldo = redis.call('HGET', key, 'b.saldo') or '0'
+  redis.call('HSET', key, 'b.investir', ARGV[2], 'b.baseline', saldo, 'b.perdaAcumulada', '0')
+  if ARGV[2] == 'false' then redis.call('HSET', key, 'b.riscoPercentual', '') end
+elseif op == 'set_b_risk' then
+  local saldo = redis.call('HGET', key, 'b.saldo') or '0'
+  redis.call('HSET', key, 'b.riscoPercentual', ARGV[2], 'b.baseline', saldo, 'b.perdaAcumulada', '0')
+elseif op == 'set_mode' then
+  local current = redis.call('HGET', key, 'isTestnet') or 'false'
+  if current ~= ARGV[2] then
+    local saldo = redis.call('HGET', key, 'b.saldo') or '0'
+    redis.call('HSET', key, 'isTestnet', ARGV[2],
+      'a.perdaAcumulada', '0', 'a.esgotada', 'false',
+      'b.perdaAcumulada', '0', 'b.baseline', saldo)
+  end
+elseif op == 'resume_a' then
+  redis.call('HSET', key, 'a.perdaAcumulada', '0', 'a.esgotada', 'false')
+elseif op == 'loss_a' then
+  local riskRaw = redis.call('HGET', key, 'a.riscoPercentual')
+  if riskRaw == false or riskRaw == '' then return redis.error_reply('Caixa A nao configurada') end
+  local loss = redis.call('HINCRBYFLOAT', key, 'a.perdaAcumulada', ARGV[2])
+  local principal = getnum('a.valorPrincipal')
+  if principal > 0 and (tonumber(loss) / principal) * 100 >= tonumber(riskRaw) then
+    redis.call('HSET', key, 'a.esgotada', 'true')
+  end
+elseif op == 'loss_b' then
+  local invest = redis.call('HGET', key, 'b.investir')
+  local riskRaw = redis.call('HGET', key, 'b.riscoPercentual')
+  if invest ~= 'true' or riskRaw == false or riskRaw == '' then
+    return redis.error_reply('Caixa B desabilitada ou nao configurada')
+  end
+  local loss = redis.call('HINCRBYFLOAT', key, 'b.perdaAcumulada', ARGV[2])
+  local saldo = math.max(0, getnum('b.saldo') - tonumber(ARGV[2]))
+  redis.call('HSET', key, 'b.saldo', tostring(saldo))
+  local baseline = getnum('b.baseline')
+  if baseline > 0 and (tonumber(loss) / baseline) * 100 >= tonumber(riskRaw) then
+    redis.call('HSET', key, 'b.saldo', '0', 'b.baseline', '0', 'b.perdaAcumulada', '0')
+  end
+elseif op == 'profit_b' then
+  local wasZero = getnum('b.saldo') == 0
+  local saldo = redis.call('HINCRBYFLOAT', key, 'b.saldo', ARGV[2])
+  if wasZero and tonumber(ARGV[2]) > 0 then
+    redis.call('HSET', key, 'b.baseline', tostring(saldo), 'b.perdaAcumulada', '0')
+  end
+else
+  return redis.error_reply('unknown risk-boxes operation: ' .. op)
+end
+
+return bump()
+`
+
+export async function ensureRiskBoxesHash(client: RiskBoxesRedisClient, key: string): Promise<void> {
+  await client.eval(ENSURE_HASH_SCRIPT, [key], [])
+}
+
+export async function mutateRiskBoxesHash(
+  client: RiskBoxesRedisClient,
+  key: string,
+  operation: RiskBoxesRedisOperation,
+  args: Array<string | number | boolean> = [],
+): Promise<number> {
+  await ensureRiskBoxesHash(client, key)
+  return Number(await client.eval(MUTATE_HASH_SCRIPT, [key], [operation, ...args.map(String)]))
+}
+
+export async function readRiskBoxesHash(
+  client: RiskBoxesRedisClient,
+  key: string,
+): Promise<Record<string, unknown>> {
+  await ensureRiskBoxesHash(client, key)
+  return (await client.hgetall<Record<string, unknown>>(key)) ?? {}
+}

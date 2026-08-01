@@ -14,6 +14,7 @@ import { capitalController } from "./capital-controller"
 import { positionManager } from "./position-manager"
 import { arqueiro } from "./arqueiro"
 import { batchExecutorService, type BatchExecOrder } from "./BatchExecutorService"
+import type { RiskBoxId } from "./risk-boxes"
 
 export interface PackageResult {
   id: string
@@ -42,6 +43,7 @@ export interface OkSignal {
   precoNoPalpite?: number
   poolAddress?: string
   dex?: string
+  riskBox?: RiskBoxId
   metadata?: {
     correlationId?: string
     settlementCorrelationId?: string
@@ -63,6 +65,7 @@ export interface OrdemExecucao {
   timestamp: number
   status: "preparando" | "pronto" | "executando" | "concluido" | "falhou"
   amountUsd?: number
+  riskBox?: RiskBoxId
   errorMsg?: string
   metadata?: OkSignal["metadata"]
   resultado?: {
@@ -557,6 +560,7 @@ class Pregão {
       confiancaMedia,
       timestamp: Date.now(),
       amountUsd: participantes[0].sinal.amountUsd,
+      riskBox: participantes[0].sinal.riskBox,
       metadata: participantes[0].sinal.metadata,
       status: "preparando"
     }
@@ -971,7 +975,14 @@ class Pregão {
     this.log(`[PREGÃO] 🚀 Pacote ${pacote.id}: ${swaps.length} swaps em ${pacote.rede} | lucro esp.: $${lucroRealEsperado.toFixed(4)} | gas: $${estimatedGasTotal.toFixed(4)}`)
 
     // ─── 4. Modo Papel: simula trades sem gastar gas ──
-    const isPaper = typeof window !== "undefined" && localStorage.getItem("arcflow_paper_mode") === "true"
+    // RI-BANK-9R: toggle de UI e localStorage removidos (não havia freio
+    // de segurança real associado, e a chave nunca é mais escrita por
+    // ninguém desde a remoção) — travado como sempre desligado. Corpo do
+    // bloco preservado de propósito (RI-BANK-9R
+    // MANDATE_RI_BANK_9R_PRESERVE_BLOCK_BODY=YES), não removido, para não
+    // perder a lógica de simulação caso volte a ser necessária por outro
+    // caminho (ex.: variável de ambiente) no futuro.
+    const isPaper = false
     if (isPaper) {
       this.log(`[PREGÃO] 📝 Modo Papel: simulando ${swaps.length} trades em ${pacote.rede}`)
       let totalReturnedUSD = 0

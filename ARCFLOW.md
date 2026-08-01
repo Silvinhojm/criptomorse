@@ -735,6 +735,15 @@ MIN_BALANCE_THRESHOLD = 0.50  // $0.50 — saldos abaixo disso são ignorados no
 | `arcflow_pair_sector` | Avaliações de pares por rede | pair-sector.ts |
 | `arcflow_paper_mode` | Modo Papel (simulação sem gas) ativado/desativado | agentes-do-pregão.ts |
 
+### Estado server-side de risco (Redis/Upstash)
+
+| Chave | Conteúdo | Módulo |
+|-------|----------|--------|
+| `arcflow:<ambiente>:risk-boxes:state` | Hash das Caixas A/B; configuração, teto por trade, versão, principal, saldo, baselines e perdas acumuladas | `lib/risk-boxes.ts`, `lib/risk-boxes-redis.ts` |
+| `arcflow:<ambiente>:trading-budget:state` | Hash do orçamento por janela manual; limite opcional, gasto acumulado e último reset | `lib/trading-budget.ts` |
+
+No RI-BANK-13, deltas (`spentToday`, saldos e perdas) passaram a ser aplicados atomicamente no Redis. As caixas usam um script Lua único para preservar campos acoplados e incrementar `version`; configurações do orçamento usam `HSET` somente dos campos pertencentes à operação. O valor legado JSON das caixas é migrado atomicamente para Hash na primeira leitura/mutação. Sem KV configurado, os módulos mantêm apenas o espelho em memória e registram aviso explícito. A suíte RI-BANK-12 ativa `ARCFLOW_RISK_BOXES_TEST_MODE=1`, remove as credenciais KV antes do import e bloqueia toda persistência para garantir testes exclusivamente em memória.
+
 ### O que é perdido no F5 (volátil):
 
 | Dado | Consequência |
@@ -4384,3 +4393,94 @@ A wallet secundária (0xfa03...) deployou 3 pools AMM adicionais além do oficia
 3. ⏳ Transferir ownership dos GenericAMMPair secundários de 0xfa03... para 0x77f5... se mantidos
 4. ⏳ Decidir destino dos 3 pools AMM não documentados (ver seção 58.4)
 5. ⏳ Documentar transações próprias no ERC8183 v2 filtrando por wallet 0x77f5...
+
+---
+
+## 59. RI-BANK-12 — Modelo de Duas Caixas de Risco
+
+Implementado em `lib/risk-boxes.ts` como mecanismo complementar ao circuit breaker global e ao orçamento por janela de `lib/trading-budget.ts`.
+
+### Decisões de produto travadas
+
+- **Caixa A — Principal:** `valorPrincipal` fixo; risco configurável de 2% a 20%; lucro realizado nunca aumenta A.
+- **Caixa B — Lucro Reinvestido:** recebe todo lucro realizado; `investir=false` bloqueia qualquer uso pré-swap; quando ativa, risco configurável de 2% a 50%.
+- A e B são independentes. B zerar não pausa nem revisa A.
+- Configuração ausente ou inválida bloqueia em modo fail-closed.
+- Os mesmos limites das caixas valem em mainnet e testnet.
+- B usa baseline fixo definido na última reconfiguração ou no primeiro lucro após zerar. Lucro adicional aumenta o saldo, mas não o baseline; não há high-water mark.
+- O teto inicial por trade é `$15`, configurável por `setRiskBoxesPerTradeCap()` e aplicado igualmente a A e B antes de qualquer swap.
+
+### Fluxo operacional
+
+```text
+AgentProposal.params.riskBox ("A" | "B")
+  -> TradingAdapter valida origem obrigatória
+  -> OkSignal / OrdemExecucao preserva riskBox
+  -> Corretor.authorizeRiskBoxTradeFresh() lê Redis e autoriza antes de executeSwap/batch
+  -> posição aberta preserva riskBox
+  -> fechamento reutiliza a mesma origem
+  -> resultado realizado chama recordRiskBoxEconomicResult()
+       lucro -> Caixa B
+       perda -> caixa que financiou o trade
+```
+
+Ordens legadas, posições antigas ou chamadas que não informem `riskBox` são bloqueadas; o sistema não assume Caixa A como padrão. A configuração canônica deve usar `configureRiskBoxes()`, que valida e publica A+B atomicamente.
+
+### Concorrência e testes
+
+- Todas as mutações locais passam por uma única fila serializada, cobrindo lucro/perda concorrente com reconfiguração (classe A4b).
+- A prova pré-fix isolada reproduz perda de atualização em 30/30 tentativas.
+- A implementação corrigida apresenta 0/30 inconsistências.
+- Testes: `lib/security/ri-bank-12-risk-boxes-verification.test.ts`.
+- A coordenação entre instâncias foi concluída no RI-BANK-13; não há mais gravação do snapshot integral nas mutações.
+
+---
+
+## 60. RI-BANK-13 — Coordenação Atômica Redis entre Instâncias
+
+### Diagnóstico confirmado
+
+`risk-boxes.ts` e `trading-budget.ts` tinham a mesma classe de corrida entre processos: duas instâncias podiam ler o mesmo estado, calcular mudanças independentes e a última gravação substituir a primeira. No orçamento, isso afetava `spentToday`; nas caixas, podia perder deltas ou configuração.
+
+### Mecanismo adotado
+
+- `trading-budget.ts`: `spentToday` usa `HINCRBYFLOAT`, seguindo o padrão já utilizado pelo circuit breaker. Configuração e reset usam `HSET` apenas dos campos da operação, sem regravar o restante do Hash.
+- `risk-boxes-redis.ts`: script Lua executa cada mutação como um comando Redis atômico. Deltas usam `HINCRBYFLOAT` dentro do script; campos acoplados (`saldo`, `perdaAcumulada`, `baseline`, `esgotada`, `version`) são atualizados na mesma operação.
+- `risk-boxes.ts`: o gate pré-swap chama `authorizeRiskBoxTradeFresh()`, atualizando o snapshot a partir do Redis antes da decisão.
+- Migração: uma chave antiga em JSON é convertida atomicamente para Hash, preservando os campos existentes.
+
+Lua foi escolhido como equivalente mais forte e simples a `WATCH`/`MULTI` para este caso: não há janela de retry no cliente serverless, e os invariantes de cada mutação permanecem indivisíveis no servidor.
+
+### Provas e limitação de ambiente
+
+- RI-BANK-12 em memória: corrida vulnerável `30/30`; implementação local corrigida `0/30`.
+- RI-BANK-13 com dois clientes independentes sobre servidor compartilhado em memória: corrida vulnerável `30/30`; orçamento atômico `100/100`; caixas atômicas `100/100`; inconsistências `0`.
+- O teste preparado para Redis real usa somente `arcflow:ri-bank-13:test:*` e remove as chaves no `finally`, mas sua execução externa foi bloqueada porque o cabeçalho do mandato autoriza apenas memória/mock. Portanto, compatibilidade real do script Lua com o serviço Upstash conectado permanece como validação pendente mediante autorização explícita.
+- Testes: `lib/security/ri-bank-13-cross-instance-memory.test.ts` e `lib/security/ri-bank-13-cross-instance-redis.test.ts`.
+- Nenhum cron, wallet ou swap foi ativado no RI-BANK-13.
+
+---
+
+## 61. RI-BANK-14 — Números D3 e Backstop Global
+
+Decisões confirmadas em 31/07/2026:
+
+| Controle | Valor inicial | Comportamento |
+|---|---:|---|
+| Orçamento por janela manual | `$50` | Aplicado atomicamente somente se `dailyLimitUsd` ainda estiver ausente/null; uma configuração posterior é preservada. O reset continua exclusivamente manual. |
+| Teto por trade | `$15` | Aplicado igualmente às Caixas A e B; `$15` é permitido e qualquer valor maior é bloqueado com `trade_amount_exceeds_per_trade_cap`. Configurável pelo setter dedicado. |
+| Drawdown global mainnet | `60%` | Backstop de emergência acima do risco máximo configurável das caixas (`50%`), não mais primeira linha de defesa. Testnet espelha `60%`, embora o gate de drawdown permaneça desativado nesse modo. |
+
+### Conexão real verificada
+
+O circuit breaker global continua ligado ao settlement em `lib/corretor.ts`: `recordTradeResult()` é aguardado no resultado individual, na perda estimada de transação e no batch. As caixas recebem o resultado realizado antes do backstop global.
+
+O Corretor chama `initializeTradingBudgetDailyLimit()` antes do gate diário e `authorizeRiskBoxTradeFresh()` antes do primeiro swap individual e para cada item do batch. Assim, o teto por trade não é código órfão.
+
+### Testes
+
+- `lib/security/ri-bank-14-d3-verification.test.ts`: A/B permitem `$15`, bloqueiam `$15.01`, comprovam teto configurável; orçamento acumula `$25 + $25 = $50`; drawdown de `20%` não dispara e `60%` dispara.
+- `lib/security/ri-bank-11-trilha-b-trading-budget.test.ts`: atualizado para `$50` e para provar inicialização idempotente.
+- `lib/security/ri-bank-11-trilha-a-drawdown-verification.test.ts`: atualizado para o limiar de `60%`.
+- `lib/security/ri-bank-12-risk-boxes-verification.test.ts`: regressão das decisões A/B permanece aprovada.
+- Testes executados sem credenciais Redis. O fallback local do circuit breaker é copiado e restaurado pela suíte; nenhum estado externo, trade ou wallet é tocado.

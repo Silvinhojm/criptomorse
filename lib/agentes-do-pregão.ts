@@ -92,17 +92,6 @@ function aplicarFiltroTendencia(votes: AgentPairVote[]): AgentPairVote[] {
   return filtrados
 }
 
-// ─── Modo Papel ───
-const PAPER_MODE_KEY = "arcflow_paper_mode"
-export function isPaperMode(): boolean {
-  if (typeof window === "undefined") return false
-  return localStorage.getItem(PAPER_MODE_KEY) === "true"
-}
-export function setPaperMode(enabled: boolean): void {
-  if (typeof window === "undefined") return
-  localStorage.setItem(PAPER_MODE_KEY, enabled ? "true" : "false")
-}
-
 function getMinTradeSize(network: NetworkKey): number {
   const net = NETWORKS[network]
   if (!net || net.isTestnet) return 2
@@ -799,6 +788,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
                 timestamp: Date.now(),
                 fromToken: pos.boughtToken,
                 toToken: "USDC",
+                riskBox: pos.riskBox,
               })
             }
             pregão.adicionarLog(`📢 Auto-sell: ${sellPar} em ${pos.networkKey} — 3 OKs injetados`)
@@ -1666,6 +1656,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
                 rede: v.network, par: v.pair, confianca: v.confidence, timestamp: Date.now(),
                 fromToken: v.fromToken, toToken: v.toToken,
                 direcao: v.action, precoNoPalpite: currentPrice,
+                riskBox: posVenda.riskBox,
               })
             }
           }
@@ -1749,7 +1740,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
       profitPercent = ((currentPrice - fixedEntry) / fixedEntry) * 100
       pregão.adicionarLog(`⚠️ ${pos.boughtToken}: entryPrice corrompido ($${pos.entryPrice.toFixed(4)}) → corrigido para $${fixedEntry.toFixed(4)} (${profitPercent.toFixed(1)}%) via swap real`)
       pos.entryPrice = fixedEntry
-      positionManager.savePositions()
+      await positionManager.savePositions()
     }
 
     const gasCost = await gasPriceOracle.getGasCost(posNet)
@@ -1802,6 +1793,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         timestamp: Date.now(),
         fromToken: pos.boughtToken,
         toToken: "USDC",
+        riskBox: pos.riskBox,
       })
     }
   }

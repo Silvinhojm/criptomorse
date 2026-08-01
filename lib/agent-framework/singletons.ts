@@ -218,7 +218,47 @@ function updateDecisionReportFromSettlement(record: SettlementRecord): void {
 
   if (JSON.stringify(report.execution) === JSON.stringify(updatedReport.execution)) return
 
+  // RI-BANK-3: dispatch-time anchorDecision (coordinator.ts) never fires for
+  // TradingAdapter because it always dispatches provisionally. Anchor here
+  // instead, when settlement confirmation actually lands.
+  //
+  // Idempotency: guarded by DecisionReport.onChainStatus. "confirmed" or
+  // "pending" blocks a second fire -- including under replay reentrancy
+  // (replaySettlementForCorrelationId / flushPendingSettlementReplays can
+  // invoke this function again for the same underlying settlement). The
+  // guard read and the "pending" write are folded into the SAME
+  // setDecisionReport call this function already made before this patch
+  // (not a second call) -- both to keep this a single atomic write and
+  // because existing tests assert exact setDecisionReport call sequences.
+  // The read and write happen in the same synchronous tick, with no
+  // `await` between them, so no interleaving is possible in
+  // single-threaded JS even if this function is invoked again
+  // synchronously before the anchor's promise resolves.
+  const shouldAnchor = canonicalSettlement &&
+    !!frameworkIntents.anchorDecision &&
+    updatedReport.onChainStatus !== "confirmed" &&
+    updatedReport.onChainStatus !== "pending"
+
+  if (shouldAnchor) updatedReport.onChainStatus = "pending"
+
   frameworkIntents.setDecisionReport(intentRecord.intent.id, updatedReport)
+
+  if (shouldAnchor) {
+    const intentId = intentRecord.intent.id
+    frameworkIntents.anchorDecision!(intentId, updatedReport).then(result => {
+      if (!result) return // anchorDecision already queued this in pendingProofs for retry
+      // Re-read the latest report instead of reusing the closed-over
+      // snapshot: further settlement enrichment may have landed while the
+      // anchor call was in flight, and setDecisionReport overwrites wholesale.
+      const latest = frameworkIntents.getRecord(intentId)?.decisionReport ?? updatedReport
+      frameworkIntents.setDecisionReport(intentId, {
+        ...latest,
+        onChainHash: result.hash,
+        onChainTx: result.txHash,
+        onChainStatus: "confirmed",
+      })
+    }).catch(() => {})
+  }
 }
 
 // ── Replay/sync API ───────────────────────────────────────────────────────
