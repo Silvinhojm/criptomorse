@@ -4527,6 +4527,11 @@ Correção RI-BANK-33: as 11 variáveis Vercel não haviam desaparecido. `vercel
 
 ## 63. RI-BANK-34 — Cron com Plano Redis e Signer KMS
 
+Atualização RI-BANK-38 (03/08/2026): no contexto server-side do cron, a
+consulta de preço monta uma URL absoluta a partir do `VERCEL_URL` gerenciado
+pela Vercel. No browser, a rota relativa existente permanece inalterada. Host
+ausente ou fora de `*.vercel.app` usa o fallback seguro e não abre SSRF.
+
 Implementado em 03/08/2026, sem ativação do schedule e sem qualquer execução real. O endpoint processa no máximo um plano persistido por invocação e retorna; não usa o loop contínuo de `pregão-engine.ts`.
 
 ### Estado persistido
