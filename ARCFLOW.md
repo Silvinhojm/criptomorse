@@ -4579,6 +4579,20 @@ Não existe retry interno. Plano bloqueado, falho ou concluído não volta sozin
 
 O workflow `.github/workflows/cron-trigger.yml` permanece somente com `workflow_dispatch`; o bloco `schedule` continua comentado.
 
+### RI-BANK-39 — despacho manual interno de referência
+
+`POST /operator/corretor/test-swap` é uma rota exclusivamente server-side,
+autenticada por Bearer `ADMIN_PANIC_KEY`, sem botão ou segredo no bundle do
+navegador. Aceita somente o payload literal Arc Testnet `USDC/EURC`, direção
+`USDC_TO_EURC`, `amountIn: "0.10"` e `confirm: true`.
+
+Há duas travas independentes: o módulo recusa compilar/carregar quando
+`NETWORK_MODE=mainnet`, e o handler valida `network === "arc-testnet"` sem
+consultar configuração externa. Um rate limit Redis global permite uma chamada
+a cada 15 minutos. A execução reutiliza `executeCronPlanWithKms()` e grava dois
+eventos imutáveis na auditoria RI-BANK-34 com `source: "manual-test"`, payload,
+ator administrativo, referência manual e hash final.
+
 ### RI-BANK-50 — leitura de saldo zerando de forma intermitente em server-side
 
 **Sintoma:** `executeSwap` reportava saldo `$0.0000 (0.000000 USDC)` para uma conta com 19,999475 USDC confirmados on-chain — não perda de fundos, erro de leitura da aplicação.

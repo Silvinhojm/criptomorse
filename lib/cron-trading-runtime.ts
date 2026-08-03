@@ -39,7 +39,7 @@ export function createProductionCronTradingService(): CronTradingService {
   })
 }
 
-async function executeCronPlanWithKms(plan: CronTradingPlan) {
+export async function executeCronPlanWithKms(plan: CronTradingPlan) {
   const network = NETWORKS[plan.network as NetworkKey]
   if (!network) throw new Error("cron_plan_unknown_network")
   if (!(network.tokens as Record<string, string>)[plan.fromToken] || !(network.tokens as Record<string, string>)[plan.toToken]) {

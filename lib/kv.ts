@@ -90,3 +90,7 @@ export function cronAuditIndexKvKey(): string {
 export function cronAuditEntryKvKey(eventId: string): string {
   return `arcflow:${kvEnvNamespace()}:cron-audit:event:${eventId}`
 }
+
+export function cronManualTestRateLimitKvKey(): string {
+  return `arcflow:${kvEnvNamespace()}:cron-manual-test:rate-limit`
+}
