@@ -439,6 +439,31 @@ class RealSwapExecutor {
     }
   }
 
+  // RI-BANK-34 — server-side signer path. Unlike the browser initializer,
+  // this receives a direct RPC provider because relative /api/rpc-proxy
+  // fetches do not exist inside a Vercel server function.
+  async initializeWithServerSigner(
+    userAddress: string,
+    networkKey: NetworkKey,
+    externalSigner: ethers.Signer,
+    serverProvider: ethers.JsonRpcProvider,
+  ): Promise<boolean> {
+    try {
+      this.networkKey = networkKey;
+      this.provider = serverProvider;
+      this.signer = externalSigner.connect(serverProvider);
+      this.userAddress = userAddress;
+      this.privateKey = "";
+      console.log(`✅ RealSwapExecutor (server KMS signer): ${NETWORKS[networkKey].name} | ${this.userAddress}`);
+      await this.refreshAllBalances();
+      await setTestnetMode(NETWORKS[networkKey].isTestnet);
+      return true;
+    } catch (err) {
+      console.error("❌ Erro ao inicializar signer KMS server-side:", err);
+      return false;
+    }
+  }
+
   // Trocar de rede sem perder o signer
   async switchNetwork(networkKey: NetworkKey): Promise<void> {
     this.networkKey = networkKey;

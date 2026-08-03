@@ -8,10 +8,9 @@
 # and `ARCFLOW_BASE_URL` are set — neither of those steps has been done as
 # part of this stage.
 #
-# Also note: as of this stage, POST /api/cron/trigger does not call any
-# real trading function (see app/api/cron/trigger/route.ts) — activating
-# this schedule today would only exercise the auth + circuit-breaker gate,
-# not trigger any trade.
+# RI-BANK-34 connected POST /api/cron/trigger to a bounded persisted plan,
+# but did NOT authorize production activation. The schedule must remain
+# commented until a later mandate explicitly activates and validates it.
 
 name: cron-trigger
 

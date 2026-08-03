@@ -6,15 +6,9 @@
 //      no hardcoded fallback);
 //   2. the circuit breaker gate blocks when panic is active, read fresh
 //      from disk (not a stale in-memory copy);
-//   3. zero real transaction: proven structurally by reading
-//      app/api/cron/trigger/route.ts's own source and asserting it imports
-//      none of the real trading modules. A behavioral test cannot prove a
-//      negative like "never calls a real swap" for a function that isn't
-//      wired to any trading path in the first place — this stage's
-//      endpoint has no trading call at all (see its own top-of-file
-//      comment), so the structural check is the correct proof, same
-//      approach as lib/pregao-wiring-structural.test.ts already uses in
-//      this repo for a similar "call graph fact" claim.
+//   3. RI-BANK-34 compatibility: the HTTP route stays thin and authenticated;
+//      the fresh panic gate is preserved in the bounded cron runtime. The
+//      RI-BANK-34 suite separately proves all no-execution paths with mocks.
 //
 // Run directly with: npx tsx lib/security/ri-bank-4-stage2-security.test.ts
 
@@ -160,10 +154,9 @@ export async function runRiBank4Stage2SecurityTests(): Promise<void> {
   }
 
   // ================================================================
-  // [STRUCTURAL] app/api/cron/trigger/route.ts calls zero real trading
-  // functions — proves "zero real transaction" the same way
-  // pregao-wiring-structural.test.ts proves call-graph facts: by reading
-  // the actual source, not by mocking and hoping nothing slips through.
+  // [STRUCTURAL, updated by RI-BANK-34] The HTTP route remains a thin,
+  // authenticated entry point. Trading is now delegated to the bounded
+  // one-plan service; the fresh circuit-breaker gate lives in its runtime.
   // ================================================================
   {
     const routeSrc = readFileSync(join(REPO_ROOT, "app", "api", "cron", "trigger", "route.ts"), "utf-8")
@@ -185,7 +178,10 @@ export async function runRiBank4Stage2SecurityTests(): Promise<void> {
       expect(!codeOnly.includes(symbol), `app/api/cron/trigger/route.ts must not call '${symbol}' — this stage's endpoint has no real trading call wired in yet (Camada 2 is a pending decision, not part of this stage)`)
     }
     expect(routeSrc.includes("isValidCronRequest"), "route must gate on isValidCronRequest")
-    expect(routeSrc.includes("getCircuitBreakerStateFresh"), "route must check the fresh (disk-read) circuit breaker state, not a possibly-stale in-memory copy")
+    expect(routeSrc.includes("createProductionCronTradingService"), "route must delegate to the bounded RI-BANK-34 service")
+    const runtimeSrc = readFileSync(join(REPO_ROOT, "lib", "cron-trading-runtime.ts"), "utf-8")
+    expect(runtimeSrc.includes("getCircuitBreakerStateFresh"), "cron runtime must refresh the circuit breaker")
+    expect(runtimeSrc.includes("blockIfPanicked()"), "cron runtime must preserve the canonical panic gate")
   }
 
   // ================================================================

@@ -4521,4 +4521,75 @@ Provas:
 
 Arquivos: `lib/kms/kms-evm-signer.ts`, `lib/kms/vercel-oidc-kms.ts`, `app/api/internal/ri-bank-32-kms-proof/route.ts` e `lib/security/ri-bank-32-kms-evm-signer.test.ts`.
 
-Limitação operacional encontrada: as 11 variáveis Vercel documentadas em 02/08 haviam desaparecido em 03/08. As quatro variáveis públicas KMS foram restauradas; credenciais Upstash ausentes não foram recriadas. O bearer e o nonce temporários da prova foram removidos da Vercel após o teste. Investigar a perda antes de qualquer ativação futura do cron/trading.
+Correção RI-BANK-33: as 11 variáveis Vercel não haviam desaparecido. `vercel env ls` produziu um falso negativo de listagem, enquanto `vercel env pull` confirmou todos os nomes esperados; a integração Upstash permaneceu `Available` e o banco respondeu `PONG`. O bearer e o nonce temporários da prova foram removidos da Vercel após o teste, como previsto.
+
+---
+
+## 63. RI-BANK-34 — Cron com Plano Redis e Signer KMS
+
+Implementado em 03/08/2026, sem ativação do schedule e sem qualquer execução real. O endpoint processa no máximo um plano persistido por invocação e retorna; não usa o loop contínuo de `pregão-engine.ts`.
+
+### Estado persistido
+
+Todas as chaves seguem `arcflow:<env>:*`:
+
+- `cron-plan`: hash único com rede, par, estratégia, caixa, valor, fingerprint material e estado (`ready`, `processing`, `completed`, `blocked`, `failed`);
+- `cron-authorized-routes`: hash de autorizações permanentes por identidade mínima rede+par+estratégia. A autorização também grava o fingerprint de rede, par, estratégia, caixa e valor; qualquer mudança material exige nova ordem manual despachada;
+- `cron-mainnet-confirmed`: flag sem TTL, alterável somente pela operação administrativa;
+- `cron-kill-switch`: flag sem TTL, consultada antes de qualquer outro estado/gate do fluxo;
+- `cron-plan:lease`: lease global `SET NX PX`, combinado com transições Lua que exigem `leaseOwner`;
+- `cron-audit:index` e `cron-audit:event:<id>`: índice ZSET e eventos com retenção de 30 dias.
+
+Redis ausente ou erro de persistência bloqueia o fluxo em Modo 2. Um plano em `processing` não pode ser substituído administrativamente.
+
+### Fluxo por invocação
+
+```text
+POST /api/cron/trigger + CRON_SECRET
+  -> cron kill switch
+  -> circuit breaker fresh + blockIfPanicked()
+  -> confirmação mainnet + plano único
+  -> autorização da rota/fingerprint material
+  -> claim atômico por lease
+  -> orçamento fresh + isBudgetExceeded()
+  -> authorizeRiskBoxTradeFresh()
+  -> auditoria pré-execução obrigatória
+  -> Vercel OIDC -> AWS KMS -> KmsEvmSigner -> KmsEthersSigner
+  -> realSwap.initializeWithServerSigner()
+  -> realSwap.executeSwap()
+  -> estado terminal + auditoria
+```
+
+Não existe retry interno. Plano bloqueado, falho ou concluído não volta sozinho para `ready`.
+
+### Controle administrativo
+
+`POST /api/admin/cron-control`, autenticado por bearer com o mesmo `ADMIN_PANIC_KEY`, aceita:
+
+- `plan.upsert` — cria/substitui o plano único, exceto durante `processing`;
+- `route.authorize` — exige `planId` atual e `manualDispatchRef` de uma ordem já despachada manualmente;
+- `mainnet.set` — ativa/desativa a confirmação persistente de mainnet;
+- `kill-switch.set` — ativa/desativa o kill switch persistente do cron.
+
+O workflow `.github/workflows/cron-trigger.yml` permanece somente com `workflow_dispatch`; o bloco `schedule` continua comentado.
+
+### Arquivos principais
+
+- `lib/cron-trading-state.ts`
+- `lib/cron-trading-service.ts`
+- `lib/cron-trading-runtime.ts`
+- `lib/kms/kms-ethers-signer.ts`
+- `app/api/admin/cron-control/route.ts`
+- `app/api/cron/trigger/route.ts`
+- `lib/security/ri-bank-34-cron-trading.test.ts`
+
+### Validação autorizada
+
+- Modo 1 mock: signer e `executeSwap` alcançados, sem transação;
+- Modo 2: kill switch, circuit breaker, mainnet sem confirmação, rota sem autorização, orçamento excedido e caixa esgotada bloqueados isoladamente;
+- duas invocações concorrentes executam o plano uma única vez;
+- kill switch comprovado como primeira leitura de estado;
+- Redis indisponível comprovado fail-closed;
+- adaptador ethers delega ao `KmsEvmSigner` sem modificá-lo;
+- `npx tsc --noEmit` e `npm run build`: aprovados;
+- execução real, Redis real, AWS, RPC, cron produtivo e deploy: não realizados.

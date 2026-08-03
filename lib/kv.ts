@@ -60,3 +60,33 @@ export function tradingBudgetKvKey(): string {
 export function riskBoxesKvKey(): string {
   return `arcflow:${kvEnvNamespace()}:risk-boxes:state`
 }
+
+// RI-BANK-34 — plano único e controles persistentes do cron. Todos usam o
+// mesmo namespace por ambiente que os demais estados server-side.
+export function cronPlanKvKey(): string {
+  return `arcflow:${kvEnvNamespace()}:cron-plan`
+}
+
+export function cronAuthorizedRoutesKvKey(): string {
+  return `arcflow:${kvEnvNamespace()}:cron-authorized-routes`
+}
+
+export function cronMainnetConfirmedKvKey(): string {
+  return `arcflow:${kvEnvNamespace()}:cron-mainnet-confirmed`
+}
+
+export function cronKillSwitchKvKey(): string {
+  return `arcflow:${kvEnvNamespace()}:cron-kill-switch`
+}
+
+export function cronLeaseKvKey(): string {
+  return `arcflow:${kvEnvNamespace()}:cron-plan:lease`
+}
+
+export function cronAuditIndexKvKey(): string {
+  return `arcflow:${kvEnvNamespace()}:cron-audit:index`
+}
+
+export function cronAuditEntryKvKey(eventId: string): string {
+  return `arcflow:${kvEnvNamespace()}:cron-audit:event:${eventId}`
+}

@@ -20,6 +20,12 @@ export function isValidCronRequest(authHeader: string | null | undefined): boole
   return isValidBearerRequest(authHeader, "CRON_SECRET")
 }
 
+/** RI-BANK-34 — cron control plane uses the same server-only administrative
+ * secret as the panic control plane, without accepting it in the body. */
+export function isValidCronAdminRequest(authHeader: string | null | undefined): boolean {
+  return isValidBearerRequest(authHeader, "ADMIN_PANIC_KEY")
+}
+
 // RI-BANK-4 Stage 2 (residual-risk fix) — POST /api/circuit-breaker/state
 // used to accept any request with no authentication at all: the browser's
 // own trading loop can trigger activatePanic() client-side (see
