@@ -20,6 +20,12 @@ import { hasSellRoute, recordRouteFailure } from "./route-verifier";
 
 const BALANCE_STORAGE_KEY_PREFIX = "arcflow_token_balances_"
 
+function buildVercelInternalUrl(path: string): string | null {
+  const host = process.env.VERCEL_URL?.trim().toLowerCase()
+  if (!host || !/^[a-z0-9.-]+\.vercel\.app$/.test(host)) return null
+  return `https://${host}${path}`
+}
+
 // Decimais conhecidos por token (fallback quando tokenBalances não carregou)
 export const TOKEN_DECIMALS: Record<string, number> = {
   USDC: 6, EURC: 6, DAI: 18,
@@ -361,7 +367,12 @@ class RealSwapExecutor {
       return cached?.price ?? 1.0
     }
     try {
-      const res = await fetch(`/api/price?ids=${coinId}`);
+      const relativeUrl = `/api/price?ids=${coinId}`;
+      const priceUrl = typeof window === "undefined"
+        ? buildVercelInternalUrl(relativeUrl)
+        : relativeUrl;
+      if (!priceUrl) return cached?.price ?? (isStable(token) ? 1.0 : 0);
+      const res = await fetch(priceUrl);
       if (!res.ok) return cached?.price ?? (isStable(token) ? 1.0 : 0)
       const body = await res.json();
       const prices = body?.prices;
