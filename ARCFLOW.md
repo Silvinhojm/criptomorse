@@ -1,5 +1,28 @@
 # CriptoMorse — Manual de Arquitetura e Parâmetros
 
+## RI-BANK-28 — Recovery durável de provas on-chain (02/08/2026)
+
+O retry de `DecisionAnchor` passa a ter uma outbox Redis durável, com claim
+atômico por Lua, lease global com owner token, estado por intent, backoff
+exponencial (30 s até 15 min), máximo de 5 tentativas e dead-letter retida.
+Uma transação conhecida (`txHash` + bloco) é persistida antes da reconciliação
+e nunca é reenviada às cegas.
+
+- `OnChainProofReconciler` é o único caminho que atualiza `DecisionReport` e
+  `Audit`; relê os registros, aplica as duas escritas, verifica ambas e compensa
+  a primeira se a segunda falhar.
+- O sucesso original do Coordinator e o retry em memória usam o mesmo
+  reconciliador. Esgotamento marca os dois registros como `failed`.
+- A outbox registra os IDs de intent/report/audit, hash, payload compacto,
+  tentativas, próximo horário, último erro, status, tx hash e bloco.
+- `/api/onchain-proof-recovery` aceita somente `POST` com `CRON_SECRET` e não
+  chama `submitProposal`, `runCycle` ou `anchorDecision`.
+- **Inativo por padrão:** o broadcaster instalado recusa assinar/transmitir.
+  A configuração KMS/OIDC do RI-BANK-17 só poderá alimentar um signer futuro;
+  nenhum adaptador KMS, RPC real, trade ou deploy foi ativado nesta etapa.
+
+---
+
 > **LEIA ESTE ARQUIVO PRIMEIRO** antes de qualquer modificação no código.
 > Este documento contém o mapa completo do sistema. Consulte-o sempre que for
 > alterar comportamento, adicionar features ou diagnosticar bugs.

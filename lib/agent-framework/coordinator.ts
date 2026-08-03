@@ -30,6 +30,7 @@ import type {
   CoordinatorSettlementRegistry,
   CoordinatorSettlementReplay,
 } from "./coordinator-dependencies"
+import type { OnChainProofReconciler } from "./onchain-proof-reconciler"
 
 /** Dedicated error for rejection evidence failures in cycle.
  *  Public message is fixed; internal cause preserved but not exposed. */
@@ -64,6 +65,7 @@ export interface CoordinatorConfig {
   intentPublisher?: IIntentPublisher
   policyEngine?: PolicyEngine
   recoveryAuthorizer?: IOperationalRecoveryAuthorizer
+  proofReconciler?: OnChainProofReconciler
 }
 
 export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
@@ -90,6 +92,7 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
   private readonly knowledge_: CoordinatorKnowledgeResolver
   private readonly settlementRegistry_: CoordinatorSettlementRegistry
   private readonly settlementReplay_: CoordinatorSettlementReplay
+  private readonly proofReconciler_: OnChainProofReconciler | null
   private recoveryInProgress_: Promise<OperationalRecoveryResult> | null = null
   private recoveryProbeSequence_ = 0
 
@@ -123,6 +126,7 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
     this.knowledge_ = deps.knowledge
     this.settlementRegistry_ = deps.settlementRegistry
     this.settlementReplay_ = deps.settlementReplay
+    this.proofReconciler_ = config.proofReconciler ?? null
     this.name = config.name
     this.minAgents = config.minAgents ?? 2
     this.voting = new Voting(config.name, this.MIN_AGREEING_AGENTS, this.WEIGHTED_CONFIDENCE_THRESHOLD)
@@ -811,14 +815,7 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
     // ── On-chain proof ──
     if (executionResult.success && !isProvisionalDispatch && this.intentPublisher_?.anchorDecision) {
       this.intentPublisher_.anchorDecision(intentId, dp).then(result => {
-        if (result) {
-          dp.onChainHash = result.hash
-          dp.onChainTx = result.txHash
-          dp.onChainStatus = "confirmed"
-          if (this.audit_ && auditId) {
-            this.audit_.updateEntry(auditId, { onChainHash: result.hash, onChainTx: result.txHash, onChainStatus: "confirmed" })
-          }
-          this._saveDecisionReport(intentId, dp)
+        if (result && this.proofReconciler_?.reconcileConfirmedProof(intentId, result).reconciled) {
           console.log(`[${this.name}] 🔗 On-chain proof: tx:${result.txHash} block:${result.blockNumber} hash:${result.hash.slice(0, 18)}...`)
         }
       }).catch(() => {})
@@ -1207,10 +1204,7 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
         // On-chain proof
         if (result.success && !isProvisionalDispatch && this.intentPublisher_?.anchorDecision) {
           this.intentPublisher_.anchorDecision(cycleIntentId, cycleDecisionReport).then(anchorResult => {
-            if (anchorResult) {
-              cycleDecisionReport.onChainHash = anchorResult.hash
-              cycleDecisionReport.onChainTx = anchorResult.txHash
-              cycleDecisionReport.onChainStatus = "confirmed"
+            if (anchorResult && this.proofReconciler_?.reconcileConfirmedProof(cycleIntentId, anchorResult).reconciled) {
               console.log(`[${this.name}] 🔗 On-chain proof (cycle): tx:${anchorResult.txHash} block:${anchorResult.blockNumber}`)
             }
           }).catch(() => {})

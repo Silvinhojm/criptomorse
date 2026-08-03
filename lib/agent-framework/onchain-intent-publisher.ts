@@ -3,6 +3,8 @@ import { IntentPublisher, type AgentIntent, type IntentRecord } from "./intent-p
 import { AGENTIC_COMMERCE_ABI, ZERO_HOOK } from "@/lib/agentic-commerce-abi"
 import { DECISION_ANCHOR_ABI } from "@/lib/decision-anchor-abi"
 import type { DecisionReport } from "./decision-report"
+import type { OnChainProofReconciler } from "./onchain-proof-reconciler"
+import type { OnChainProofOutbox } from "./onchain-proof-outbox"
 
 const ARC_RPC = "https://rpc.testnet.arc.network"
 const ERC8183_ADDRESS = "0x0747EEf0706327138c69792bF28Cd525089e4583"
@@ -13,6 +15,8 @@ export class OnChainIntentPublisher {
   private signer: ethers.Wallet | null = null
   private jobMap = new Map<string, string>() // intentId → onChainJobId
   private pendingProofs = new Map<string, { report: DecisionReport; retries: number }>()
+  private proofReconciler: OnChainProofReconciler | null = null
+  private durableOutbox: OnChainProofOutbox | null = null
   readonly MAX_RETRIES = 5
   onChainEnabled = false
 
@@ -55,18 +59,30 @@ export class OnChainIntentPublisher {
     return this.pendingProofs.size
   }
 
+  setProofReconciler(reconciler: OnChainProofReconciler): void {
+    this.proofReconciler = reconciler
+  }
+
+  setDurableOutbox(outbox: OnChainProofOutbox): void {
+    this.durableOutbox = outbox
+  }
+
   async retryPendingProofs(): Promise<number> {
     let resolved = 0
     for (const [id, entry] of this.pendingProofs) {
-      const result = await this.anchorDecision(id, entry.report)
+      const result = await this.anchorDecisionInternal(id, entry.report, false)
       if (result) {
-        this.pendingProofs.delete(id)
-        resolved++
+        if (this.proofReconciler?.reconcileConfirmedProof(id, result).reconciled) {
+          this.pendingProofs.delete(id)
+          resolved++
+        }
       } else {
         entry.retries++
         if (entry.retries >= this.MAX_RETRIES) {
           console.warn(`[ONCHAIN] ⏭️ Desistindo de ancorar ${id} após ${this.MAX_RETRIES} tentativas`)
-          this.pendingProofs.delete(id)
+          if (this.proofReconciler?.reconcileFailedProof(id).reconciled) {
+            this.pendingProofs.delete(id)
+          }
         }
       }
     }
@@ -164,19 +180,22 @@ export class OnChainIntentPublisher {
   }
 
   async anchorDecision(id: string, report: DecisionReport): Promise<{ txHash: string; blockNumber: number; hash: string } | null> {
-    try {
-      const baseMeta = {
-        decisionReportHash: "",
-        intentId: report.intentId,
-        agentId: report.agentId,
-        action: report.action,
-        status: report.execution?.success ? "COMPLETED" : "FAILED",
-        executionTxHash: report.execution?.txHash ?? "",
-        timestamp: report.createdAt,
-      }
-      const hash = ethers.solidityPackedKeccak256(["string"], [JSON.stringify(baseMeta)])
-      const metaWithHash = JSON.stringify({ ...baseMeta, decisionReportHash: hash })
+    return this.anchorDecisionInternal(id, report, true)
+  }
 
+  private async anchorDecisionInternal(id: string, report: DecisionReport, enqueueOnFailure: boolean): Promise<{ txHash: string; blockNumber: number; hash: string } | null> {
+    const baseMeta = {
+      decisionReportHash: "",
+      intentId: report.intentId,
+      agentId: report.agentId,
+      action: report.action,
+      status: report.execution?.success ? "COMPLETED" : "FAILED",
+      executionTxHash: report.execution?.txHash ?? "",
+      timestamp: report.createdAt,
+    }
+    const hash = ethers.solidityPackedKeccak256(["string"], [JSON.stringify(baseMeta)])
+    const metaWithHash = JSON.stringify({ ...baseMeta, decisionReportHash: hash })
+    try {
       if (this.onChainEnabled && this.signer) {
         // Server-side: assina direto com ethers
         const contract = new ethers.Contract(DECISION_ANCHOR_ADDRESS, DECISION_ANCHOR_ABI, this.signer)
@@ -203,7 +222,17 @@ export class OnChainIntentPublisher {
       return data
     } catch (e) {
       console.warn(`[ONCHAIN] ⏳ Anchor falhou para ${id} — marcando como pending (retry ${(this.pendingProofs.get(id)?.retries ?? 0) + 1}/${this.MAX_RETRIES})`, e)
-      this.pendingProofs.set(id, { report, retries: (this.pendingProofs.get(id)?.retries ?? 0) })
+      // Redis outbox is authoritative when configured. The legacy in-memory
+      // queue is retained only as a local/offline fallback, never in parallel.
+      if (enqueueOnFailure && !this.durableOutbox && !this.pendingProofs.has(id)) {
+        this.pendingProofs.set(id, { report, retries: 0 })
+      }
+      if (enqueueOnFailure && this.durableOutbox && report.auditId) {
+        await this.durableOutbox.enqueue({
+          intentId: id, decisionReportId: report.id, auditId: report.auditId,
+          decisionHash: hash, compactPayload: metaWithHash, nextAttemptAt: Date.now(), lastError: e instanceof Error ? e.message : String(e),
+        })
+      }
       return null
     }
   }

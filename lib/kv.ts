@@ -60,3 +60,7 @@ export function tradingBudgetKvKey(): string {
 export function riskBoxesKvKey(): string {
   return `arcflow:${kvEnvNamespace()}:risk-boxes:state`
 }
+
+export function onChainProofOutboxPrefix(): string {
+  return `arcflow:${kvEnvNamespace()}:onchain-proof-outbox`
+}

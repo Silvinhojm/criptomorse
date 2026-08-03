@@ -8,16 +8,24 @@ import { PolicyEngine } from "./policy-engine"
 import { SettlementRegistry, type SettlementRecord } from "./settlement-registry"
 import type { DecisionReport } from "./decision-report"
 import type { IntentRecord } from "./intent-types"
+import { OnChainProofReconciler } from "./onchain-proof-reconciler"
+import { RedisOnChainProofOutbox } from "./onchain-proof-outbox-redis"
+import { getRedis, isKvConfigured } from "@/lib/kv"
 
 export const frameworkReputation = new Reputation("arcflow")
 export const frameworkAudit = new Audit("arcflow")
 export const frameworkIntents = new OnChainIntentPublisher(new IntentPublisher("arcflow"))
+export const frameworkProofReconciler = new OnChainProofReconciler(frameworkIntents, frameworkAudit)
+frameworkIntents.setProofReconciler(frameworkProofReconciler)
+if (typeof window === "undefined" && isKvConfigured()) {
+  frameworkIntents.setDurableOutbox(new RedisOnChainProofOutbox(getRedis()))
+}
 export const frameworkKnowledge = new KnowledgeService()
 export const frameworkPolicy = new PolicyEngine()
 export const frameworkSettlementRegistry = new SettlementRegistry()
 frameworkSettlementRegistry.setRecordListener(updateDecisionReportFromSettlement)
 export const frameworkCoordinator = new Coordinator(
-  { name: "ArcCoordinator", audit: frameworkAudit, policyEngine: frameworkPolicy, intentPublisher: frameworkIntents },
+  { name: "ArcCoordinator", audit: frameworkAudit, policyEngine: frameworkPolicy, intentPublisher: frameworkIntents, proofReconciler: frameworkProofReconciler },
   {
     reputation: frameworkReputation,
     knowledge: frameworkKnowledge,
