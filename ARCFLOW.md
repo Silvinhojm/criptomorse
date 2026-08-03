@@ -4384,3 +4384,21 @@ A wallet secundária (0xfa03...) deployou 3 pools AMM adicionais além do oficia
 3. ⏳ Transferir ownership dos GenericAMMPair secundários de 0xfa03... para 0x77f5... se mantidos
 4. ⏳ Decidir destino dos 3 pools AMM não documentados (ver seção 58.4)
 5. ⏳ Documentar transações próprias no ERC8183 v2 filtrando por wallet 0x77f5...
+
+---
+
+## 59. RI-BANK-34/38 — Cron KMS em Produção
+
+O cron processa no máximo um plano persistido por invocação. A ordem dos gates
+é: kill switch, circuit breaker fresh, confirmação de mainnet, plano e rota
+autorizada, lease Redis, orçamento, caixa de risco, auditoria pré-execução,
+signer AWS KMS via Vercel OIDC e `realSwap.executeSwap()`.
+
+As rotas `POST /api/admin/cron-control` e `POST /api/cron/trigger` exigem,
+respectivamente, `ADMIN_PANIC_KEY` e `CRON_SECRET`. O workflow permanece apenas
+manual (`workflow_dispatch`), com schedule comentado.
+
+Correção RI-BANK-38 (03/08/2026): `_getTokenPrice()` monta uma URL absoluta a
+partir do `VERCEL_URL` gerenciado quando executado no servidor. O navegador
+continua usando `/api/price`; host ausente ou fora de `*.vercel.app` usa o
+fallback seguro e não abre SSRF.
