@@ -52,6 +52,10 @@ export interface CronAuditEvent {
   outcome: string
   reason: string
   txHash?: string
+  source?: "manual-test"
+  actor?: string
+  manualDispatchRef?: string
+  payload?: Record<string, string | boolean>
 }
 
 export interface CronTradingStateStore {
