@@ -4593,6 +4593,28 @@ a cada 15 minutos. A execução reutiliza `executeCronPlanWithKms()` e grava doi
 eventos imutáveis na auditoria RI-BANK-34 com `source: "manual-test"`, payload,
 ator administrativo, referência manual e hash final.
 
+### RI-BANK-41 — fallback de preço estável no preflight de saldo
+
+**Distinção de dois usos do preço (importante):**
+
+1. **Preflight de saldo (segurança)** — em `RealSwapExecutor._getTokenPrice()`
+   (`lib/real-swap-executor.ts`): quando a chamada a `/api/price` falha ou a URL
+   interna não é resolvível e não há cache, tokens stable (USDC, USDT, DAI, EURC)
+   caem em **$1.00** em vez de `0`. Isso serve apenas para responder *"há saldo
+   suficiente para cobrir o valor mínimo da operação?"* — variação de centavos é
+   irrelevante nessa pergunta. Tokens voláteis sem preço permanecem `0` (bloqueio
+   conservador).
+2. **Decisão de trading/lucro (estratégia)** — **nunca** usa esse fallback. A
+   lucratividade usa cotações reais: `generateSyntheticQuote`/AMM `getAmountOut`
+   do pool (GenericAMMPair), quotes DEX V2/V3 e LI.FI (`bestToEstimate`), e o
+   preço real da API quando disponível. O fallback de $1.00 **não substitui** a
+   variação real de mercado (ex: EURC ~1.08) em nenhum ponto da lógica de lucro.
+
+**Correção aplicada:** os dois ramos de retorno `cached?.price ?? 0` de
+`_getTokenPrice()` (quando a API responde sem preço válido e no `catch` de falha
+de rede) passaram a usar `cached?.price ?? (isStable(token) ? 1.0 : 0)`,
+simétrico ao fallback já existente nos ramos `!priceUrl` e `!res.ok`.
+
 **Bug corrigido (observado no RI-BANK-39):** no disparo manual, o preflight
 bloqueou `USDC→EURC` com `Saldo insuficiente de USDC: $0.0000 (19.999475 USDC)`
 porque `_getTokenPrice("USDC")` retornou `0` em ambiente server-side, zerando
