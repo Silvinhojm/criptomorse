@@ -384,9 +384,15 @@ class RealSwapExecutor {
         this.priceCache.set(token, { price: adjustedPrice, timestamp: Date.now() });
         return adjustedPrice;
       }
-      return cached?.price ?? 0;
+      // RI-BANK-41: fallback de stablecoin $1.00 quando a API de preço falha.
+      // Este fallback serve EXCLUSIVAMENTE ao preflight de saldo suficiente
+      // (resposta: "há saldo p/ cobrir o mínimo da operação?"). A variação real
+      // de mercado (ex: EURC ~1.08) continua vindo da API/synthetic quote; nunca
+      // substituir a fonte usada pela decisão de trading/lucro. Tokens voláteis
+      // sem preço permanecem 0 (bloqueio conservador).
+      return cached?.price ?? (isStable(token) ? 1.0 : 0);
     } catch {
-      return cached?.price ?? 0;
+      return cached?.price ?? (isStable(token) ? 1.0 : 0);
     }
   }
 
@@ -1039,6 +1045,10 @@ class RealSwapExecutor {
     await this.refreshAllBalances();
     let fromBalance     = this.getBalance(fromToken);
     const fromPrice       = await this._getTokenPrice(fromToken);
+    // RI-BANK-41: preflight de saldo — aqui o preço serve apenas para responder
+    // "há saldo suficiente p/ o valor mínimo da operação?". Falha de preço de
+    // stablecoin recai em $1.00 (via _getTokenPrice), sem influenciar a lógica
+    // de lucro/trading (essa usa cotações reais do pool).
     let fromBalanceUsd  = fromBalance * fromPrice;
     if (fromBalanceUsd < amountUsd * 0.95) {
       const bridged = await this.ensureStableViaCCTP(fromToken, amountUsd, log);
