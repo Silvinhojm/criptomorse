@@ -9,7 +9,7 @@ export interface OnChainProofBroadcaster {
 }
 
 export interface RecoveryRunResult {
-  status: "idle" | "confirmed" | "retry_scheduled" | "dead_letter"
+  status: "idle" | "confirmed" | "retry_scheduled" | "dead_letter" | "legacy_evidence_missing"
   intentId?: string
   attempts?: number
 }
@@ -44,17 +44,25 @@ export class OnChainProofRecoveryService {
         }
       }
 
-      const result = this.reconciler.reconcileConfirmedProof(item.intentId, proof)
+      const result = await this.reconciler.reconcileConfirmedProof(item.intentId, proof)
       if (!result.reconciled) throw new Error(result.error ?? "reconciliation_failed")
       if (!await this.outbox.complete(item.intentId, owner)) throw new Error("outbox_ack_failed")
       return { status: "confirmed", intentId: item.intentId, attempts: item.attempts }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      if (message === "legacy_evidence_missing") {
+        await this.outbox.markLegacyEvidenceMissing(item.intentId, owner)
+        return { status: "legacy_evidence_missing", intentId: item.intentId, attempts: item.attempts }
+      }
       const exhausted = item.attempts >= this.maxAttempts
       const backoff = Math.min(15 * 60_000, 30_000 * (2 ** Math.max(0, item.attempts - 1)))
       let canDeadLetter = exhausted
       if (exhausted) {
-        const failed = this.reconciler.reconcileFailedProof(item.intentId)
+        const failed = await this.reconciler.reconcileFailedProof(item.intentId)
+        if (failed.error === "legacy_evidence_missing") {
+          await this.outbox.markLegacyEvidenceMissing(item.intentId, owner)
+          return { status: "legacy_evidence_missing", intentId: item.intentId, attempts: item.attempts }
+        }
         canDeadLetter = failed.reconciled
       }
       await this.outbox.retry(item.intentId, owner, message, now + backoff, canDeadLetter)

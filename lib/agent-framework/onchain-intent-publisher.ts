@@ -72,7 +72,7 @@ export class OnChainIntentPublisher {
     for (const [id, entry] of this.pendingProofs) {
       const result = await this.anchorDecisionInternal(id, entry.report, false)
       if (result) {
-        if (this.proofReconciler?.reconcileConfirmedProof(id, result).reconciled) {
+        if ((await this.proofReconciler?.reconcileConfirmedProof(id, result))?.reconciled) {
           this.pendingProofs.delete(id)
           resolved++
         }
@@ -80,7 +80,7 @@ export class OnChainIntentPublisher {
         entry.retries++
         if (entry.retries >= this.MAX_RETRIES) {
           console.warn(`[ONCHAIN] ⏭️ Desistindo de ancorar ${id} após ${this.MAX_RETRIES} tentativas`)
-          if (this.proofReconciler?.reconcileFailedProof(id).reconciled) {
+          if ((await this.proofReconciler?.reconcileFailedProof(id))?.reconciled) {
             this.pendingProofs.delete(id)
           }
         }

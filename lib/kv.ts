@@ -64,3 +64,19 @@ export function riskBoxesKvKey(): string {
 export function onChainProofOutboxPrefix(): string {
   return `arcflow:${kvEnvNamespace()}:onchain-proof-outbox`
 }
+
+export function decisionReportEvidenceKvKey(intentId: string): string {
+  return `arcflow:${kvEnvNamespace()}:decision-report:${intentId}`
+}
+
+export function decisionReportEvidenceIndexKvKey(): string {
+  return `arcflow:${kvEnvNamespace()}:decision-reports:index`
+}
+
+export function auditEvidenceKvKey(auditId: string): string {
+  return `arcflow:${kvEnvNamespace()}:audit:${auditId}`
+}
+
+export function auditEvidenceIndexKvKey(): string {
+  return `arcflow:${kvEnvNamespace()}:audits:index`
+}

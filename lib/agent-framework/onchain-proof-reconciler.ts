@@ -1,6 +1,7 @@
 import type { IAudit, AuditEntry } from "./IAudit"
 import type { DecisionReport } from "./decision-report"
 import type { IIntentPublisher } from "./intent-types"
+import type { IDecisionEvidenceStore } from "./decision-evidence-store"
 
 export interface ConfirmedOnChainProof {
   hash: string
@@ -20,11 +21,12 @@ export interface ProofReconciliationResult {
  */
 export class OnChainProofReconciler {
   constructor(
-    private readonly intents: Pick<IIntentPublisher, "getRecord" | "setDecisionReport">,
-    private readonly audit: Pick<IAudit, "getById" | "updateEntry">,
+    private readonly intents: Pick<IIntentPublisher, "publish" | "getRecord" | "setDecisionReport">,
+    private readonly audit: Pick<IAudit, "record" | "getById" | "updateEntry">,
+    private readonly evidenceStore?: IDecisionEvidenceStore,
   ) {}
 
-  reconcileConfirmedProof(intentId: string, proof: ConfirmedOnChainProof): ProofReconciliationResult {
+  reconcileConfirmedProof(intentId: string, proof: ConfirmedOnChainProof): Promise<ProofReconciliationResult> {
     return this.reconcile(intentId, {
       onChainHash: proof.hash,
       onChainTx: proof.txHash,
@@ -32,14 +34,16 @@ export class OnChainProofReconciler {
     })
   }
 
-  reconcileFailedProof(intentId: string): ProofReconciliationResult {
+  reconcileFailedProof(intentId: string): Promise<ProofReconciliationResult> {
     return this.reconcile(intentId, { onChainStatus: "failed" })
   }
 
-  private reconcile(
+  private async reconcile(
     intentId: string,
     patch: Pick<DecisionReport, "onChainStatus"> & Partial<Pick<DecisionReport, "onChainHash" | "onChainTx">>,
-  ): ProofReconciliationResult {
+  ): Promise<ProofReconciliationResult> {
+    if (this.evidenceStore) return this.reconcileDurable(intentId, patch)
+
     const current = this.intents.getRecord(intentId)?.decisionReport
     if (!current) return { reconciled: false, idempotent: false, error: "decision_report_not_found" }
     if (!current.auditId) return { reconciled: false, idempotent: false, error: "audit_id_missing" }
@@ -76,6 +80,43 @@ export class OnChainProofReconciler {
       return { reconciled: false, idempotent: false, error: "proof_write_verification_failed" }
     }
     return { reconciled: true, idempotent: false }
+  }
+
+  private async reconcileDurable(
+    intentId: string,
+    patch: Pick<DecisionReport, "onChainStatus"> & Partial<Pick<DecisionReport, "onChainHash" | "onChainTx">>,
+  ): Promise<ProofReconciliationResult> {
+    const current = await this.evidenceStore!.getDecisionReport(intentId)
+    if (!current?.report.auditId) {
+      return { reconciled: false, idempotent: false, error: "legacy_evidence_missing" }
+    }
+    const audit = await this.evidenceStore!.getAuditEntry(current.report.auditId)
+    if (!audit) return { reconciled: false, idempotent: false, error: "legacy_evidence_missing" }
+
+    const result = await this.evidenceStore!.reconcileProof(intentId, current.report.auditId, patch)
+    if (!result.reconciled) return result
+
+    const reportAfter = await this.evidenceStore!.getDecisionReport(intentId)
+    const auditAfter = await this.evidenceStore!.getAuditEntry(current.report.auditId)
+    if (!reportAfter || !auditAfter || !this.matches(reportAfter.report, auditAfter.entry, patch)) {
+      return { reconciled: false, idempotent: false, error: "proof_write_verification_failed" }
+    }
+
+    // Cache hydration is compatibility-only. Redis is the canonical evidence.
+    if (!this.intents.getRecord(intentId)) {
+      await this.intents.publish({
+        id: intentId,
+        agentId: reportAfter.report.agentId,
+        action: reportAfter.report.action,
+        params: reportAfter.report.params,
+        confidence: reportAfter.report.voting?.confidence ?? 0,
+        timestamp: reportAfter.report.createdAt,
+      })
+    }
+    this.intents.setDecisionReport(intentId, reportAfter.report)
+    if (!this.audit.getById?.(auditAfter.entry.id)) this.audit.record(auditAfter.entry)
+    else this.audit.updateEntry(auditAfter.entry.id, this.proofSnapshot(auditAfter.entry))
+    return { reconciled: true, idempotent: result.idempotent }
   }
 
   private matches(report: DecisionReport, audit: AuditEntry, patch: Partial<DecisionReport>): boolean {

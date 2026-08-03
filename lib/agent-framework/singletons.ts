@@ -11,11 +11,15 @@ import type { IntentRecord } from "./intent-types"
 import { OnChainProofReconciler } from "./onchain-proof-reconciler"
 import { RedisOnChainProofOutbox } from "./onchain-proof-outbox-redis"
 import { getRedis, isKvConfigured } from "@/lib/kv"
+import { RedisDecisionEvidenceStore } from "./decision-evidence-store-redis"
 
 export const frameworkReputation = new Reputation("arcflow")
 export const frameworkAudit = new Audit("arcflow")
 export const frameworkIntents = new OnChainIntentPublisher(new IntentPublisher("arcflow"))
-export const frameworkProofReconciler = new OnChainProofReconciler(frameworkIntents, frameworkAudit)
+export const frameworkEvidenceStore = typeof window === "undefined" && isKvConfigured()
+  ? new RedisDecisionEvidenceStore(getRedis())
+  : undefined
+export const frameworkProofReconciler = new OnChainProofReconciler(frameworkIntents, frameworkAudit, frameworkEvidenceStore)
 frameworkIntents.setProofReconciler(frameworkProofReconciler)
 if (typeof window === "undefined" && isKvConfigured()) {
   frameworkIntents.setDurableOutbox(new RedisOnChainProofOutbox(getRedis()))
@@ -25,7 +29,11 @@ export const frameworkPolicy = new PolicyEngine()
 export const frameworkSettlementRegistry = new SettlementRegistry()
 frameworkSettlementRegistry.setRecordListener(updateDecisionReportFromSettlement)
 export const frameworkCoordinator = new Coordinator(
-  { name: "ArcCoordinator", audit: frameworkAudit, policyEngine: frameworkPolicy, intentPublisher: frameworkIntents, proofReconciler: frameworkProofReconciler },
+  {
+    name: "ArcCoordinator", audit: frameworkAudit, policyEngine: frameworkPolicy,
+    intentPublisher: frameworkIntents, proofReconciler: frameworkProofReconciler,
+    evidenceStore: frameworkEvidenceStore,
+  },
   {
     reputation: frameworkReputation,
     knowledge: frameworkKnowledge,

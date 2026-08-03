@@ -1,5 +1,28 @@
 # CriptoMorse — Manual de Arquitetura e Parâmetros
 
+## RI-BANK-29 — Evidência canônica durável no Redis (02/08/2026)
+
+`DecisionReport` e `Audit` novos passam a ser persistidos prospectivamente por
+um `IDecisionEvidenceStore` assíncrono. `IntentPublisher` e `Audit` continuam
+fachadas/caches síncronos para dashboards, subscribers, mocks e compatibilidade.
+O Coordinator aguarda as escritas duráveis nos pontos canônicos e entra em
+fail-closed se elas falharem.
+
+- Chaves: `arcflow:<env>:decision-report:<intentId>` e
+  `arcflow:<env>:audit:<auditId>`, com `version`, ID, payload JSON completo e
+  timestamps; ZSETs mantêm índices temporais por domínio.
+- Escritas normais usam CAS de versão por Lua. A reconciliação da prova atualiza
+  report e audit no mesmo script Lua, valida o vínculo `report.auditId`, bloqueia
+  conflito de prova confirmada e incrementa as duas versões atomicamente.
+- Em invocação fria, `OnChainProofReconciler` lê primeiro os dois documentos do
+  Redis, reconcilia e verifica no Redis, depois hidrata os caches locais.
+- Política B1: não há backfill. Item anterior sem documentos duráveis recebe o
+  estado terminal observável `legacy_evidence_missing`, sem ACK ou reconstrução.
+- `ONCHAIN_PROOF_RECOVERY_JOB_ENABLED` continua desligado; não há signer KMS,
+  broadcast, trade, RPC ou transação habilitada por esta mudança.
+
+---
+
 ## RI-BANK-28 — Recovery durável de provas on-chain (02/08/2026)
 
 O retry de `DecisionAnchor` passa a ter uma outbox Redis durável, com claim

@@ -27,6 +27,13 @@ export type { AgentIntent, IntentRecord, IntentStatus, IntentFilter, IIntentPubl
 export type { KnowledgeRequest, KnowledgeReport, ResolvedKnowledgeContext } from "../knowledge-types"
 export type { DecisionReport, RejectionStage, RejectedBy, RejectionCode, RejectionMetadata } from "../decision-report"
 export type {
+  IDecisionEvidenceStore,
+  VersionedDecisionReport,
+  VersionedAuditEntry,
+  EvidenceWriteResult,
+  EvidenceReconcileResult,
+} from "../decision-evidence-store"
+export type {
   PolicyRule,
   PolicyEngineConfig,
   MinimumConfidenceNetworkOverride,

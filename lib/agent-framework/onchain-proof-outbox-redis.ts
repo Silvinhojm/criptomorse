@@ -27,7 +27,7 @@ if owner ~= ARGV[1] then return 0 end
 redis.call('HSET', KEYS[1], 'status', ARGV[2], 'lastError', ARGV[3], 'nextAttemptAt', ARGV[4])
 redis.call('HDEL', KEYS[1], 'leaseOwner')
 if redis.call('GET', KEYS[3]) == ARGV[1] then redis.call('DEL', KEYS[3]) end
-if ARGV[2] == 'confirmed' or ARGV[2] == 'dead_letter' then
+if ARGV[2] == 'confirmed' or ARGV[2] == 'dead_letter' or ARGV[2] == 'legacy_evidence_missing' then
   redis.call('ZREM', KEYS[2], ARGV[5])
 else
   redis.call('ZADD', KEYS[2], ARGV[4], ARGV[5])
@@ -73,6 +73,10 @@ export class RedisOnChainProofOutbox implements OnChainProofOutbox {
     const current = await this.get(intentId)
     const status = exhausted ? "dead_letter" : (current?.txHash ? "reconciliation_pending" : "retry_wait")
     return this.transition(intentId, owner, status, error.slice(0, 500), nextAttemptAt)
+  }
+
+  async markLegacyEvidenceMissing(intentId: string, owner: string): Promise<boolean> {
+    return this.transition(intentId, owner, "legacy_evidence_missing", "legacy_evidence_missing", Date.now())
   }
 
   async get(intentId: string): Promise<OnChainProofOutboxItem | null> {

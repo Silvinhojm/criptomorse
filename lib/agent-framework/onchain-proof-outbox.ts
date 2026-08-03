@@ -1,4 +1,4 @@
-export type OnChainProofOutboxStatus = "pending" | "processing" | "retry_wait" | "reconciliation_pending" | "confirmed" | "dead_letter"
+export type OnChainProofOutboxStatus = "pending" | "processing" | "retry_wait" | "reconciliation_pending" | "confirmed" | "dead_letter" | "legacy_evidence_missing"
 
 export interface OnChainProofOutboxItem {
   intentId: string
@@ -21,6 +21,7 @@ export interface OnChainProofOutbox {
   recordKnownProof(intentId: string, owner: string, proof: { txHash: string; blockNumber: number }): Promise<boolean>
   complete(intentId: string, owner: string): Promise<boolean>
   retry(intentId: string, owner: string, error: string, nextAttemptAt: number, exhausted: boolean): Promise<boolean>
+  markLegacyEvidenceMissing(intentId: string, owner: string): Promise<boolean>
   get(intentId: string): Promise<OnChainProofOutboxItem | null>
 }
 
@@ -87,6 +88,18 @@ export class MemoryOnChainProofOutbox implements OnChainProofOutbox {
       item.lastError = error.slice(0, 500)
       item.nextAttemptAt = nextAttemptAt
       item.status = exhausted ? "dead_letter" : (item.txHash ? "reconciliation_pending" : "retry_wait")
+      delete item.leaseOwner
+      if (this.globalLeaseOwner === owner) this.globalLeaseOwner = null
+      return true
+    })
+  }
+
+  markLegacyEvidenceMissing(intentId: string, owner: string): Promise<boolean> {
+    return this.locked(() => {
+      const item = this.items.get(intentId)
+      if (!item || item.leaseOwner !== owner) return false
+      item.status = "legacy_evidence_missing"
+      item.lastError = "legacy_evidence_missing"
       delete item.leaseOwner
       if (this.globalLeaseOwner === owner) this.globalLeaseOwner = null
       return true

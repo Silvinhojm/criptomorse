@@ -39,11 +39,11 @@ async function run(): Promise<void> {
   // E4: one reconciler updates and verifies both stores; duplicate is idempotent.
   const first = await fixture()
   const proof = { hash: "0xhash", txHash: "0xtx", blockNumber: 28 }
-  const reconciled = first.reconciler.reconcileConfirmedProof(first.intentId, proof)
+  const reconciled = await first.reconciler.reconcileConfirmedProof(first.intentId, proof)
   expect(reconciled.reconciled && !reconciled.idempotent, "first reconciliation must write")
   expect(first.intents.getRecord(first.intentId)?.decisionReport?.onChainTx === "0xtx", "report not confirmed")
   expect(first.audit.getById(first.auditEntry.id)?.onChainTx === "0xtx", "audit not confirmed")
-  const duplicate = first.reconciler.reconcileConfirmedProof(first.intentId, proof)
+  const duplicate = await first.reconciler.reconcileConfirmedProof(first.intentId, proof)
   expect(duplicate.reconciled && duplicate.idempotent, "duplicate reconciliation must be idempotent")
 
   const serviceSuccess = await fixture()
@@ -63,9 +63,9 @@ async function run(): Promise<void> {
 
   // Atomic behavior: audit failure causes report compensation.
   const atomic = await fixture()
-  const brokenAudit = { getById: atomic.audit.getById.bind(atomic.audit), updateEntry: () => false }
+  const brokenAudit = { record: atomic.audit.record.bind(atomic.audit), getById: atomic.audit.getById.bind(atomic.audit), updateEntry: () => false }
   const brokenReconciler = new OnChainProofReconciler(atomic.intents, brokenAudit)
-  expect(!brokenReconciler.reconcileConfirmedProof(atomic.intentId, proof).reconciled, "audit failure must fail reconciliation")
+  expect(!(await brokenReconciler.reconcileConfirmedProof(atomic.intentId, proof)).reconciled, "audit failure must fail reconciliation")
   expect(atomic.intents.getRecord(atomic.intentId)?.decisionReport?.onChainStatus === "pending", "report must roll back")
 
   // Concurrent workers cannot claim the same item or lose the attempts increment.

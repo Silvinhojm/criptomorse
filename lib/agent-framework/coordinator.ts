@@ -31,6 +31,7 @@ import type {
   CoordinatorSettlementReplay,
 } from "./coordinator-dependencies"
 import type { OnChainProofReconciler } from "./onchain-proof-reconciler"
+import type { IDecisionEvidenceStore } from "./decision-evidence-store"
 
 /** Dedicated error for rejection evidence failures in cycle.
  *  Public message is fixed; internal cause preserved but not exposed. */
@@ -66,6 +67,7 @@ export interface CoordinatorConfig {
   policyEngine?: PolicyEngine
   recoveryAuthorizer?: IOperationalRecoveryAuthorizer
   proofReconciler?: OnChainProofReconciler
+  evidenceStore?: IDecisionEvidenceStore
 }
 
 export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
@@ -93,6 +95,7 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
   private readonly settlementRegistry_: CoordinatorSettlementRegistry
   private readonly settlementReplay_: CoordinatorSettlementReplay
   private readonly proofReconciler_: OnChainProofReconciler | null
+  private readonly evidenceStore_: IDecisionEvidenceStore | null
   private recoveryInProgress_: Promise<OperationalRecoveryResult> | null = null
   private recoveryProbeSequence_ = 0
 
@@ -127,6 +130,7 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
     this.settlementRegistry_ = deps.settlementRegistry
     this.settlementReplay_ = deps.settlementReplay
     this.proofReconciler_ = config.proofReconciler ?? null
+    this.evidenceStore_ = config.evidenceStore ?? null
     this.name = config.name
     this.minAgents = config.minAgents ?? 2
     this.voting = new Voting(config.name, this.MIN_AGREEING_AGENTS, this.WEIGHTED_CONFIDENCE_THRESHOLD)
@@ -356,6 +360,7 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
     let auditRecorded = false
     try {
       auditRecorded = candidateAudit.record(auditEntry)?.recorded === true
+      if (auditRecorded) auditRecorded = await this._persistAuditEntry(auditEntry)
     } catch {
       auditRecorded = false
     }
@@ -765,7 +770,7 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
       })
       try {
         const write = this.audit_.record(entry)
-        if (write?.recorded === true) {
+        if (write?.recorded === true && await this._persistAuditEntry(entry)) {
           auditId = entry.id
           dp.auditId = auditId
         } else {
@@ -814,8 +819,8 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
 
     // ── On-chain proof ──
     if (executionResult.success && !isProvisionalDispatch && this.intentPublisher_?.anchorDecision) {
-      this.intentPublisher_.anchorDecision(intentId, dp).then(result => {
-        if (result && this.proofReconciler_?.reconcileConfirmedProof(intentId, result).reconciled) {
+      this.intentPublisher_.anchorDecision(intentId, dp).then(async result => {
+        if (result && (await this.proofReconciler_?.reconcileConfirmedProof(intentId, result))?.reconciled) {
           console.log(`[${this.name}] 🔗 On-chain proof: tx:${result.txHash} block:${result.blockNumber} hash:${result.hash.slice(0, 18)}...`)
         }
       }).catch(() => {})
@@ -1162,7 +1167,7 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
           })
           try {
             const auditWrite = this.audit_.record(auditEntry)
-            if (auditWrite?.recorded === true) {
+            if (auditWrite?.recorded === true && await this._persistAuditEntry(auditEntry)) {
               cycleDecisionReport.auditId = auditEntry.id
             } else {
               cycleEvidenceFailure = "AUDIT_WRITE_REJECTED"
@@ -1203,8 +1208,8 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
 
         // On-chain proof
         if (result.success && !isProvisionalDispatch && this.intentPublisher_?.anchorDecision) {
-          this.intentPublisher_.anchorDecision(cycleIntentId, cycleDecisionReport).then(anchorResult => {
-            if (anchorResult && this.proofReconciler_?.reconcileConfirmedProof(cycleIntentId, anchorResult).reconciled) {
+          this.intentPublisher_.anchorDecision(cycleIntentId, cycleDecisionReport).then(async anchorResult => {
+            if (anchorResult && (await this.proofReconciler_?.reconcileConfirmedProof(cycleIntentId, anchorResult))?.reconciled) {
               console.log(`[${this.name}] 🔗 On-chain proof (cycle): tx:${anchorResult.txHash} block:${anchorResult.blockNumber}`)
             }
           }).catch(() => {})
@@ -1333,6 +1338,8 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
       if (!ok) {
         return { saved: false, mode: "updated_existing", error: "setDecisionReport returned false" }
       }
+      const durable = await this._persistDecisionReport(intentId, report)
+      if (!durable.saved) return { saved: false, mode: "updated_existing", error: durable.error }
       this._syncSettlementFromRegistry(intentId)
       return { saved: true, mode: "updated_existing" }
     }
@@ -1353,11 +1360,32 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
       if (!ok) {
         return { saved: false, mode: "published_new", error: "setDecisionReport returned false after publish" }
       }
+      const durable = await this._persistDecisionReport(intentId, report)
+      if (!durable.saved) return { saved: false, mode: "published_new", error: durable.error }
       this._syncSettlementFromRegistry(intentId)
       return { saved: true, mode: "published_new" }
     } catch (e) {
       const msg = (e as Error).message ?? String(e)
       return { saved: false, mode: "published_new", error: `Publish failed: ${msg}` }
+    }
+  }
+
+  private async _persistDecisionReport(intentId: string, report: DecisionReport): Promise<{ saved: boolean; error?: string }> {
+    if (!this.evidenceStore_) return { saved: true }
+    try {
+      const result = await this.evidenceStore_.saveDecisionReport(intentId, report)
+      return result.saved ? { saved: true } : { saved: false, error: result.error ?? "durable decision report write failed" }
+    } catch (error) {
+      return { saved: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  private async _persistAuditEntry(entry: import("./IAudit").AuditEntry): Promise<boolean> {
+    if (!this.evidenceStore_) return true
+    try {
+      return (await this.evidenceStore_.saveAuditEntry(entry)).saved
+    } catch {
+      return false
     }
   }
 
@@ -1431,7 +1459,7 @@ export class Coordinator implements ICoordinator, IOperationalRecoveryControl {
       })
       try {
         const auditWrite = this.audit_.record(entry)
-        auditRecorded = auditWrite?.recorded === true
+        auditRecorded = auditWrite?.recorded === true && await this._persistAuditEntry(entry)
         if (!auditRecorded) auditFailureCode = "AUDIT_WRITE_REJECTED"
       } catch {
         auditRecorded = false
