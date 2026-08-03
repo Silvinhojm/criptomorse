@@ -4484,3 +4484,41 @@ O Corretor chama `initializeTradingBudgetDailyLimit()` antes do gate diário e `
 - `lib/security/ri-bank-11-trilha-a-drawdown-verification.test.ts`: atualizado para o limiar de `60%`.
 - `lib/security/ri-bank-12-risk-boxes-verification.test.ts`: regressão das decisões A/B permanece aprovada.
 - Testes executados sem credenciais Redis. O fallback local do circuit breaker é copiado e restaurado pela suíte; nenhum estado externo, trade ou wallet é tocado.
+
+---
+
+## 62. RI-BANK-32 — AWS KMS EVM Signer
+
+Implementado em 03/08/2026 como adaptador isolado, sem conexão com cron, lease, Coordinator, TradingAdapter ou execução econômica.
+
+### Fluxo comprovado
+
+```text
+Vercel Function production
+  -> token OIDC efêmero
+  -> STS AssumeRoleWithWebIdentity
+  -> credenciais AWS temporárias
+  -> KMS GetPublicKey / Sign
+  -> DER para r,s + EIP-2 low-S
+  -> recovery de yParity/v
+  -> transação EIP-1559 Arc Testnet
+```
+
+Controles fail-closed:
+
+- chave deve ser `ECC_SECG_P256K1`, `SIGN_VERIFY`, `ECDSA_SHA_256`;
+- SPKI deve derivar exatamente `0x88993E37Ed022C56F83f67C74d33C783E8e49C75`;
+- digest deve ter 32 bytes e toda assinatura deve recuperar o endereço esperado;
+- rota de prova é POST, production-only, bearer-only, Arc chainId `5042002`, self-transfer de valor zero e nonce fixo;
+- nonce de teste `0` foi consumido e impede uma segunda transação.
+
+Provas:
+
+- teste local DER/low-S/recovery/transaction: aprovado;
+- assinatura KMS real via OIDC: endereço exato, `v=28`;
+- faucet Circle: `0x325ec3ce4ae521545a6b0bc9334b7a87e5679faf443901b2e5a2698d93ee7bf6`;
+- tx KMS Arc Testnet: `0x342ddcbd1347c7e8b4bdbc584511c6f668badaab2135236657a34895231ce8b5`, bloco `55117565`, status `1`, gas `21000`, valor `0`.
+
+Arquivos: `lib/kms/kms-evm-signer.ts`, `lib/kms/vercel-oidc-kms.ts`, `app/api/internal/ri-bank-32-kms-proof/route.ts` e `lib/security/ri-bank-32-kms-evm-signer.test.ts`.
+
+Limitação operacional encontrada: as 11 variáveis Vercel documentadas em 02/08 haviam desaparecido em 03/08. As quatro variáveis públicas KMS foram restauradas; credenciais Upstash ausentes não foram recriadas. O bearer e o nonce temporários da prova foram removidos da Vercel após o teste. Investigar a perda antes de qualquer ativação futura do cron/trading.
