@@ -1,5 +1,28 @@
 # CriptoMorse — Manual de Arquitetura e Parâmetros
 
+## RI-BANK-31 — Cold recovery Redis corrigido (02/08/2026)
+
+O teste real RI-BANK-30 revelou dois defeitos que os adapters em memória não
+reproduziam. Ambos foram corrigidos no adapter Redis da outbox:
+
+- `recordKnownProof()` agora grava tx/bloco/status e reinsere o intent no ZSET
+  `:due` dentro do mesmo script Lua. O lease global continua impedindo outro
+  worker de reclamar o item antes do TTL; se o processo morrer, a nova
+  instância o encontra assim que o lease expira.
+- `compactPayload` devolvido pelo Upstash como objeto é normalizado com
+  `JSON.stringify`, preservando metadata JSON legível em vez de
+  `"[object Object]"`.
+
+Provas realizadas contra o Redis dedicado reproduziram os dois bugs antigos e
+aprovaram os dois caminhos corrigidos. O cenário real de morte do processo foi
+repetido na Arc Testnet: tx
+`0x2722266c4982dfaf4d827cd3e876550dacf8a419b05ae8738438467e0eda3c54`,
+bloco `55034873`; o processo novo reconciliou report, audit e outbox para
+`confirmed` usando a prova durável, e o evento contém metadata JSON válido.
+O job de produção continua desativado.
+
+---
+
 ## RI-BANK-29 — Evidência canônica durável no Redis (02/08/2026)
 
 `DecisionReport` e `Audit` novos passam a ser persistidos prospectivamente por

@@ -38,6 +38,7 @@ return 1
 const KNOWN_PROOF_LUA = `
 if redis.call('HGET', KEYS[1], 'leaseOwner') ~= ARGV[1] then return 0 end
 redis.call('HSET', KEYS[1], 'txHash', ARGV[2], 'blockNumber', ARGV[3], 'status', 'reconciliation_pending')
+redis.call('ZADD', KEYS[2], ARGV[4], ARGV[5])
 return 1
 `
 
@@ -62,7 +63,11 @@ export class RedisOnChainProofOutbox implements OnChainProofOutbox {
   }
 
   async recordKnownProof(intentId: string, owner: string, proof: { txHash: string; blockNumber: number }): Promise<boolean> {
-    return Number(await this.redis.eval(KNOWN_PROOF_LUA, [this.itemKey(intentId)], [owner, proof.txHash, proof.blockNumber])) === 1
+    return Number(await this.redis.eval(
+      KNOWN_PROOF_LUA,
+      [this.itemKey(intentId), this.dueKey],
+      [owner, proof.txHash, proof.blockNumber, Date.now(), intentId],
+    )) === 1
   }
 
   async complete(intentId: string, owner: string): Promise<boolean> {
@@ -108,11 +113,17 @@ export class RedisOnChainProofOutbox implements OnChainProofOutbox {
     const optional = (name: string) => value[name] === undefined || value[name] === "" ? undefined : String(value[name])
     return {
       intentId: String(value.intentId), decisionReportId: String(value.decisionReportId), auditId: String(value.auditId),
-      decisionHash: String(value.decisionHash), compactPayload: String(value.compactPayload),
+      decisionHash: String(value.decisionHash), compactPayload: this.normalizeCompactPayload(value.compactPayload),
       attempts: Number(value.attempts), nextAttemptAt: Number(value.nextAttemptAt), lastError: optional("lastError"),
       status: String(value.status) as OnChainProofOutboxItem["status"], txHash: optional("txHash"),
       blockNumber: value.blockNumber === undefined || value.blockNumber === "" ? undefined : Number(value.blockNumber),
       leaseOwner: optional("leaseOwner"),
     }
+  }
+
+  private normalizeCompactPayload(value: unknown): string {
+    if (typeof value === "string") return value
+    if (value === undefined || value === null) return ""
+    return JSON.stringify(value)
   }
 }
