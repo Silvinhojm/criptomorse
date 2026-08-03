@@ -799,6 +799,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
                 timestamp: Date.now(),
                 fromToken: pos.boughtToken,
                 toToken: "USDC",
+                riskBox: pos.riskBox,
               })
             }
             pregão.adicionarLog(`📢 Auto-sell: ${sellPar} em ${pos.networkKey} — 3 OKs injetados`)
@@ -1666,6 +1667,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
                 rede: v.network, par: v.pair, confianca: v.confidence, timestamp: Date.now(),
                 fromToken: v.fromToken, toToken: v.toToken,
                 direcao: v.action, precoNoPalpite: currentPrice,
+                riskBox: posVenda.riskBox,
               })
             }
           }
@@ -1802,6 +1804,7 @@ export async function executarCicloAgentes(rede?: string, amountUsd?: number): P
         timestamp: Date.now(),
         fromToken: pos.boughtToken,
         toToken: "USDC",
+        riskBox: pos.riskBox,
       })
     }
   }

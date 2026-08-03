@@ -1,6 +1,109 @@
+import type { CircuitBreakerState } from "./circuit-breaker"
+
 const TRADE_HISTORY_KEY = "arcflow_trade_history";
 const TRADER_STATE_KEY = "arcflow_trader_state";
 const CIRCUIT_BREAKER_KEY = "arcflow_circuit_breaker";
+
+function circuitBreakerFilePath(): string {
+  const path = require("path") as typeof import("path")
+  return path.join(process.cwd(), ".data", "circuit-breaker-state.json")
+}
+
+function readJsonFile<T>(filePath: string, fallback: T): T {
+  try {
+    const fs = require("fs") as typeof import("fs")
+    if (!fs.existsSync(filePath)) return fallback
+    const raw = fs.readFileSync(filePath, "utf-8")
+    return raw ? JSON.parse(raw) : fallback
+  } catch (e) {
+    console.error(`[persistence] fs read failed for ${filePath}:`, (e as Error).message)
+    return fallback
+  }
+}
+
+function writeJsonFile(filePath: string, value: any): boolean {
+  try {
+    const fs = require("fs") as typeof import("fs")
+    const path = require("path") as typeof import("path")
+    const dir = path.dirname(filePath)
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(filePath, JSON.stringify(value, null, 2), "utf-8")
+    return true
+  } catch (e) {
+    console.error(`[persistence] fs write failed for ${filePath}:`, (e as Error).message)
+    return false
+  }
+}
+
+const CB_DELTA_FIELDS = ["consecutiveLosses", "totalLoss", "totalProfit"] as const
+type CbDeltaField = (typeof CB_DELTA_FIELDS)[number]
+
+function serializeAbsoluteCbFields(state: CircuitBreakerState): Record<string, string> {
+  return {
+    isPanicActive: String(state.isPanicActive),
+    panicReason: state.panicReason ?? "",
+    panicTimestamp: state.panicTimestamp ?? "",
+    maxLossesBeforePanic: String(state.maxLossesBeforePanic),
+    maxDrawdownPercent: String(state.maxDrawdownPercent),
+    isTestnet: String(state.isTestnet),
+    peakNetEquity: String(state.peakNetEquity),
+    routeHealth: JSON.stringify(state.routeHealth ?? {}),
+  }
+}
+
+function parseCbHash(hash: Record<string, unknown> | null, fallback: CircuitBreakerState): CircuitBreakerState {
+  if (!hash || Object.keys(hash).length === 0) return fallback
+  const num = (v: unknown, d: number) => (v === undefined || v === "" ? d : Number(v as any))
+  const bool = (v: unknown, d: boolean) => (v === undefined ? d : v === true || v === "true")
+  const str = (v: unknown): string | null => (v === undefined || v === null || v === "" ? null : String(v))
+  let routeHealth = fallback.routeHealth
+  try {
+    if (hash.routeHealth) routeHealth = typeof hash.routeHealth === "string" ? JSON.parse(hash.routeHealth) : (hash.routeHealth as any)
+  } catch { /* keep fallback.routeHealth if corrupted */ }
+  return {
+    isPanicActive: bool(hash.isPanicActive, fallback.isPanicActive),
+    panicReason: str(hash.panicReason),
+    panicTimestamp: str(hash.panicTimestamp),
+    consecutiveLosses: num(hash.consecutiveLosses, fallback.consecutiveLosses),
+    maxLossesBeforePanic: num(hash.maxLossesBeforePanic, fallback.maxLossesBeforePanic),
+    totalLoss: num(hash.totalLoss, fallback.totalLoss),
+    totalProfit: num(hash.totalProfit, fallback.totalProfit),
+    maxDrawdownPercent: num(hash.maxDrawdownPercent, fallback.maxDrawdownPercent),
+    isTestnet: bool(hash.isTestnet, fallback.isTestnet),
+    peakNetEquity: num(hash.peakNetEquity, fallback.peakNetEquity),
+    routeHealth,
+  }
+}
+
+export async function cbCounterOp(
+  mode: "incr" | "set",
+  values: Partial<Record<CbDeltaField, number>>,
+): Promise<Partial<Record<CbDeltaField, number>> | null> {
+  if (typeof window !== "undefined") return null
+  const { isKvConfigured, getRedis, circuitBreakerKvKey } = await import("./kv")
+  if (!isKvConfigured()) return null
+  try {
+    const redis = getRedis()
+    const key = circuitBreakerKvKey()
+    const result: Partial<Record<CbDeltaField, number>> = {}
+    for (const field of Object.keys(values) as CbDeltaField[]) {
+      const delta = values[field]
+      if (delta === undefined) continue
+      if (mode === "set") {
+        await redis.hset(key, { [field]: String(delta) })
+        result[field] = delta
+      } else if (field === "consecutiveLosses") {
+        result[field] = await redis.hincrby(key, field, delta)
+      } else {
+        result[field] = await redis.hincrbyfloat(key, field, delta)
+      }
+    }
+    return result
+  } catch (e) {
+    console.error(`[circuit-breaker] Redis counter op ("${mode}") failed:`, (e as Error).message)
+    return null
+  }
+}
 
 async function apiCall(url: string, method: string, body?: any): Promise<any> {
   try {
@@ -79,10 +182,41 @@ export function clearPersistence(): void {
   } catch { /* ignore */ }
 }
 
-export function saveCircuitBreakerState(state: any): void {
-  setLocal(CIRCUIT_BREAKER_KEY, state);
+export async function saveCircuitBreakerState(state: CircuitBreakerState): Promise<boolean> {
+  if (typeof window === "undefined") {
+    const { isKvConfigured, getRedis, circuitBreakerKvKey } = await import("./kv")
+    if (isKvConfigured()) {
+      try {
+        await getRedis().hset(circuitBreakerKvKey(), serializeAbsoluteCbFields(state))
+        return true
+      } catch (e) {
+        console.error("[circuit-breaker] Redis write failed (saveCircuitBreakerState):", (e as Error).message)
+        return false
+      }
+    }
+    console.warn("[circuit-breaker] Upstash não configurado — usando fallback de disco .data/ (saveCircuitBreakerState)")
+    return writeJsonFile(circuitBreakerFilePath(), state)
+  }
+  setLocal(CIRCUIT_BREAKER_KEY, state)
+  return true
 }
 
-export function loadCircuitBreakerState<T>(fallback: T): T {
-  return getLocal(CIRCUIT_BREAKER_KEY, fallback);
+export function loadCircuitBreakerStateInitial<T>(fallback: T): T {
+  if (typeof window === "undefined") return fallback
+  return getLocal(CIRCUIT_BREAKER_KEY, fallback)
+}
+
+export async function loadCircuitBreakerStateFresh(fallback: CircuitBreakerState): Promise<CircuitBreakerState> {
+  const { isKvConfigured, getRedis, circuitBreakerKvKey } = await import("./kv")
+  if (isKvConfigured()) {
+    try {
+      const hash = await getRedis().hgetall<Record<string, unknown>>(circuitBreakerKvKey())
+      return parseCbHash(hash, fallback)
+    } catch (e) {
+      console.error("[circuit-breaker] Redis read failed (loadCircuitBreakerStateFresh):", (e as Error).message)
+      return fallback
+    }
+  }
+  console.warn("[circuit-breaker] Upstash não configurado — lendo fallback de disco .data/ (loadCircuitBreakerStateFresh)")
+  return readJsonFile(circuitBreakerFilePath(), fallback)
 }

@@ -182,6 +182,7 @@ class TradingNanopaymentSystem {
             amountUsd: pos.amountBought * price,
             direcao: "sell",
             precoNoPalpite: price,
+            riskBox: pos.riskBox,
           });
         }
       } catch (err) {

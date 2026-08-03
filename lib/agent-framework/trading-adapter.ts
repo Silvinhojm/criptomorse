@@ -48,6 +48,9 @@ export class TradingAdapter implements IExecutor {
     if (!proposal.params.rede) {
       return { allowed: false, reason: "Missing rede (network) in proposal params" }
     }
+    if (proposal.params.riskBox !== "A" && proposal.params.riskBox !== "B") {
+      return { allowed: false, reason: "Missing or invalid riskBox (A/B) in proposal params" }
+    }
     return { allowed: true, reason: "" }
   }
 

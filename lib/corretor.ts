@@ -2,6 +2,8 @@ import { realSwap, NETWORKS, type NetworkKey, type TokenSymbol, TOKEN_DECIMALS, 
 import { pairProfitability } from "./pair-profitability"
 import { pregão, type OrdemExecucao } from "./pregão"
 import { blockIfPanicked, recordTradeResult } from "./circuit-breaker"
+import { initializeTradingBudgetDailyLimit, isBudgetExceeded, recordTradingSpend } from "./trading-budget"
+import { authorizeRiskBoxTradeFresh, recordRiskBoxEconomicResult } from "./risk-boxes"
 import { positionManager } from "./position-manager"
 import { capitalController } from "./capital-controller"
 // feeMonetization removido — taxa fantasma que só encolhe o trade sem beneficiar ninguém
@@ -138,6 +140,26 @@ class Corretor {
         return
       }
 
+      // RI-BANK-11 Trilha B — orçamento por janela de tempo, mesmo padrão
+      // de blockIfPanicked() logo acima. RI-BANK-14 fechou D3 em $50;
+      // a inicialização abaixo só preenche o campo ainda ausente e nunca
+      // sobrescreve uma configuração posterior.
+      await initializeTradingBudgetDailyLimit()
+      if (isBudgetExceeded(valorTrade)) {
+        this.log(`💰 Orçamento de trading da janela esgotado — ordem ${ordem.id} bloqueada`)
+        pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+        return
+      }
+
+      // RI-BANK-12: origem A/B é obrigatória e cada caixa tem gate próprio.
+      // Ausência de origem nunca cai silenciosamente em A (fail-closed).
+      const riskAuthorization = await authorizeRiskBoxTradeFresh(ordem.riskBox, valorTrade)
+      if (!riskAuthorization.allowed) {
+        this.log(`⚠️ Caixa de risco bloqueou ordem ${ordem.id}: ${riskAuthorization.reason}`)
+        pregão.atualizarOrdem(ordem.id, { status: "falhou" })
+        return
+      }
+
       // 🔥 Multi-chain: alterna rede se necessário (CCTP bridge + auto-gas no executeSwap)
       const currentNet = realSwap.getNetworkKey()
       if (currentNet !== redeKey) {
@@ -150,6 +172,9 @@ class Corretor {
       const resultado = await realSwap.executeSwap(fromKey, toKey, valorTrade, (msg) => this.log(msg), ordem.id)
 
       if (resultado.success) {
+        // RI-BANK-11 Trilha B — mede exposição de fato deployada (chamado
+        // depois de success, não antes de tentar).
+        await recordTradingSpend(valorTrade)
         const zeroHash = "0x0000000000000000000000000000000000000000000000000000000000000000"
         const isSyntheticSettlement = (resultado as any).synthetic === true ||
           (resultado as any).canonicalSettlement === false ||
@@ -179,7 +204,8 @@ class Corretor {
             fromKey,
             resultado.toAmount,
             valorTrade,
-            currentPrice
+            currentPrice,
+            ordem.riskBox,
           )
           this.log(`📦 Posição ${toKey} aberta: ${resultado.toAmount.toFixed(6)} @ $${currentPrice.toFixed(2)} (entrada real via swap)`)
         }
@@ -249,9 +275,15 @@ class Corretor {
           pairProfitability.recordTrade(ordem.par, profit, profit > 0)
         }
 
-        // FIX: circuit breaker não ativa para perdas pequenas de gestão de risco
+        // As caixas observam todo resultado realizado, inclusive em testnet.
+        // Abertura de posição ainda não é resultado realizado.
+        if (!isBuyOpening) {
+          await recordRiskBoxEconomicResult(ordem.riskBox!, profit)
+        }
+
+        // FIX: circuit breaker global não ativa para perdas pequenas de gestão de risco
         if (!isTestnetSwap && !isSmallForcedLoss && !isBuyOpening) {
-          const { isPanicActive } = recordTradeResult(profit)
+          const { isPanicActive } = await recordTradeResult(profit)
           if (isPanicActive) {
             this.log(`🚨 Circuit breaker ativado após trade!`)
           }
@@ -303,7 +335,9 @@ class Corretor {
           errorMsg: resultado.message,
         })
         if (resultado.txHash) {
-          recordTradeResult(-valorTrade * 0.1)
+          const estimatedLoss = -valorTrade * 0.1
+          await recordRiskBoxEconomicResult(ordem.riskBox!, estimatedLoss)
+          await recordTradeResult(estimatedLoss)
         }
       }
     } catch (err: any) {
@@ -339,6 +373,17 @@ class Corretor {
       }
       this.log(`🚨 Circuit breaker ativo — batch ${redeKey} bloqueado`)
       return
+    }
+
+    // RI-BANK-12: cada item do batch precisa declarar e passar pelo gate
+    // da própria caixa antes de qualquer preparação, aprovação ou swap.
+    for (let i = 0; i < ordens.length; i++) {
+      const authorization = await authorizeRiskBoxTradeFresh(ordens[i].riskBox, valores[i])
+      if (!authorization.allowed) {
+        for (const o of ordens) pregão.atualizarOrdem(o.id, { status: "falhou" })
+        this.log(`⚠️ Caixa de risco bloqueou batch em ${ordens[i].id}: ${authorization.reason}`)
+        return
+      }
     }
 
     // 🔒 CapitalController: verifica capital para o batch
@@ -531,7 +576,7 @@ class Corretor {
             : 0
           positionManager.openPosition(
             redeKey, ordem.toToken as TokenSymbol, ordem.fromToken as TokenSymbol,
-            r.swap.expectedToAmount, r.swap.amountUsd, entryPrice,
+            r.swap.expectedToAmount, r.swap.amountUsd, entryPrice, ordem.riskBox,
           )
           log(`📦 Posição ${ordem.toToken} aberta (batch): ${r.swap.expectedToAmount.toFixed(6)} @ $${entryPrice.toFixed(2)}`)
         }
@@ -568,7 +613,8 @@ class Corretor {
               nanopaymentSystem.rewardAgentForTrade(nome.replace("Agente:", ""), rewardPerAgent, ordem.id, ordem.par)
             }
           }
-          const { isPanicActive } = recordTradeResult(profit)
+          await recordRiskBoxEconomicResult(ordem.riskBox!, profit)
+          const { isPanicActive } = await recordTradeResult(profit)
           if (isPanicActive) log(`🚨 Circuit breaker ativado após batch!`)
         }
 

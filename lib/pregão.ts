@@ -14,6 +14,7 @@ import { capitalController } from "./capital-controller"
 import { positionManager } from "./position-manager"
 import { arqueiro } from "./arqueiro"
 import { batchExecutorService, type BatchExecOrder } from "./BatchExecutorService"
+import type { RiskBoxId } from "./risk-boxes"
 
 export interface PackageResult {
   id: string
@@ -42,6 +43,7 @@ export interface OkSignal {
   precoNoPalpite?: number
   poolAddress?: string
   dex?: string
+  riskBox?: RiskBoxId
   metadata?: {
     correlationId?: string
     settlementCorrelationId?: string
@@ -63,6 +65,7 @@ export interface OrdemExecucao {
   timestamp: number
   status: "preparando" | "pronto" | "executando" | "concluido" | "falhou"
   amountUsd?: number
+  riskBox?: RiskBoxId
   errorMsg?: string
   metadata?: OkSignal["metadata"]
   resultado?: {
@@ -557,6 +560,7 @@ class Pregão {
       confiancaMedia,
       timestamp: Date.now(),
       amountUsd: participantes[0].sinal.amountUsd,
+      riskBox: participantes[0].sinal.riskBox,
       metadata: participantes[0].sinal.metadata,
       status: "preparando"
     }

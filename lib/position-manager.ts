@@ -8,6 +8,7 @@ import { NETWORKS, realSwap, isStable, PRICE_DIVIDERS, type NetworkKey, type Tok
 import { pregão } from "./pregão";
 import { gasPriceOracle } from "./gas-price-oracle";
 import { COIN_IDS } from "./coin-ids";
+import type { RiskBoxId } from "./risk-boxes";
 
 function isArcLab(): boolean {
   return realSwap.getNetworkKey() === "arc"
@@ -31,6 +32,7 @@ export interface OpenPosition {
   closeTimestamp?: number;
   profitUsd?: number;
   profitPercent?: number;
+  riskBox?: RiskBoxId;
 }
 
 const MAX_POSITION_AGE_MS = 12 * 60 * 60 * 1000;
@@ -93,7 +95,8 @@ class PositionManager {
     paidToken: TokenSymbol,
     amountBought: number,
     amountPaid: number,
-    entryPrice: number
+    entryPrice: number,
+    riskBox?: RiskBoxId
   ): OpenPosition | null {
     // Só abrir posição na rede ativa — evitar posições fantasmas em redes inativas
     const redeAtiva = realSwap.getNetworkKey()
@@ -115,6 +118,7 @@ class PositionManager {
       currentPrice: entryPrice,
       currentProfitPercent: 0,
       status: "open",
+      riskBox,
     };
     this.positions.set(id, pos);
     this.savePositions();
