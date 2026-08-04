@@ -4726,6 +4726,25 @@ Mesmo padrão já usado no RI-BANK-32, `app/api/agents/[address]/route.ts` e `li
 
 **Teste de regressão:** `lib/security/ri-bank-56-static-network.test.ts` — confere por leitura de código que a linha de construção do provider em `cron-trading-runtime.ts` inclui `{ staticNetwork: true }`.
 
+### RI-BANK-57/58 — "invalid chain ID" persistia mesmo com `staticNetwork: true`: causa raiz real
+
+**Sintoma:** depois do RI-BANK-56, um novo disparo do RI-BANK-39 retornou exatamente o mesmo erro `"invalid chain ID"` — na primeira transação tentada (o `approve` dentro do caminho AMM direto), não no swap.
+
+**Causa raiz confirmada por reprodução determinística, não inferência** (RI-BANK-57): `KmsEthersSigner.signTransaction()` (`lib/kms/kms-ethers-signer.ts`) recebia, do próprio `ethers`, uma **instância real da classe `Transaction`** (confirmado lendo `AbstractSigner.sendTransaction()` em `node_modules/ethers`: `const txObj = Transaction.from(pop); ...this.signTransaction(txObj)`). Instâncias de `Transaction` expõem todos os campos (`chainId`, `to`, `data`, `nonce`, `gasLimit`, ...) como **getters de protótipo**, não como propriedades próprias enumeráveis. O código antigo chamava `resolveProperties(transaction)` — utilitário do próprio `ethers` que usa `Object.keys(value)` internamente (confirmado lendo `utils/properties.js`) — que **não enxerga getters de protótipo**, retornando um objeto vazio (`{}`) para uma instância de `Transaction`. `Transaction.from({...{}, to})` reconstruía a transação a partir de campos essencialmente vazios, e todo campo caía no default — incluindo `chainId: 0`, rejeitado pelo nó da Arc como "invalid chain ID". Reproduzido e capturado diretamente:
+```
+Object.keys(txInstance):        []          ← nenhuma propriedade própria visível
+resolveProperties(txInstance):  {}          ← objeto vazio
+Transaction.from({...{}, to}).chainId: 0n   ← exatamente o valor rejeitado pelo RPC
+```
+
+**Por que o RI-BANK-32 nunca bateu nesse bug:** sua rota de prova (`app/api/internal/ri-bank-32-kms-proof/route.ts`) usa `KmsEvmSigner` **diretamente** — nunca passa pelo adaptador `KmsEthersSigner`. Chama `signer.signTransaction(unsigned)` com um `Transaction.from({...})` montado manualmente na própria rota; `KmsEvmSigner.signTransaction()` não usa `resolveProperties()` em nenhum momento, só lê `unsigned.unsignedHash`/`.serialized` via getters diretos — imune ao problema.
+
+**Correção aplicada (`lib/kms/kms-ethers-signer.ts`):** `signTransaction()` agora detecta `transaction instanceof Transaction` e, nesse caso, usa `Transaction.from(transaction)` diretamente — que lê campos por acesso direto de propriedade (`tx.to`, `tx.chainId`, ...), não por `Object.keys()`, funcionando corretamente com getters de protótipo. O caminho de objeto plano (`resolveProperties()`) foi mantido intacto para compatibilidade com chamadores que ainda passem um `TransactionRequest` com campos possivelmente pendentes (ex: nome ENS em `to`).
+
+**Nota:** durante esta investigação, encontramos duas evidências de trabalho concorrente não commitado de outro processo no mesmo repositório local (instrumentação de trace temporária em `kms-ethers-signer.ts` e um script incompleto em `scripts/ri-bank-57-chainid-evidence.ts`) — a primeira foi removida ao aplicar a correção definitiva (o próprio comentário nela já dizia "não é correção"); a segunda foi deixada intocada por não ser nossa.
+
+**Teste de regressão:** `lib/security/ri-bank-58-kms-signer-fields.test.ts` — reproduz o cenário exato do RI-BANK-57 com uma instância real de `Transaction` (não mock simplificado), confirmando que `chainId`, `to`, `data`, `nonce` e `gasLimit` chegam corretos ao KMS signer; e confirma que o caminho de objeto plano continua funcionando (sem regressão).
+
 ### Arquivos principais
 
 - `lib/cron-trading-state.ts`
