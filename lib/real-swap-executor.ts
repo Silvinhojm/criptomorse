@@ -346,9 +346,16 @@ class RealSwapExecutor {
       "https://1rpc.io/matic",
     ],
     base: [],
+    // RI-BANK-62 — as duas entradas antigas não eram redundância real: a
+    // primeira era idêntica ao RPC primário (net.rpcUrl), e a segunda
+    // (`testnet.arc.network/rpc`) não resolve mais (DNS falha). Substituídas
+    // pelos 3 provedores documentados oficialmente em docs.arc.io/arc/references/connect-to-arc
+    // (Blockdaemon, dRPC, QuickNode) — validados nesta correção: chainId
+    // 5042002 correto, saldo USDC correto, 6/6 chamadas espaçadas em 3s.
     arc: [
-      "https://rpc.testnet.arc.network",
-      "https://testnet.arc.network/rpc",
+      "https://rpc.blockdaemon.testnet.arc.io",
+      "https://rpc.drpc.testnet.arc.io",
+      "https://rpc.quicknode.testnet.arc.io",
     ],
     ethereum: [
       "https://rpc.ankr.com/eth",

@@ -4745,6 +4745,30 @@ Transaction.from({...{}, to}).chainId: 0n   ← exatamente o valor rejeitado pel
 
 **Teste de regressão:** `lib/security/ri-bank-58-kms-signer-fields.test.ts` — reproduz o cenário exato do RI-BANK-57 com uma instância real de `Transaction` (não mock simplificado), confirmando que `chainId`, `to`, `data`, `nonce` e `gasLimit` chegam corretos ao KMS signer; e confirma que o caminho de objeto plano continua funcionando (sem regressão).
 
+### RI-BANK-62 — RPC de backup real para `arc` (correção de um "backup" que não era backup)
+
+**Contexto:** RI-BANK-50/51/61 mediram taxa de falha residual de ~30-40% na leitura de saldo via RPC público, mesmo com retry — mitigação estrutural pendente desde o RI-BANK-50 era adicionar um RPC genuinamente diferente para `arc` em `BACKUP_RPCS`.
+
+**Achado ao investigar:** `BACKUP_RPCS.arc` **não estava vazio** como relatórios anteriores presumiram — tinha 2 entradas desde 29/06/2026, mas nenhuma das duas era redundância real:
+1. `https://rpc.testnet.arc.network` — **idêntica** ao RPC primário (`net.rpcUrl`), nenhuma diversidade.
+2. `https://testnet.arc.network/rpc` — **não resolve mais** (`curl` falha com "Couldn't resolve host").
+
+**Correção:** consultada a documentação oficial (`docs.arc.io/arc/references/connect-to-arc`), que lista 4 provedores RPC para Arc Testnet — Primary (`rpc.testnet.arc.io`), Blockdaemon, dRPC e QuickNode. Os 3 provedores dedicados foram validados individualmente antes de configurar:
+- `eth_chainId` → `5042002` (correto) nos 3;
+- `eth_call balanceOf` do endereço da signer KMS → mesmo valor confirmado por RPC direto (19,691442 USDC) nos 3;
+- 6 chamadas espaçadas em 3s cada → 6/6 sucesso nos 3 (e também no RPC primário atual, no mesmo teste — a instabilidade observada em produção não se reproduziu localmente nesta janela, consistente com o padrão intermitente já documentado).
+
+`BACKUP_RPCS.arc` substituído por:
+```ts
+arc: [
+  "https://rpc.blockdaemon.testnet.arc.io",
+  "https://rpc.drpc.testnet.arc.io",
+  "https://rpc.quicknode.testnet.arc.io",
+],
+```
+
+**Limitação honesta:** a validação acima confirma que os 3 endpoints são funcionalmente corretos e alcançáveis a partir do ambiente de desenvolvimento local — não é uma prova controlada de que eles evitam especificamente a instabilidade observada a partir do ambiente de produção da Vercel (que pode ter uma causa ligada ao caminho de rede Vercel↔RPC, não só ao RPC em si). A melhoria estrutural (diversidade real de provedor) é válida de qualquer forma; medir o efeito real em produção requer reexecutar o protocolo do RI-BANK-61 após deploy.
+
 ### Arquivos principais
 
 - `lib/cron-trading-state.ts`
