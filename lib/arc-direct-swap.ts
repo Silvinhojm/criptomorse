@@ -312,8 +312,13 @@ export async function executeDirectSwap(
     } catch (contractErr: any) {
       // 2. Fallback: native transfer via value — SÓ se for token nativo
       if (fromToken !== NATIVE && toToken !== NATIVE) {
+        // RI-BANK-55 — preservar a mensagem real do approve/transfer (revert
+        // reason, se houver) em vez de substituí-la por um texto genérico;
+        // esse throw é recapturado pelo catch externo, que já propaga
+        // err.message ao chamador.
+        const contractMsg = contractErr?.message?.slice(0, 150) ?? "erro desconhecido"
         log(`⛔ Value transfer bloqueado: ${fromToken.slice(0, 10)} não é token nativo`);
-        throw new Error('Nenhuma rota disponível para este par na testnet');
+        throw new Error(`Nenhuma rota disponível para este par na testnet (approve/transfer falhou: ${contractMsg})`);
       }
       log(`⚠️ ERC20 não disponível — enviando value transfer`);
       const address = await signer.getAddress();

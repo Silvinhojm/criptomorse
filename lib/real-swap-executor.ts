@@ -1244,6 +1244,10 @@ class RealSwapExecutor {
 
       // Escolhe a melhor rota (maior output estimado)
       if (routes.length === 0) {
+        // RI-BANK-55 — capturado fora do bloco abaixo para poder propagar o
+        // erro real de executeDirectSwap() na mensagem final, em vez de
+        // descartá-lo silenciosamente atrás de "Nenhuma rota disponível".
+        let directRouteError: string | undefined
         if (net.isTestnet && this.signer) {
           // Gate pré-trade: verificar se o token comprado tem rota de venda
           if (!isStable(toToken) && !hasSellRoute(toToken, this.networkKey)) {
@@ -1292,8 +1296,13 @@ class RealSwapExecutor {
               settlementStatus: isSynthetic ? "synthetic" : "confirmed",
             } as any;
           }
+          directRouteError = directResult.error
         }
-        const motivo = !lifiQuote ? (isLifiCooldown() ? "LI.FI em cooldown" : "Nenhuma rota disponível") : "Rota inválida";
+        const motivo = !lifiQuote
+          ? (isLifiCooldown()
+              ? "LI.FI em cooldown"
+              : `Nenhuma rota disponível${directRouteError ? ` (${directRouteError})` : ""}`)
+          : "Rota inválida";
         return this._fail(fromToken, toToken, amountUsd, motivo, timestamp);
       }
 

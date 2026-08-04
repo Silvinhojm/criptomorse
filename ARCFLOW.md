@@ -4695,6 +4695,21 @@ Resposta:
 
 **Uso:** ferramenta de observabilidade reutilizável — não é só para validar o RI-BANK-50; serve para checar saúde/saldo da signer sem risco, algo que o projeto vai precisar de forma recorrente conforme mais robôs passarem a operar (ver `PROJECT_VISION.md`).
 
+### RI-BANK-55 — parar de mascarar o erro real em "Nenhuma rota disponível"
+
+**Sintoma:** disparos do RI-BANK-39 (já com gás e saldo confirmados suficientes — RI-BANK-54) falhavam com a mensagem genérica `"Nenhuma rota disponível"`, sem nenhuma pista sobre a causa real.
+
+**Dois pontos de mascaramento encontrados e corrigidos (não só o que o RI-BANK-46 já havia identificado):**
+
+1. **`lib/real-swap-executor.ts` (`executeSwap()`, ramo `routes.length === 0`):** quando `executeDirectSwap()` retornava `{ success: false, error }`, o `error` real era descartado e substituído por `"Nenhuma rota disponível"` fixo. Agora `directResult.error` é capturado (`directRouteError`, declarado fora do bloco condicional que produzia `directResult` para ficar acessível na hora de montar a mensagem final) e interpolado: `` `Nenhuma rota disponível${directRouteError ? ` (${directRouteError})` : ""}` ``.
+2. **`lib/arc-direct-swap.ts` (fallback de approve+transfer ERC20, dentro de `executeDirectSwap()`):** um segundo ponto de mascaramento, não documentado antes — quando o `approve`/`transfer` de um par não-nativo falhava, o código descartava `contractErr` inteiramente e lançava um `Error` com string fixa (`'Nenhuma rota disponível para este par na testnet'`), perdendo o motivo real (revert reason, erro de rede, etc.). Agora a mensagem original (`contractErr?.message`, truncada em 150 caracteres) é anexada: `` `Nenhuma rota disponível para este par na testnet (approve/transfer falhou: ${contractMsg})` ``.
+
+**Nota estrutural:** esse segundo ponto (item 2) só é alcançável quando `isTestnetChain(chainId)` é `false` — para a Arc Testnet (chainId `5042002`, que está na lista de `isTestnetChain`), os ramos anteriores (AMM direto, synthetic stable→stable, multi-hop) sempre respondem antes de chegar lá. Corrigido mesmo assim por integridade (é código real, alcançável em outras redes), mas o ponto 1 é o que efetivamente estava mascarando o erro nos disparos reais da Arc Testnet.
+
+**Nenhuma lógica de decisão foi alterada** — só a mensagem de erro final ficou mais informativa.
+
+**Teste de regressão:** `lib/security/ri-bank-55-error-propagation.test.ts` — confere por leitura de código que `real-swap-executor.ts` propaga `directResult.error`, e testa funcionalmente (sem mocks, chamando `executeDirectSwap()` de verdade com um signer inutilizável) que a mensagem final contém o erro real do ethers (`UNSUPPORTED_OPERATION`), não só o texto genérico.
+
 ### Arquivos principais
 
 - `lib/cron-trading-state.ts`
