@@ -1,5 +1,119 @@
 # Registro de Incidentes Técnicos — CriptoMorse
 
+## [04/08/2026] A saga do RI-BANK-39 — do disparo manual ao primeiro swap real confirmado (RI-BANK-39 → RI-BANK-58)
+
+**Severidade:** Alta (bloqueava validação do caminho de execução real antes de habilitar o cron automático)
+**Status:** Resolvido — primeiro swap real confirmado on-chain
+
+### 1. Resumo executivo
+
+**Objetivo original:** antes de habilitar o cron automático de trading, validar manualmente — via uma rota de disparo único, protegida por bearer administrativo (`POST /operator/corretor/test-swap`) — que o caminho de execução real (KMS AWS → assinatura → RPC Arc Testnet → AMM on-chain) funcionava de ponta a ponta, com um valor mínimo (0.10 USDC, par USDC→EURC).
+
+**Resultado final:** primeiro swap real confirmado on-chain:
+```
+txHash: 0xa1dd7fb6eeb7deed950aacb9f1fe2a7255ab76c940b7f18eeaf8666d5fd91938
+bloco:  55298527
+```
+
+**Escala do problema:** vinte rodadas de investigação nomeadas (RI-BANK-39 até RI-BANK-58), ao longo de dois dias (03–04/08/2026), cada uma revelando uma camada diferente de falha — nenhuma delas fraude, perda de fundos ou bug de lógica de negócio; todas bugs de infraestrutura/integração (ambiente server-side, RPC público instável, branches divergentes, e um bug estrutural na biblioteca `ethers` sobre instâncias de classe). O padrão recorrente: cada correção destravava o disparo até o **próximo** ponto de falha, nunca até o sucesso — só a última camada (RI-BANK-58) finalmente permitiu a transação chegar confirmada on-chain.
+
+### 2. Linha do tempo dos bugs encontrados
+
+#### RI-BANK-39 / RI-BANK-45 — chave administrativa "Sensitive" impossível de revelar
+
+- **Sintoma:** ao tentar preparar o disparo manual, não havia como obter o valor de `ADMIN_PANIC_KEY` (bearer da rota `test-swap`) para uso no `curl`.
+- **Causa raiz:** `ADMIN_PANIC_KEY` e `CRON_SECRET` foram criadas na Vercel com a flag `--sensitive`. Variáveis `Sensitive` confirmam sua **existência** via `vercel env pull` (o nome aparece), mas a Vercel **nunca mais devolve o valor** — nem via CLI, nem via dashboard, para ninguém, depois de criada.
+- **Correção:** nenhuma correção de código — decisão operacional. O disparo real sempre foi feito pelo operador humano, no terminal dele, nunca por um agente de IA (ver seção de Lições, item 4).
+- **Por que não foi descoberto antes:** é uma característica da Vercel por design, não um bug — só vira "descoberta" quando alguém tenta recuperar o valor pela primeira vez, depois da criação.
+
+#### RI-BANK-41 / RI-BANK-53 — preço de stablecoin zerado em server-side (fallback assimétrico)
+
+- **Sintoma:** preflight de saldo bloqueava o disparo com `Saldo insuficiente de USDC: $0.0000 (19.999475 USDC)` — saldo em token correto, valor em USD zerado.
+- **Causa raiz:** `_getTokenPrice()` (`lib/real-swap-executor.ts`) tinha 4 pontos de retorno; só 2 deles (`!priceUrl`, `!res.ok`) tinham fallback de `$1.00` para stablecoins quando a consulta de preço falhava. Os outros 2 (resposta sem preço válido, e o `catch` de falha de rede) retornavam `0` sem fallback — assimetria que zerava `fromBalanceUsd` mesmo com saldo real suficiente.
+- **Correção (RI-BANK-41):** os 4 ramos passaram a usar `cached?.price ?? (isStable(token) ? 1.0 : 0)` de forma simétrica.
+- **Regressão (RI-BANK-53):** essa correção existia numa branch (`codex/ri-bank-39-manual-test`) que nunca tinha sido reunificada com a branch usada nos deploys mais recentes — o bug voltou a aparecer, já corrigido antes, só que "esquecido" numa branch paralela. Ver RI-BANK-52/53 abaixo para a causa raiz completa desse padrão.
+- **Por que não foi descoberto antes:** o fallback assimétrico só se manifesta quando a API de preço realmente falha ou não resolve — não é reproduzível toda vez.
+
+#### RI-BANK-44 — falso positivo: execução sintética reportada como sucesso real
+
+- **Sintoma:** o disparo manual retornou `success: true` com `txHash` composto só de zeros — parecia sucesso, mas nenhuma transação existia on-chain.
+- **Causa raiz:** mismatch de maiúsculas/minúsculas em `AMM_PAIRS` (`lib/arc-direct-swap.ts`) — chaves em mixed-case (EIP-55) vs. lookup normalizado em lowercase — fazia o AMM real ficar inalcançável, caindo sempre no caminho *synthetic* (simulação sem transação real), mascarado como sucesso.
+- **Correção:** normalização das chaves de `AMM_PAIRS` para lowercase; novo contrato de resposta explícito (`success`/`settled`/`canonicalSettlement`/`synthetic`/`settlementStatus`) que nunca mais permite `success:true` sem transação real confirmada; a rota `test-swap` passou a responder HTTP 409 (não 200) para qualquer execução sintética.
+- **Por que não foi descoberto antes:** o retorno parecia um sucesso legítimo — só foi pego porque o hash era literalmente zero, um sinal chamativo o suficiente para levantar suspeita.
+
+#### RI-BANK-46 / RI-BANK-54 — mensagem genérica mascarando o erro real; gás descartado como causa
+
+- **Sintoma:** depois do RI-BANK-44, o disparo passou a falhar com `"Nenhuma rota disponível"` — mensagem genérica, sem pista da causa.
+- **Causa raiz (RI-BANK-46):** rastreamento completo do caminho de execução (auditoria Redis, RPC direto, varredura on-chain de 40+ blocos) confirmou que o AMM tinha liquidez saudável e que a mensagem genérica descartava `directResult.error`, o erro real vindo de `executeDirectSwap()`. Hipótese levantada mas **não confirmada**: falta de ARC nativo para gás na signer KMS.
+- **Investigação da hipótese (RI-BANK-54):** confirmado, com folga de ~3.383x, que a signer tinha gás suficiente. Achado importante: a Arc Testnet **usa USDC como o próprio token nativo de gás** — não existe um "ARC" separado. A hipótese de falta de gás foi formalmente descartada.
+- **Correção:** nenhuma nesta etapa — só descartou uma hipótese e confirmou que a mensagem genérica precisava ser corrigida (isso veio a acontecer no RI-BANK-55).
+- **Por que não foi descoberto antes:** a mensagem genérica em si impedia ver a causa; foi preciso rastrear via auditoria Redis + RPC direto para reconstituir o que realmente aconteceu.
+
+#### RI-BANK-49 / RI-BANK-50 / RI-BANK-51 — saldo zerado por falha intermitente do RPC público sem fallback funcional
+
+- **Sintoma:** depois de preencher `CRON_EXPECTED_SIGNER_ADDRESS` (RI-BANK-48), um novo disparo retornou saldo **zero** — nem em token, nem em USD — quando o saldo real era 19,999475 USDC.
+- **Causa raiz (RI-BANK-49/50):** reprodução local, com log ao vivo, mostrou que o RPC público da Arc Testnet falha intermitentemente em chamadas `eth_call` (`CALL_EXCEPTION`/"missing revert data"). A rede `arc` não tinha nenhum RPC de backup configurado, e o único fallback existente (`fetch('/api/rpc-proxy')`) usava URL relativa — quebrada em execução server-side (sem `window`/origem).
+- **Correção:** retry com backoff (até 4 tentativas) nas leituras de saldo; fallback de proxy corrigido para resolver URL absoluta em servidor (mesmo padrão já usado no RI-BANK-38 para preço). Limitação residual documentada: sem um segundo RPC genuinamente diferente, o retry reduz mas não elimina a falha.
+- **RI-BANK-51:** criada rota de diagnóstico read-only (`GET /api/internal/ri-bank-51-balance-check`) para checar saúde/saldo da signer sem nenhum risco de disparar swap — usada para validar a correção em produção (achado extra: o RPC parecia sofrer influência de rajada de chamadas, não só aleatoriedade pura).
+- **Por que não foi descoberto antes:** intermitência — o mesmo código funcionava na maioria das tentativas, só falhando em parte delas, dificultando reprodução determinística sem testes repetidos.
+
+#### RI-BANK-52 / RI-BANK-53 — duas branches de desenvolvimento paralelas nunca reunificadas
+
+- **Sintoma:** a rota `/operator/corretor/test-swap` retornava **404** (nem sequer existia no deploy), e, quando restaurada, o bug do RI-BANK-41 (preço zerado) reapareceu, já corrigido antes.
+- **Causa raiz:** duas branches (`codex/ri-bank-34-cron-real`, usada nos deploys mais recentes, e `codex/ri-bank-39-manual-test`, onde a rota de disparo manual e várias correções — RI-BANK-39, 41, 44 — tinham sido implementadas) divergiram de um ponto comum e nunca foram reunificadas. Cada branch tinha metade das correções.
+- **Correção:** cherry-pick dos commits específicos (`defe491` RI-BANK-39, `50566ac` RI-BANK-44, depois `62192d7` RI-BANK-41) para a branch de produção, resolvendo conflitos manualmente (a maioria só em documentação; um caso de merge automático limpo em código, verificado linha a linha, não presumido).
+- **Por que não foi descoberto antes:** cada branch, isoladamente, parecia funcionar dentro do seu próprio histórico — só ficou visível quando a rota de uma branch precisou ser usada em produção, que rodava a outra.
+
+#### RI-BANK-55 — erro real descartado em dois pontos do código
+
+- **Sintoma:** com as branches reunificadas, "Nenhuma rota disponível" continuava aparecendo sem detalhe.
+- **Causa raiz:** dois pontos de mascaramento de erro, não um só. (1) `lib/real-swap-executor.ts`: `directResult.error` descartado e substituído por texto fixo. (2) Um segundo ponto, não documentado antes, dentro de `lib/arc-direct-swap.ts`: o fallback de approve+transfer também descartava o erro real (`contractErr`) e lançava uma string fixa.
+- **Correção:** os dois pontos passaram a interpolar o erro real na mensagem final (`Nenhuma rota disponível (${motivo real})`), sem alterar nenhuma lógica de decisão.
+- **Por que não foi descoberto antes:** o primeiro ponto (mais óbvio) já tinha sido sinalizado no RI-BANK-46 mas nunca corrigido; o segundo só apareceu ao investigar sistematicamente todo o arquivo `arc-direct-swap.ts`, não só o ponto já suspeito.
+
+#### RI-BANK-56 — instabilidade de `provider.getNetwork()` sem `staticNetwork: true`
+
+- **Sintoma:** com o erro real finalmente exposto, apareceu `{"code": -32000, "message": "invalid chain ID"}` no `eth_sendRawTransaction`.
+- **Causa raiz:** o provider usado no caminho do cron/disparo manual (`lib/cron-trading-runtime.ts`) era construído **sem** `{ staticNetwork: true }` — cada `getNetwork()` reconsultava `eth_chainId` via RPC, no mesmo RPC público já provado instável (RI-BANK-50/51). A prova original do KMS (RI-BANK-32) já usava `staticNetwork: true` e nunca teve esse problema.
+- **Correção:** adicionado `{ staticNetwork: true }` ao provider do cron, mesmo padrão já usado no RI-BANK-32 e em outros pontos do projeto.
+- **Por que não foi descoberto antes:** não é regressão — confirmado via `git log --all`/`git grep` que essa opção nunca existiu nesse arquivo, em nenhuma branch, desde a criação. Simplesmente nunca tinha sido alcançado antes, porque os bugs anteriores sempre bloqueavam a execução mais cedo.
+
+#### RI-BANK-57 / RI-BANK-58 — bug estrutural: `resolveProperties()` do `ethers` não enxerga getters de protótipo
+
+- **Sintoma:** mesmo depois do RI-BANK-56, o mesmíssimo erro `"invalid chain ID"` persistiu, agora na primeira transação tentada (o `approve`).
+- **Causa raiz (RI-BANK-57, reproduzida com valores capturados, não suposição):** o `ethers`, internamente, entrega ao adaptador `KmsEthersSigner.signTransaction()` uma **instância real** da classe `Transaction` — cujos campos (`chainId`, `to`, `data`, `nonce`, `gasLimit`, ...) são getters de protótipo, não propriedades próprias enumeráveis. O código usava `resolveProperties()` (utilitário do próprio `ethers`), que internamente faz `Object.keys(value)` — método que **não enxerga getters de protótipo** — retornando um objeto vazio (`{}`) e zerando todos os campos da transação, incluindo `chainId: 0`, rejeitado pelo nó como "invalid chain ID". Reproduzido de forma determinística: `Object.keys(transactionInstance)` retorna `[]` mesmo com todos os valores acessíveis diretamente.
+- **Correção (RI-BANK-58):** `signTransaction()` passou a detectar `transaction instanceof Transaction` e, nesse caso, usar `Transaction.from(transaction)` diretamente — que lê campos por acesso direto de propriedade, não por `Object.keys()`, funcionando corretamente com getters. O caminho de objeto plano foi preservado sem alteração.
+- **Por que não foi descoberto antes:** a prova original do KMS (RI-BANK-32) nunca passou por esse adaptador — usava `KmsEvmSigner` diretamente com uma `Transaction` montada manualmente, sem nunca chamar `resolveProperties()`. O bug sempre esteve lá, latente, só nunca tinha sido exercitado por uma assinatura real via KMS em produção até essa etapa.
+- **Nota lateral:** durante essa investigação, foram encontrados dois artefatos de trabalho concorrente não commitado de outro processo (Codex) no mesmo repositório local — instrumentação de trace temporária e um script incompleto — tratados com cuidado (removidos só onde estavam dentro do escopo da correção; deixados intocados fora dele). Um deles chegou a quebrar um deploy de produção por não estar coberto por `.vercelignore` (corrigido separadamente, sem relação com a lógica do bug).
+
+### 3. Lições para o futuro
+
+1. **Nunca aceitar "sucesso" sem verificação independente.** O RI-BANK-44 mostrou que uma resposta `success:true` pode mentir — só o `txHash` (e a confirmação on-chain real, via RPC ou explorer) é prova de settlement de verdade. Toda validação de swap real deve checar a transação na cadeia, não confiar na resposta HTTP isoladamente.
+2. **Branches de trabalho paralelas precisam de merge periódico.** O RI-BANK-52/53 mostrou como duas branches, cada uma "funcionando" isoladamente, podem re-regredir bugs já corrigidos assim que uma reunificação tardia acontece. Preferir merges/cherry-picks frequentes e pequenos a uma reunificação única e grande no fim.
+3. **Ao integrar bibliotecas como `ethers`, checar compatibilidade de utilitários genéricos com instâncias de classe.** `resolveProperties()` funciona bem em objetos planos, mas silenciosamente falha (sem lançar erro) em instâncias com getters de protótipo. Qualquer utilitário que use `Object.keys()`/`Object.entries()`/spread (`{...obj}`) sobre um valor que pode ser uma instância de classe merece essa checagem explícita.
+4. **Variáveis de ambiente `Sensitive` na Vercel são uma decisão definitiva, não reversível.** Decidir conscientemente, na criação, quais variáveis realmente precisam ser `Sensitive` (nunca mais lidas por ninguém, nem pela própria equipe) vs. variáveis normais (protegidas, mas recuperáveis). `ADMIN_PANIC_KEY`/`CRON_SECRET` sendo `Sensitive` reforça, como efeito colateral positivo, que o disparo real do RI-BANK-39 só pode ser feito pelo operador humano — nunca por um agente de IA, mesmo autorizado.
+5. **Múltiplos executores de IA operando em paralelo no mesmo repositório local precisam de coordenação.** O RI-BANK-58 encontrou instrumentação de trace e um script quebrado deixados por outro processo, sem aviso — um deles chegou a quebrar um deploy de produção. Preferir sinalizar/registrar quando mais de um agente está ativo no mesmo working directory, e usar `.vercelignore`/`.gitignore` para que artefatos de diagnóstico temporário nunca cheguem a um deploy real.
+
+### 4. Referências aos relatórios originais
+
+Cada RI-BANK mencionado tem relatório completo salvo em `C:\Users\silvi\Desktop\ARCFLOW_AI\` (pastas `DEEPSEEK`, `CLAUDE EXECUTOR`, `CODEX EXECUTOR`, conforme quem executou):
+
+- RI-BANK-45 — `DEEPSEEK/RI-BANK-45-SCOPE-CORRECTION.md`
+- RI-BANK-46 — `DEEPSEEK/RI-BANK-46-NENHUMA-ROTA-DISPONIVEL.md`
+- RI-BANK-48 — `DEEPSEEK/RI-BANK-48-ENDERECO-SIGNER-CONFIRMADO.md`
+- RI-BANK-49 — `DEEPSEEK/RI-BANK-49-SALDO-USDC-ZERADO-DIAGNOSTICO.md`
+- RI-BANK-50 — `DEEPSEEK/RI-BANK-50-FIX-LEITURA-SALDO-SERVER-SIDE.md`, `CLAUDE EXECUTOR/RI-BANK-50-COMMIT-DEPLOY-RESULTADO.md`
+- RI-BANK-51 — `CLAUDE EXECUTOR/RI-BANK-51-ROTA-DIAGNOSTICO-RESULTADO.md`
+- RI-BANK-52 — `CLAUDE EXECUTOR/RI-BANK-52-CHERRY-PICK-RESULTADO.md`, `RI-BANK-52-PUSH-DEPLOY-RESULTADO.md`
+- RI-BANK-53 — `CLAUDE EXECUTOR/RI-BANK-53-REGRESSAO-RI-BANK-41-DIAGNOSTICO.md`, `RI-BANK-53-CHERRY-PICK-RESULTADO.md`, `RI-BANK-53-PUSH-DEPLOY-RESULTADO.md`
+- RI-BANK-54 — `CLAUDE EXECUTOR/RI-BANK-54-SALDO-GAS-CONFIRMADO.md`
+- RI-BANK-55 — `CLAUDE EXECUTOR/RI-BANK-55-DESMASCARAR-ERRO-RESULTADO.md`, `RI-BANK-55-PUSH-DEPLOY-RESULTADO.md`
+- RI-BANK-56 — `CLAUDE EXECUTOR/RI-BANK-56-INVALID-CHAIN-ID-DIAGNOSTICO.md`, `RI-BANK-56-CORRECAO-RESULTADO.md`, `RI-BANK-56-PUSH-DEPLOY-RESULTADO.md`
+- RI-BANK-57 — `CLAUDE EXECUTOR/RI-BANK-57-CAUSA-RAIZ-CONFIRMADA.md`
+- RI-BANK-58 — `CLAUDE EXECUTOR/RI-BANK-58-CORRECAO-RESULTADO.md`, `RI-BANK-58-PUSH-DEPLOY-RESULTADO.md`
+
+Correções de código correspondentes documentadas em `ARCFLOW.md` (seções "RI-BANK-41", "RI-BANK-44", "RI-BANK-50", "RI-BANK-51", "RI-BANK-56", "RI-BANK-57/58"). Esta seção é um resumo consolidado e cronológico — não substitui nem contradiz o detalhe técnico de cada RI-BANK individual.
+
 ## [09/07/2026] Phase 2e.2f Settlement Replay/Sync Race Closure
 
 **Severidade:** Media
