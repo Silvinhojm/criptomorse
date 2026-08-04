@@ -4769,6 +4769,20 @@ arc: [
 
 **Limitação honesta:** a validação acima confirma que os 3 endpoints são funcionalmente corretos e alcançáveis a partir do ambiente de desenvolvimento local — não é uma prova controlada de que eles evitam especificamente a instabilidade observada a partir do ambiente de produção da Vercel (que pode ter uma causa ligada ao caminho de rede Vercel↔RPC, não só ao RPC em si). A melhoria estrutural (diversidade real de provedor) é válida de qualquer forma; medir o efeito real em produção requer reexecutar o protocolo do RI-BANK-61 após deploy.
 
+**Resultado pós-deploy (medido no RI-BANK-62):** 4/5 (80%) — melhor que os 60% do RI-BANK-61, mas não perto de 100%. Investigação revelou a causa: ver RI-BANK-63 abaixo.
+
+### RI-BANK-63 — os RPCs de backup nunca eram tentados: bug estrutural na condição de `break`
+
+**Achado (durante a validação pós-deploy do RI-BANK-62):** mesmo com 3 backups válidos configurados, uma das 5 chamadas de teste ainda falhou com `"none (all rpcsParaTentar failed)"`. Investigando o porquê, em vez de aceitar "melhorou, mas não o suficiente" sem explicação: **os RPCs de backup nunca eram alcançados, em nenhuma circunstância normal** — não é uma questão de taxa de sucesso dos backups, é que o código nunca perguntava nada a eles.
+
+**Causa raiz:** em `_refreshAllBalancesImpl()`, o loop que percorre `rpcsParaTentar` (`'__PROVIDER__'` → `net.rpcUrl` → `BACKUP_RPCS[network]`) decidia parar de tentar mais RPCs com base em `newBalances.size > 0`. Só que o token `NATIVE` **sempre** recebe uma entrada em `newBalances`, mesmo em falha total, via `.catch(() => 0n)` (fallback silencioso). Isso torna `newBalances.size > 0` **quase sempre verdadeiro** logo após a primeira tentativa — o `break` disparava mesmo quando **nenhum** saldo real tinha sido lido, e os backups (os 2 antigos, inúteis, e os 3 novos do RI-BANK-62, válidos) nunca chegavam a ser tentados.
+
+**Correção aplicada:**
+1. A condição de `break` do loop agora usa `anyProviderSucceeded` — variável que já existia e já era calculada corretamente (só era setada quando pelo menos um token ERC20 de fato tinha seu saldo lido com sucesso), mas que não era o que a decisão de parar verificava.
+2. O `.catch(() => 0n)` do token nativo passou a logar um aviso explícito (`console.warn`) quando a leitura falha, em vez de engolir o erro silenciosamente — o comportamento de retornar `0` como default seguro em caso de falha foi mantido sem alteração; só a visibilidade da falha mudou.
+
+**Teste de regressão:** `lib/security/ri-bank-63-backup-rpc-fallback.test.ts` — simula um provider primário que falha permanentemente em toda chamada (não um blip transitório, que o retry do RI-BANK-50 já resolveria), com `net.rpcUrl` (via proxy) também falhando, e só o primeiro `BACKUP_RPCS.arc` respondendo corretamente. Confirma que o loop de fato alcança esse backup específico (`proxyCalledWithBackupUrl`) e recupera o saldo correto — não apenas presume que "melhorou".
+
 ### Arquivos principais
 
 - `lib/cron-trading-state.ts`

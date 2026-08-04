@@ -612,7 +612,15 @@ class RealSwapExecutor {
       await Promise.all(
         (Object.entries(net.tokens) as [string, string][]).map(async ([symbol, address]) => {
           if (address.toLowerCase() === ZERO_ADDR) {
-            const nativeBal = await withRetries(() => prov.getBalance(this.userAddress)).catch(() => 0n)
+            // RI-BANK-63 — the 0-on-failure default stays the safe behavior,
+            // but the failure is now logged explicitly instead of silently
+            // swallowed, so a native-read failure is visible in production
+            // logs even though (by design, unchanged) it never counts
+            // toward anyProviderSucceeded/the break decision above.
+            const nativeBal = await withRetries(() => prov.getBalance(this.userAddress)).catch((e: unknown) => {
+              console.warn(`⚠️ Native balance fetch failed for ${symbol} via ${label}: ${(e as Error)?.message ?? e}`)
+              return 0n
+            })
             const balance = parseFloat(ethers.formatUnits(nativeBal, 18))
             newBalances.set(symbol, { symbol, balance, address, decimals: 18 })
             if (balance > 0.0001) nonZero++
@@ -686,15 +694,22 @@ class RealSwapExecutor {
         if (rpc === 'metamask') {
           const mmProvider = new ethers.BrowserProvider((window as any).ethereum)
           await fetchFrom(mmProvider, 'MetaMask')
-          if (newBalances.size > 0) break
         } else if (rpc === '__PROVIDER__') {
           if (!this.provider) throw new Error('no provider')
           await fetchFrom(this.provider, 'signer provider')
-          if (newBalances.size > 0) break
         } else {
-          const ok = await fetchFromProxyRpc(rpc, rpc.replace(/https?:\/\//, ''))
-          if (ok) break
+          await fetchFromProxyRpc(rpc, rpc.replace(/https?:\/\//, ''))
         }
+        // RI-BANK-63 — break only on a REAL successful read (>=1 ERC20
+        // balance actually fetched, tracked by anyProviderSucceeded), not
+        // on "some entry exists in newBalances". newBalances always gets an
+        // entry per token, even a 0-fallback one on total failure (see the
+        // native-token catch above) — checking its size made this loop
+        // break after the first attempt unconditionally, so BACKUP_RPCS
+        // (net.rpcUrl and everything configured in RI-BANK-62) was
+        // structurally unreachable regardless of how many/how good the
+        // configured backups were.
+        if (anyProviderSucceeded) break
       } catch (e) {
         console.warn(`⚠️ RPC ${rpc} failed:`, (e as Error)?.message ?? e)
         continue
