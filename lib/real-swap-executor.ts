@@ -26,6 +26,25 @@ function buildVercelInternalUrl(path: string): string | null {
   return `https://${host}${path}`
 }
 
+// RI-BANK-50 — o RPC público da Arc Testnet falha de forma intermitente em
+// chamadas eth_call individuais (ethers CALL_EXCEPTION "missing revert data"),
+// confirmado por reprodução local com log ao vivo. Sem retry, uma única
+// falha transitória de rede zera o saldo lido inteiro. `attempts` pequeno e
+// `delayMs` curto bastam: o objetivo é absorver um blip pontual do RPC, não
+// mascarar uma falha real e persistente (essa continua propagando o erro).
+async function withRetries<T>(fn: () => Promise<T>, attempts = 4, delayMs = 250): Promise<T> {
+  let lastError: unknown
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn()
+    } catch (e) {
+      lastError = e
+      if (i < attempts - 1) await new Promise(resolve => setTimeout(resolve, delayMs))
+    }
+  }
+  throw lastError
+}
+
 // Decimais conhecidos por token (fallback quando tokenBalances não carregou)
 export const TOKEN_DECIMALS: Record<string, number> = {
   USDC: 6, EURC: 6, DAI: 18,
@@ -493,7 +512,12 @@ class RealSwapExecutor {
     const provider = new ethers.JsonRpcProvider();
     const fallbacks = networkKey ? (this.BACKUP_RPCS[networkKey] ?? []) : [];
     (provider as any)._send = async function(payload: any) {
-      const res = await fetch('/api/rpc-proxy', {
+      // RI-BANK-50 — URL relativa não resolve em execução server-side (sem
+      // window/origem); mesma correção do RI-BANK-38 para _getTokenPrice.
+      const relativeUrl = '/api/rpc-proxy'
+      const proxyUrl = typeof window === "undefined" ? buildVercelInternalUrl(relativeUrl) : relativeUrl
+      if (!proxyUrl) throw new Error("rpc_proxy_url_unresolvable_server_side")
+      const res = await fetch(proxyUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rpcUrl: targetRpcUrl, body: payload, fallbacks }),
@@ -543,7 +567,11 @@ class RealSwapExecutor {
 
     type ResolvedBalance = { raw: bigint; decimals: bigint }
     const rpcCall = async (rpcUrl: string, method: string, params: unknown[]): Promise<any> => {
-      const res = await fetch('/api/rpc-proxy', {
+      // RI-BANK-50 — mesma correção: URL absoluta quando executando no servidor.
+      const relativeUrl = '/api/rpc-proxy'
+      const proxyUrl = typeof window === "undefined" ? buildVercelInternalUrl(relativeUrl) : relativeUrl
+      if (!proxyUrl) throw new Error("rpc_proxy_url_unresolvable_server_side")
+      const res = await fetch(proxyUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rpcUrl, body: { jsonrpc: '2.0', id: 1, method, params } }),
@@ -566,7 +594,7 @@ class RealSwapExecutor {
       await Promise.all(
         (Object.entries(net.tokens) as [string, string][]).map(async ([symbol, address]) => {
           if (address.toLowerCase() === ZERO_ADDR) {
-            const nativeBal = await prov.getBalance(this.userAddress).catch(() => 0n)
+            const nativeBal = await withRetries(() => prov.getBalance(this.userAddress)).catch(() => 0n)
             const balance = parseFloat(ethers.formatUnits(nativeBal, 18))
             newBalances.set(symbol, { symbol, balance, address, decimals: 18 })
             if (balance > 0.0001) nonZero++
@@ -574,10 +602,10 @@ class RealSwapExecutor {
           }
           try {
             const contract = new ethers.Contract(address, ERC20_ABI, prov);
-            const [raw, decimals] = await Promise.all([
+            const [raw, decimals] = await withRetries(() => Promise.all([
               contract.balanceOf(this.userAddress),
               contract.decimals(),
-            ]);
+            ]));
             const balance = parseFloat(ethers.formatUnits(raw, decimals));
             newBalances.set(symbol, { symbol, balance, address, decimals: Number(decimals) });
             if (balance > 0.0001) nonZero++

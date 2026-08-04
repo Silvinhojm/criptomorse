@@ -1028,6 +1028,7 @@ Se for adicionar um novo token, atualizar em **todos** os lugares:
 - Verificar se há posição aberta (ETH, MATIC, etc.) que precisa ser vendida
 - Staircase deve vender automaticamente quando cair 2 degraus
 - Ou verificar se o saldo realmente está baixo na blockchain
+- **RI-BANK-50**: na Arc Testnet, também pode ser leitura de saldo zerada por falha intermitente do RPC público (ver seção RI-BANK-50 abaixo) — confirme o saldo real via `eth_call` direto antes de assumir que os fundos sumiram.
 
 ### Problema: "Confiança acima de 100%"
 - Verificar se `Math.min(90, ...)` está sendo aplicado no agente
@@ -4577,6 +4578,20 @@ Não existe retry interno. Plano bloqueado, falho ou concluído não volta sozin
 - `kill-switch.set` — ativa/desativa o kill switch persistente do cron.
 
 O workflow `.github/workflows/cron-trigger.yml` permanece somente com `workflow_dispatch`; o bloco `schedule` continua comentado.
+
+### RI-BANK-50 — leitura de saldo zerando de forma intermitente em server-side
+
+**Sintoma:** `executeSwap` reportava saldo `$0.0000 (0.000000 USDC)` para uma conta com 19,999475 USDC confirmados on-chain — não perda de fundos, erro de leitura da aplicação.
+
+**Causa raiz (confirmada por reprodução local com log ao vivo, não só por eliminação):** o RPC público da Arc Testnet (`https://rpc.testnet.arc.network`) falha de forma intermitente em chamadas `eth_call` individuais, retornando `CALL_EXCEPTION` ("missing revert data") do lado do ethers. Isso **não** é o `'__PROVIDER__'` (uso direto do `JsonRpcProvider` real, passado por `cron-trading-runtime.ts`) estando estruturalmente quebrado — ele funciona corretamente na maior parte das execuções. É uma falha transitória do próprio endpoint RPC público, sem redundância nenhuma configurada para a rede `arc` em `BACKUP_RPCS` (ao contrário de `polygon`/outras redes). Quando essa falha pontual acontecia, o único fallback disponível (`fetch('/api/rpc-proxy')`, URL relativa) também não funcionava em execução server-side (sem `window`/origem) — mesma classe de bug do RI-BANK-37/38, agora afetando a leitura do saldo em token, não só o preço — e o saldo acabava zerado.
+
+**Correção aplicada (`lib/real-swap-executor.ts`):**
+1. `withRetries()` — helper com até 4 tentativas (200-250ms de intervalo) envolvendo as chamadas `balanceOf`/`decimals`/`getBalance` nativas em `_refreshAllBalancesImpl()`, absorvendo blips pontuais do RPC.
+2. `_createProxyProvider()._send` e `rpcCall()` agora resolvem URL absoluta via `buildVercelInternalUrl()` (mesmo padrão do RI-BANK-38) quando `typeof window === "undefined"`, em vez de sempre usar a URL relativa `/api/rpc-proxy`.
+
+**Limitação conhecida (residual, não totalmente eliminada):** reprodução local mostrou que o RPC público da Arc Testnet às vezes tem sequências de falha mais longas que 4 tentativas consecutivas (observado em ~1 a cada ~5-10 execuções nos testes locais). O retry reduz bastante a taxa de falha mas não a zera, porque não há um segundo RPC genuinamente diferente configurado para `arc` em `BACKUP_RPCS` — o único fallback aponta para a mesma URL. O comportamento nesse caso residual continua *fail-safe* (bloqueia o trade por "saldo insuficiente" em vez de operar com dado errado), mas não é *fail-available*. Se for encontrado um segundo endpoint RPC confiável para a Arc Testnet, adicioná-lo a `BACKUP_RPCS.arc` é o próximo passo natural para fechar essa lacuna.
+
+**Teste de regressão:** `lib/security/ri-bank-50-server-balance.test.ts` — simula (sem tocar rede real) uma falha transitória tipo `CALL_EXCEPTION` que o retry recupera, e confirma que o fallback de proxy usa URL absoluta em contexto server-side.
 
 ### Arquivos principais
 
