@@ -4,8 +4,16 @@ import type { CronRiskBox, CronTradingPlan, CronTradingStateStore } from "@/lib/
 
 export interface CronExecutionResult {
   success: boolean
-  txHash?: string
+  txHash?: string | null
   reason?: string
+  // RI-BANK-44: marcadores de settlement propagados de ponta a ponta.
+  // synthetic=true → NÃO há transação on-chain real; a execução não deve ser
+  // reportada como sucesso (Greg Sti tratamento do cron e da teste) — success só
+  // significa "processado", settled significa "confirmado on-chain".
+  synthetic?: boolean
+  settled?: boolean
+  canonicalSettlement?: boolean
+  settlementStatus?: "synthetic" | "confirmed" | "failed"
 }
 
 export interface CronTradingDependencies {
@@ -26,6 +34,7 @@ export interface CronRunResult {
   reason: string
   planId?: string
   txHash?: string
+  synthetic?: boolean
 }
 
 /**
@@ -96,27 +105,38 @@ export class CronTradingService {
         execution = { success: false, reason: error instanceof Error ? error.message : String(error) }
       }
 
-      const reason = execution.success ? "execution_completed" : `execution_failed:${execution.reason ?? "unknown"}`
+      // RI-BANK-44: synthetic não é execução real — nunca vira completed.
+      // success = processado; settled/canonicalSettlement = confirmado on-chain.
+      const synthetic = execution.synthetic === true
+      const executed = execution.success && !synthetic
+      const reason = !execution.success
+        ? `execution_failed:${execution.reason ?? "unknown"}`
+        : synthetic
+          ? "execution_synthetic_no_onchain_tx"
+          : "execution_completed"
       const transitioned = await store.transitionPlan(
         claimed.id,
         invocationId,
-        execution.success ? "completed" : "failed",
+        executed ? "completed" : "failed",
         reason,
-        execution.txHash,
+        execution.txHash ?? "",
         now(),
       )
       if (!transitioned) throw new Error("cron_plan_terminal_transition_rejected")
 
       await store.appendAudit({
-        timestamp: now(), invocationId, planId: claimed.id, mode: execution.success ? "mode_1" : "mode_2",
-        outcome: execution.success ? "executed" : "execution_failed", reason, txHash: execution.txHash,
+        timestamp: now(), invocationId, planId: claimed.id, mode: executed ? "mode_1" : "mode_2",
+        outcome: executed ? "executed" : synthetic ? "execution_synthetic" : "execution_failed",
+        reason, txHash: execution.txHash ?? undefined,
+        synthetic,
       })
       return {
-        executed: execution.success,
-        mode: execution.success ? "mode_1" : "mode_2",
+        executed,
+        mode: executed ? "mode_1" : "mode_2",
         reason,
         planId: claimed.id,
-        txHash: execution.txHash,
+        txHash: execution.txHash ?? undefined,
+        synthetic,
       }
     } catch (error) {
       const reason = `cron_fail_closed:${error instanceof Error ? error.message : String(error)}`

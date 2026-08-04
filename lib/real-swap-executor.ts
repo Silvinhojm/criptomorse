@@ -1246,8 +1246,11 @@ class RealSwapExecutor {
           if (directResult.success) {
             const outputAmountRaw = parseFloat(directResult.amountReceived ?? "0");
             const zeroHash = "0x0000000000000000000000000000000000000000000000000000000000000000";
+            // RI-BANK-44: synthetic também é detectado quando txHash vem vazio
+            // (o fallback synthetic do arc-direct-swap não transmite nada on-chain).
             const isSynthetic = directResult.synthetic === true ||
               directResult.txHash === zeroHash ||
+              !directResult.txHash ||
               directResult.amountReceived === fromAmountRaw;
             let amountReceived: number;
             if (isSynthetic) {
@@ -1261,11 +1264,11 @@ class RealSwapExecutor {
             this._updateCacheBalance(toToken, amountReceived);
             this._updateCacheBalance(fromToken, -(amountUsd / fromPrice));
             const action: "BUY" | "SELL" | "HOLD" = !isStable(toToken) && isStable(fromToken) ? "BUY" : "SELL";
-            log(`💵 Transação direta${isSynthetic ? " sintética/testnet (não settlement canônico)" : ""}: ${amountReceived.toFixed(6)} ${toToken} ($${toAmountUsd.toFixed(2)}) | tx: ${directResult.txHash?.slice(0, 10)}`);
+            log(`💵 Transação direta${isSynthetic ? " sintética/testnet (não settlement canônico)" : ""}: ${amountReceived.toFixed(6)} ${toToken} ($${toAmountUsd.toFixed(2)}) | tx: ${directResult.txHash?.slice(0, 10) || "n/a"}`);
             return {
               success: true,
-              txHash: directResult.txHash ?? `direct_${Date.now()}`,
-              explorerUrl: directResult.explorerUrl,
+              txHash: isSynthetic ? "" : (directResult.txHash ?? `direct_${Date.now()}`),
+              explorerUrl: isSynthetic ? "" : directResult.explorerUrl,
               fromToken, toToken,
               fromAmount: amountUsd,
               toAmount: amountReceived,

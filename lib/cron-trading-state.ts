@@ -56,6 +56,7 @@ export interface CronAuditEvent {
   actor?: string
   manualDispatchRef?: string
   payload?: Record<string, string | boolean>
+  synthetic?: boolean
 }
 
 export interface CronTradingStateStore {

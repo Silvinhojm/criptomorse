@@ -14,11 +14,14 @@ const ERC20_ABI = [
 // GenericAMMPair (Uniswap V2-style) deployado na Arc testnet
 const CIRBTC_POOL = '0x185556c077c95FC07498FEd4D4faF03b6EE30C5C'.toLowerCase()
 
+// Chaves normalizadas em lowercase (RI-BANK-44): o lookup em executeDirectSwap
+// usa fromToken.toLowerCase():toLower — chaves mixed-case nunca casavam e o AMM
+// direto ficava inalcançável, caindo no caminho synthetic (falso positivo).
 const AMM_PAIRS: Record<string, string> = {
-  '0x3600000000000000000000000000000000000000:0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a': '0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb',
-  '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a:0x3600000000000000000000000000000000000000': '0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb',
-  '0x3600000000000000000000000000000000000000:0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF': CIRBTC_POOL,
-  '0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF:0x3600000000000000000000000000000000000000': CIRBTC_POOL,
+  '0x3600000000000000000000000000000000000000:0x89b50855aa3be2f677cd6303cec089b5f319d72a': '0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb',
+  '0x89b50855aa3be2f677cd6303cec089b5f319d72a:0x3600000000000000000000000000000000000000': '0xA1e418D16C969FdB9482716C7e2bD3d31872EBfb',
+  '0x3600000000000000000000000000000000000000:0xf0c4a4ce82a5746abaaad9425360ab04fbba432bf': CIRBTC_POOL,
+  '0xf0c4a4ce82a5746abaaad9425360ab04fbba432bf:0x3600000000000000000000000000000000000000': CIRBTC_POOL,
 };
 
 const AMM_ABI = [
@@ -60,7 +63,7 @@ const AMM_RPCS: Record<number, string> = {
   5042002: 'https://rpc.testnet.arc.network',
 };
 
-function getAMMQuote(fromToken: string, toToken: string, fromAmount: string): { pairAddress: string; toAmount: string } | null {
+export function getAMMQuote(fromToken: string, toToken: string, fromAmount: string): { pairAddress: string; toAmount: string } | null {
   const key = `${fromToken.toLowerCase()}:${toToken.toLowerCase()}`;
   const pairAddr = AMM_PAIRS[key];
   if (!pairAddr) return null;
@@ -195,8 +198,8 @@ export async function executeDirectSwap(
       log(`🔁 Synthetic stable→stable (sem AMM): ${fromName} → ${toToken.slice(0, 8)}`);
       return {
         success: true,
-        txHash: '0x' + '0'.repeat(64),
-        explorerUrl: `${EXPLORER}/tx/${'0x' + '0'.repeat(64)}`,
+        txHash: '', // RI-BANK-44: nunca retornar string de zeros — sem tx on-chain real
+        explorerUrl: '',
         amountReceived: fromAmount,
         synthetic: true,
         canonicalSettlement: false,

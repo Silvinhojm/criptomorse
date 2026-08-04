@@ -102,8 +102,13 @@ export async function POST(request: NextRequest) {
       attempts: 1,
     }
     const execution = await executeCronPlanWithKms(plan)
-    if (!execution.success || !execution.txHash) {
-      throw new Error(`manual_test_execution_failed:${execution.reason ?? "unknown"}`)
+    // RI-BANK-44: execução sintética NÃO é sucesso real — sem transação on-chain.
+    // O critério de aceite do RI-BANK-39 exige transação confirmada; synthetic → 409.
+    if (!execution.success || !execution.settled || execution.synthetic) {
+      const reason = execution.synthetic
+        ? `manual_test_execution_synthetic:${execution.reason ?? "synthetic_fallback_no_onchain_tx"}`
+        : `manual_test_execution_failed:${execution.reason ?? "unknown"}`
+      throw new Error(reason)
     }
 
     await store.appendAudit({
@@ -113,16 +118,22 @@ export async function POST(request: NextRequest) {
       mode: "mode_1",
       outcome: "manual_test_executed",
       reason: "execution_completed",
-      txHash: execution.txHash,
+      txHash: execution.txHash ?? undefined,
       source: "manual-test",
       actor,
       manualDispatchRef,
       payload,
+      synthetic: false,
     })
 
     return NextResponse.json({
+      ok: true,
       success: true,
-      txHash: execution.txHash,
+      settled: true,
+      synthetic: false,
+      canonicalSettlement: true,
+      settlementStatus: "confirmed",
+      txHash: execution.txHash ?? null,
       manualDispatchRef,
       timestamp,
     })
@@ -133,11 +144,23 @@ export async function POST(request: NextRequest) {
         timestamp: Date.now(), invocationId, planId: manualDispatchRef,
         mode: "mode_2", outcome: "manual_test_blocked_or_failed", reason,
         source: "manual-test", actor, manualDispatchRef, payload,
+        synthetic: reason.includes("synthetic"),
       })
     } catch {
       // Never relax the failure merely because the audit sink also failed.
     }
-    return NextResponse.json({ success: false, reason }, { status: 409 })
+    return NextResponse.json({
+      ok: false,
+      success: false,
+      settled: false,
+      synthetic: reason.includes("synthetic"),
+      canonicalSettlement: false,
+      settlementStatus: "failed",
+      txHash: null,
+      reason,
+      manualDispatchRef,
+      timestamp,
+    }, { status: 409 })
   }
 }
 

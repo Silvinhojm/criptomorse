@@ -4593,6 +4593,50 @@ a cada 15 minutos. A execução reutiliza `executeCronPlanWithKms()` e grava doi
 eventos imutáveis na auditoria RI-BANK-34 com `source: "manual-test"`, payload,
 ator administrativo, referência manual e hash final.
 
+**Bug corrigido (observado no RI-BANK-39):** no disparo manual, o preflight
+bloqueou `USDC→EURC` com `Saldo insuficiente de USDC: $0.0000 (19.999475 USDC)`
+porque `_getTokenPrice("USDC")` retornou `0` em ambiente server-side, zerando
+`fromBalanceUsd` mesmo com saldo real de 19,999475 USDC.
+
+### RI-BANK-44 — sucesso real vs synthetic: fim do falso positivo
+
+**Problema:** o disparo manual do RI-BANK-39 retornou `success: true` com
+`txHash` composto só de zeros — uma execução *synthetic* (simulação sem
+transação on-chain) mascarada como sucesso real. Causa raiz: mismatch de
+maiúsculas/minúsculas no `AMM_PAIRS` (`lib/arc-direct-swap.ts`) — as chaves
+estavam em mixed-case (EIP-55) mas o lookup normalizava com `.toLowerCase()`,
+então `AMM_PAIRS[ammKey]` nunca casava e o AMM direto (pool real
+`0xA1e4...EBfb`) ficava inalcançável, caindo no caminho synthetic para
+qualquer par.
+
+**Contrato de resposta (a partir desta fase):**
+
+| Campo | Significado |
+|-------|-------------|
+| `success` / `ok` | a chamada foi **processada** sem erro de pipeline |
+| `settled` / `canonicalSettlement` | uma transação **real foi confirmada on-chain** |
+| `synthetic` | simulação/synthetic: **NÃO há transação on-chain** |
+| `txHash` | `null` quando não há transação real — **nunca** string de zeros |
+| `settlementStatus` | `"confirmed" \| "synthetic" \| "failed"` |
+
+**Regras vigentes:**
+1. `lib/cron-trading-runtime.ts` (`executeCronPlanWithKms`) propaga
+   `synthetic`, `settled`, `canonicalSettlement`, `settlementStatus` e
+   retorna `txHash: null` quando synthetic.
+2. A rota `app/operator/corretor/test-swap/route.ts` trata execução synthetic
+   como **falha do critério de aceite** → HTTP **409** (nunca 200) com
+   `synthetic: true`, `txHash: null`.
+3. `CronTradingService` (`lib/cron-trading-service.ts`) nunca marca plano
+   synthetic como `completed` — transição vai para `failed` com
+   `execution_synthetic_no_onchain_tx`.
+4. `lib/arc-direct-swap.ts`: chaves de `AMM_PAIRS` normalizadas em lowercase
+   (mesmo formato do lookup) — o AMM direto USDC↔EURC volta a resolver o pool
+   real e o caminho synthetic só é atingido quando não há rota de verdade.
+
+**Testes:** `lib/security/ri-bank-44-synthetic-response.test.ts` (6 asserts,
+incluindo lookup funcional `getAMMQuote` USDC/EURC → pool real). Regressões
+RI-BANK-34/38/39/41 continuam passando.
+
 ### RI-BANK-50 — leitura de saldo zerando de forma intermitente em server-side
 
 **Sintoma:** `executeSwap` reportava saldo `$0.0000 (0.000000 USDC)` para uma conta com 19,999475 USDC confirmados on-chain — não perda de fundos, erro de leitura da aplicação.

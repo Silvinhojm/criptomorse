@@ -83,7 +83,14 @@ export async function executeCronPlanWithKms(plan: CronTradingPlan) {
 
   return {
     success: result.success,
-    txHash: result.txHash || undefined,
+    txHash: result.txHash || null,
     reason: result.success ? undefined : result.message,
+    // RI-BANK-44: propagar os marcadores de settlement de ponta a ponta.
+    // synthetic=true significa que NÃO houve transação on-chain — a resposta
+    // externa (route test-swap / cron) nunca deve interpretar isso como sucesso real.
+    synthetic: result.synthetic === true,
+    settled: result.success && result.canonicalSettlement === true && !result.synthetic,
+    canonicalSettlement: result.canonicalSettlement === true && !result.synthetic,
+    settlementStatus: result.settlementStatus ?? (result.success ? (result.synthetic ? "synthetic" : "confirmed") : "failed"),
   }
 }
