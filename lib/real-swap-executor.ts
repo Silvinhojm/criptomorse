@@ -368,6 +368,11 @@ class RealSwapExecutor {
   private _refuelingGas = false;
   private _memoContext: { ref: string; extra: Record<string, string> } | null = null;
   private _balanceFetchErrors: Map<string, number> = new Map();
+  // RI-BANK-51 — qual etapa de rpcsParaTentar efetivamente respondeu na
+  // última leitura de saldo, exposto para diagnóstico read-only sem
+  // depender de grepar logs de produção.
+  private _lastBalanceSource: string | null = null
+  getLastBalanceSource(): string | null { return this._lastBalanceSource }
 
   private _getCachedQuote(key: string): QuoteResult | null | undefined {
     const cached = this.quoteCache.get(key);
@@ -622,6 +627,7 @@ class RealSwapExecutor {
       );
       if (tokenCount > 0) {
         anyProviderSucceeded = true
+        this._lastBalanceSource = label
         console.debug(`🔁 Balance via ${label}: ${nonZero} non-zero of ${Object.keys(net.tokens).length}`)
       }
       return nonZero
@@ -656,6 +662,7 @@ class RealSwapExecutor {
       )
       if (ok > 0) {
         anyProviderSucceeded = true
+        this._lastBalanceSource = label
         console.log(`🔁 Balance via ${label}: ${ok} non-zero`)
       }
       return newBalances.size > 0
@@ -684,6 +691,7 @@ class RealSwapExecutor {
     // Atomic swap: replace tokenBalances only after all fetches complete
     if (!anyProviderSucceeded) {
       // All RPCs failed: try localStorage per-network
+      this._lastBalanceSource = "none (all rpcsParaTentar failed)"
       const mesmaRede = this._lastNetworkRefresh === this.networkKey
       console.log(`↩️ All RPCs failed${mesmaRede ? ', trying previous balances' : ''} — loading localStorage`)
       this._loadBalancesFromStorage()

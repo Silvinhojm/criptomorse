@@ -4593,6 +4593,28 @@ O workflow `.github/workflows/cron-trigger.yml` permanece somente com `workflow_
 
 **Teste de regressão:** `lib/security/ri-bank-50-server-balance.test.ts` — simula (sem tocar rede real) uma falha transitória tipo `CALL_EXCEPTION` que o retry recupera, e confirma que o fallback de proxy usa URL absoluta em contexto server-side.
 
+### RI-BANK-51 — rota de diagnóstico read-only de saldo (KMS real, sem risco de swap)
+
+`GET /api/internal/ri-bank-51-balance-check`, protegida por `Authorization: Bearer <ADMIN_PANIC_KEY>` (mesmo padrão de `isValidCronAdminRequest` usado no painel administrativo) e restrita a `VERCEL_ENV=production`.
+
+Exercita exatamente o mesmo caminho corrigido no RI-BANK-50 — `readVercelOidcKmsEnvironment()` → `createVercelOidcKmsClient()` → `KmsEvmSigner`/`KmsEthersSigner` → `realSwap.initializeWithServerSigner()` → `realSwap.refreshAllBalances()` — e retorna o saldo lido. **Não existe nenhum caminho de código nessa rota que alcance `executeSwap()`**; é estruturalmente impossível essa rota originar uma transação.
+
+Resposta:
+```json
+{
+  "ok": true,
+  "address": "0x88993E37Ed022C56F83f67C74d33C783E8e49C75",
+  "network": "arc",
+  "balances": { "USDC": 19.999475, "EURC": 0 },
+  "balanceSource": "signer provider",
+  "timestamp": 1785900000000
+}
+```
+
+`balanceSource` reflete qual etapa de `rpcsParaTentar` respondeu de fato (`"signer provider"` = `'__PROVIDER__'`/provider direto; a URL do RPC de fallback, se usado; ou `"none (all rpcsParaTentar failed)"` se nada respondeu) — exposto via novo método `RealSwapExecutor.getLastBalanceSource()` (`lib/real-swap-executor.ts`), preenchido nos dois pontos de sucesso de `_refreshAllBalancesImpl()` (`fetchFrom` e `fetchFromProxyRpc`) e no caminho de falha total.
+
+**Uso:** ferramenta de observabilidade reutilizável — não é só para validar o RI-BANK-50; serve para checar saúde/saldo da signer sem risco, algo que o projeto vai precisar de forma recorrente conforme mais robôs passarem a operar (ver `PROJECT_VISION.md`).
+
 ### Arquivos principais
 
 - `lib/cron-trading-state.ts`
