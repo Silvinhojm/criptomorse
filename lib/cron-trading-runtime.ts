@@ -53,7 +53,11 @@ export async function executeCronPlanWithKms(plan: CronTradingPlan) {
     keyId: kmsEnvironment.keyArn,
     expectedAddress: kmsEnvironment.expectedAddress,
   })
-  const provider = new JsonRpcProvider(network.rpcUrl, network.chainId)
+  // RI-BANK-56 — sem staticNetwork, getNetwork() reconsulta eth_chainId via
+  // RPC a cada chamada; o RPC público da Arc Testnet já é conhecidamente
+  // instável (RI-BANK-50/51), e a prova original do KMS (RI-BANK-32) só
+  // funcionou fixando a rede uma vez com staticNetwork: true.
+  const provider = new JsonRpcProvider(network.rpcUrl, network.chainId, { staticNetwork: true })
   const ethersSigner = new KmsEthersSigner(kmsSigner, provider)
   const address = await ethersSigner.getAddress()
   const initialized = await realSwap.initializeWithServerSigner(address, plan.network as NetworkKey, ethersSigner, provider)

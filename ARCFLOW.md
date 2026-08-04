@@ -4710,6 +4710,22 @@ Resposta:
 
 **Teste de regressão:** `lib/security/ri-bank-55-error-propagation.test.ts` — confere por leitura de código que `real-swap-executor.ts` propaga `directResult.error`, e testa funcionalmente (sem mocks, chamando `executeDirectSwap()` de verdade com um signer inutilizável) que a mensagem final contém o erro real do ethers (`UNSUPPORTED_OPERATION`), não só o texto genérico.
 
+### RI-BANK-56 — "invalid chain ID" no envio da transação de swap
+
+**Sintoma:** graças à propagação de erro do RI-BANK-55, o disparo real do RI-BANK-39 finalmente expôs o erro verdadeiro por trás de "Nenhuma rota disponível": o RPC da Arc Testnet rejeitava a transação em `eth_sendRawTransaction` com `{"code": -32000, "message": "invalid chain ID"}`.
+
+**Causa raiz:** o chainId de uma transação assinada pelo `ethers` não vem de nenhuma constante — vem de `provider.getNetwork()`, chamado dentro do `populateTransaction()` padrão do `AbstractSigner` (que `KmsEthersSigner` não sobrescreve). Sem a opção `staticNetwork: true`, `getNetwork()` **reconsulta `eth_chainId` via RPC a cada chamada** (confirmado lendo `node_modules/ethers/lib.commonjs/providers/provider-jsonrpc.js`). `lib/cron-trading-runtime.ts` — o caminho real do cron/disparo manual KMS — construía o provider **sem** essa proteção, ao contrário da prova original do RI-BANK-32 (`app/api/internal/ri-bank-32-kms-proof/route.ts`), que já usava `{ staticNetwork: true }` e funcionou. O RPC público da Arc Testnet já era conhecidamente instável (RI-BANK-50/51, falhas intermitentes em `eth_call`); sem `staticNetwork`, essa mesma instabilidade também expunha a detecção de rede a uma reconsulta desnecessária a cada transação.
+
+**Não é regressão de cherry-pick** — confirmado via `git log --all` e `git grep` em todas as branches: `staticNetwork` nunca existiu em `cron-trading-runtime.ts`, desde a criação do arquivo (`ebda281`/`af6b119`). Só nunca tinha sido alcançado antes porque os disparos anteriores sempre falhavam mais cedo (saldo zerado, preço zerado, mensagem mascarada — RI-BANK-41/49/50/55).
+
+**Correção aplicada (`lib/cron-trading-runtime.ts:56`):**
+```ts
+const provider = new JsonRpcProvider(network.rpcUrl, network.chainId, { staticNetwork: true })
+```
+Mesmo padrão já usado no RI-BANK-32, `app/api/agents/[address]/route.ts` e `lib/chainlink-feeds.ts` — não é uma técnica nova no projeto.
+
+**Teste de regressão:** `lib/security/ri-bank-56-static-network.test.ts` — confere por leitura de código que a linha de construção do provider em `cron-trading-runtime.ts` inclui `{ staticNetwork: true }`.
+
 ### Arquivos principais
 
 - `lib/cron-trading-state.ts`
