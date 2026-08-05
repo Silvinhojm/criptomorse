@@ -1,5 +1,20 @@
 # Registro de Incidentes Técnicos — CriptoMorse
 
+## [04/08/2026] RI-BANK-65 — Integração automática Git-Vercel sobrescreveu produção; desconectada
+
+**Severidade:** Alta (produção inteira ficou 404 em todas as rotas construídas desde o RI-BANK-32, sem aviso)
+**Status:** Resolvido — integração desconectada
+
+**Sintoma:** `/api/cron/trigger` (e, na investigação, confirmou-se que também `/operator/corretor/test-swap`, `/api/admin/cron-control`, `/api/internal/ri-bank-51-balance-check`) começaram a retornar 404 em produção, minutos depois de um deploy manual válido (RI-BANK-63) ter sido confirmado funcionando.
+
+**Causa raiz confirmada via API da Vercel (`GET /v9/projects/{id}`, campo `link`), não suposição:** o projeto `arcflow` na Vercel tinha uma integração automática conectada ao GitHub (`Silvinhojm/criptomorse`), com `productionBranch: "main"`. Como `main` está parada desde 26/06/2026 (148 commits atrás da branch de trabalho real, `codex/ri-bank-34-cron-real` — ver entrada RI-BANK-64 abaixo/`ARCFLOW.md`), qualquer evento que disparasse um rebuild ligado a `main` promovia automaticamente, para produção, um build antigo — sobrescrevendo, sem aviso, qualquer deploy manual feito via `vercel --prod` a partir da branch correta.
+
+**Correção:** integração desconectada via `vercel git disconnect`. Confirmado depois, consultando a API da Vercel diretamente, que o campo `link` do projeto passou a `undefined` — não há mais nenhuma integração Git ativa.
+
+**Regra vigente a partir de agora:** todo deploy em produção deste projeto é **manual e deliberado**, via `vercel --prod` a partir do checkout correto — nunca automático por push/webhook do GitHub. Esse já era o padrão seguido durante toda a investigação RI-BANK-39→64 (cada deploy desta série foi confirmado individualmente: commit hash, deployment ID, status `Ready`, alias); esta correção só formaliza e torna esse padrão a única forma de deploy possível, eliminando a possibilidade de um rebuild automático de uma branch desatualizada substituir produção sem ninguém saber.
+
+**Se algum dia quiserem reativar deploy automático via Git:** primeiro reconciliar `main` (ou apontar `productionBranch` para a branch de trabalho real) — nunca reconectar a integração enquanto `main` estiver desatualizada.
+
 ## [04/08/2026] A saga do RI-BANK-39 — do disparo manual ao primeiro swap real confirmado (RI-BANK-39 → RI-BANK-58)
 
 **Severidade:** Alta (bloqueava validação do caminho de execução real antes de habilitar o cron automático)
