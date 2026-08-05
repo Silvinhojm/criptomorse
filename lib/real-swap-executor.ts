@@ -16,7 +16,7 @@ import { CCTP_CONFIG, cctpService } from "./cctp";
 import { unifiedBalance } from "./unified-balance";
 import { caixa } from "./caixa";
 import { hasDirectDex, getDirectDexQuote, executeDirectDexSwap, calculateAmountOutMin } from "./direct-dex";
-import { hasSellRoute, recordRouteFailure } from "./route-verifier";
+import { hasSellRoute, recordRouteFailure, hasSufficientPoolDepth } from "./route-verifier";
 
 const BALANCE_STORAGE_KEY_PREFIX = "arcflow_token_balances_"
 
@@ -1276,6 +1276,17 @@ class RealSwapExecutor {
             recordRouteFailure(toToken, this.networkKey)
             log(`⛔ Gate: ${toToken} não tem rota de venda conhecida em ${this.networkKey} — abortando`);
             return this._fail(fromToken, toToken, amountUsd, `Par bloqueado: ${toToken} sem rota de saída`, timestamp);
+          }
+          // RI-BANK-70 — gate pré-trade: profundidade de pool proporcional
+          // ao valor do trade. hasSellRoute() acima só confirma que o pool
+          // existe; esta checagem confirma que ele aguenta este valor sem
+          // ser esvaziado (ex: pool USDC/cirBTC com ~$1 de liquidez total).
+          if (this.provider) {
+            const depthCheck = await hasSufficientPoolDepth(this.provider, fromTokenAddr, toTokenAddr, amountUsd, this.networkKey)
+            if (!depthCheck.sufficient) {
+              log(`⛔ Gate: liquidez insuficiente para ${fromToken}→${toToken} em ${this.networkKey} — ${depthCheck.reason}`);
+              return this._fail(fromToken, toToken, amountUsd, `Liquidez insuficiente para este valor (${depthCheck.reason})`, timestamp);
+            }
           }
           log(`🧪 Nenhuma rota LI.FI/DEX — executando transação direta na testnet (stress)`);
           const directResult = await executeDirectSwap(this.signer, fromTokenAddr, toTokenAddr, fromAmountRaw, this.userAddress, net.chainId, (m) => log(m));

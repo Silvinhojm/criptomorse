@@ -4783,6 +4783,20 @@ arc: [
 
 **Teste de regressão:** `lib/security/ri-bank-63-backup-rpc-fallback.test.ts` — simula um provider primário que falha permanentemente em toda chamada (não um blip transitório, que o retry do RI-BANK-50 já resolveria), com `net.rpcUrl` (via proxy) também falhando, e só o primeiro `BACKUP_RPCS.arc` respondendo corretamente. Confirma que o loop de fato alcança esse backup específico (`proxyCalledWithBackupUrl`) e recupera o saldo correto — não apenas presume que "melhorou".
 
+### RI-BANK-70 — checagem de profundidade de pool proporcional ao valor do trade
+
+**Contexto:** a auditoria do Bandit (RI-BANK-68/69) confirmou que `hasSellRoute()` (`lib/route-verifier.ts`) — a função que o Bandit e o caminho real de execução (`real-swap-executor.ts`) de fato usam antes de um swap AMM-direto em testnet — só confirma que um pool **existe**, nunca que ele tem liquidez suficiente para o valor do trade. Isso é o mesmo risco já sinalizado no comentário de `TRADING_PAIRS.arc` (`lib/real-swap-executor.ts:182`): *"cirBTC: BUY bloqueado (pool USDC/cirBTC com liquidez simbólica — anti-pattern 'walled garden')... SELL permitido apenas com validação forte de liquidez real"* — a "validação forte" mencionada ali nunca tinha sido conectada. Evidência concreta: o pool USDC/cirBTC (`0x185556c0...`) tinha, no momento da investigação, **~$1 de liquidez total** — um trade de $5 (o mínimo do Bandit) seria 5x o pool inteiro.
+
+**Correção (`lib/route-verifier.ts`):** nova função `hasSufficientPoolDepth(provider, fromToken, toToken, amountUsd, networkKey)` — busca o pool conhecido do par (mesmo `KNOWN_POOLS` já usado por `checkRouteViaMulticall`), lê as reservas reais via `getReserves()` (com retry, 3 tentativas), identifica o lado stable do pool (USDC/EURC) e exige que a reserva desse lado seja pelo menos **10x** o valor do trade em USD. Fail-closed em qualquer caso de dúvida: pool desconhecido, leitura de reserva falha, ou nenhum lado stable identificável — todos retornam `sufficient: false`, nunca deixam passar por omissão.
+
+**Multiplicador de 10x — julgamento documentado, não um modelo preciso de price impact:** mantém o impacto de preço de um swap constant-product (x\*y=k) abaixo de ~10% no pior caso realista para essa proporção, com boa margem para os pares operados hoje. Não é uma fórmula derivada, é uma escolha conservadora e simples de auditar.
+
+**Conectado no caminho real (`lib/real-swap-executor.ts`, `executeSwap()`):** logo após o gate existente de `hasSellRoute()`, antes de `executeDirectSwap()` — bloqueia com `"Liquidez insuficiente para este valor (...)"` (nunca mascarado como outro erro) quando a checagem falha. Protege qualquer chamador desse caminho (Bandit, `test-swap` manual, cron) igualmente, porque vive na camada compartilhada, não em `pregao-arc.ts` — a lógica de decisão do Bandit em si não foi alterada, como pedido.
+
+**Confirmado sem regressão para o par saudável:** com o pool USDC/EURC (~$17,78 de liquidez), um trade de $0,10 (o valor real usado no `test-swap`) passa normalmente — só falha para valores que já romperiam a margem de 10x mesmo nesse pool saudável (ex: $5, que exigiria $50 de reserva).
+
+**Teste de regressão:** `lib/security/ri-bank-70-pool-depth-check.test.ts` — reproduz os dois cenários reais (endereços de pool e reservas observadas ao vivo durante o RI-BANK-69) contra um provider mockado: pool raso rejeitado (inclusive no valor de fronteira exata, documentando o comportamento de `<` estrito), pool saudável aceito para trade pequeno mas ainda sujeito ao multiplicador para valores maiores, par desconhecido falha fechado, rede fora de `arc` passa (checagem não implementada lá ainda).
+
 ### Arquivos principais
 
 - `lib/cron-trading-state.ts`

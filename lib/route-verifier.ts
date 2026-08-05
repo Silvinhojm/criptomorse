@@ -130,6 +130,116 @@ function checkSellRouteImpl(token: string, networkKey: string): boolean {
   return false
 }
 
+// RI-BANK-70 — checagem de profundidade de pool, proporcional ao valor do
+// trade, conectada ao caminho real usado pelo Bandit/execução testnet
+// (real-swap-executor.ts chama isso antes de qualquer swap AMM-direto).
+//
+// hasSellRoute()/checkSellRouteImpl() acima só confirmam que um pool
+// EXISTE — nada dizem sobre se ele aguenta o trade sem ser esvaziado.
+// checkRouteViaMulticall() (abaixo) já fazia uma checagem de reservas, mas
+// só é chamada no pipeline mainnet (agentes-do-pregão.ts), que não roda em
+// Arc Testnet, e usa um limiar fixo quase nulo (1n) — não proporcional ao
+// trade. Caso real que motivou esta correção: o pool USDC/cirBTC tem hoje
+// ~$1 de liquidez total; o menor trade do Bandit ($5) já é 5x o pool
+// inteiro (RI-BANK-69).
+const LIQUIDITY_DEPTH_MULTIPLIER = 10
+// Múltiplo escolhido por julgamento conservador, não um modelo preciso de
+// price impact: exigir que a reserva do lado stable do pool seja pelo
+// menos 10x o valor do trade mantém o impacto de preço de um swap
+// constant-product (x*y=k) abaixo de ~10% no pior caso realista para essa
+// proporção, com boa margem de segurança para os pares operados hoje.
+const RESERVE_CACHE_TTL_MS = 30_000
+const reserveCache: Record<string, { reserve0: bigint; reserve1: bigint; timestamp: number }> = {}
+
+export interface PoolDepthCheck {
+  sufficient: boolean
+  reason: string
+  poolAddress?: string
+  stableReserveUsd?: number
+}
+
+async function getReservesWithRetry(
+  provider: ethers.Provider,
+  poolAddress: string,
+): Promise<{ reserve0: bigint; reserve1: bigint }> {
+  const cached = reserveCache[poolAddress]
+  if (cached && Date.now() - cached.timestamp < RESERVE_CACHE_TTL_MS) {
+    return { reserve0: cached.reserve0, reserve1: cached.reserve1 }
+  }
+  let lastError: unknown
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const pool = new ethers.Contract(poolAddress, [GET_RESERVES_ABI], provider)
+      const result = await pool.getReserves()
+      const reserve0 = BigInt(result[0])
+      const reserve1 = BigInt(result[1])
+      reserveCache[poolAddress] = { reserve0, reserve1, timestamp: Date.now() }
+      return { reserve0, reserve1 }
+    } catch (e) {
+      lastError = e
+      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 200))
+    }
+  }
+  throw lastError
+}
+
+/** Bloqueia (fail-closed) sempre que a profundidade não puder ser
+ *  confirmada como suficiente — nunca deixa passar silenciosamente por
+ *  falta de dado. Só implementada para Arc hoje (onde o caminho AMM-direto
+ *  é realmente usado); outras redes retornam `sufficient: true` porque
+ *  passam por LI.FI/agregadores com sua própria proteção de slippage. */
+export async function hasSufficientPoolDepth(
+  provider: ethers.Provider,
+  fromToken: string,
+  toToken: string,
+  amountUsd: number,
+  networkKey: string,
+): Promise<PoolDepthCheck> {
+  if (networkKey !== "arc") {
+    return { sufficient: true, reason: "check_not_implemented_outside_arc" }
+  }
+
+  const from = fromToken.toLowerCase()
+  const to = toToken.toLowerCase()
+  const pool = KNOWN_POOLS[ARC_CHAIN_ID]?.find(
+    p => (p.token0 === from && p.token1 === to) || (p.token0 === to && p.token1 === from),
+  )
+  if (!pool) {
+    return { sufficient: false, reason: "no_known_pool_for_pair" }
+  }
+
+  let reserve0: bigint, reserve1: bigint
+  try {
+    ;({ reserve0, reserve1 } = await getReservesWithRetry(provider, pool.address))
+  } catch (e) {
+    return {
+      sufficient: false,
+      reason: `reserve_read_failed: ${(e as Error)?.message ?? String(e)}`,
+      poolAddress: pool.address,
+    }
+  }
+
+  const stableIsToken0 = STABLECOINS.has(pool.token0)
+  const stableIsToken1 = STABLECOINS.has(pool.token1)
+  if (!stableIsToken0 && !stableIsToken1) {
+    return { sufficient: false, reason: "no_stable_side_to_measure_depth", poolAddress: pool.address }
+  }
+
+  const stableReserveRaw = stableIsToken0 ? reserve0 : reserve1
+  const stableReserveUsd = parseFloat(ethers.formatUnits(stableReserveRaw, 6)) // USDC/EURC na Arc, 6 casas
+  const requiredUsd = amountUsd * LIQUIDITY_DEPTH_MULTIPLIER
+
+  if (stableReserveUsd < requiredUsd) {
+    return {
+      sufficient: false,
+      reason: `liquidez insuficiente: pool tem $${stableReserveUsd.toFixed(4)}, trade de $${amountUsd.toFixed(2)} exige pelo menos $${requiredUsd.toFixed(2)} (${LIQUIDITY_DEPTH_MULTIPLIER}x)`,
+      poolAddress: pool.address,
+      stableReserveUsd,
+    }
+  }
+  return { sufficient: true, reason: "ok", poolAddress: pool.address, stableReserveUsd }
+}
+
 export async function checkRouteViaMulticall(
   provider: ethers.Provider,
   chainId: number,
