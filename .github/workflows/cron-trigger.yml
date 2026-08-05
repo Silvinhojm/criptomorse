@@ -1,0 +1,30 @@
+# RI-BANK-4 Stage 2 — created but NOT activated in production.
+#
+# Only `workflow_dispatch` is enabled below, so this workflow does nothing
+# on its own even if committed/pushed: it only runs if someone manually
+# triggers it from the GitHub Actions UI/API. To actually activate the
+# automation, uncomment the `schedule:` block below AND make sure the repo
+# secrets `CRON_SECRET` (must match the Vercel env var of the same name)
+# and `ARCFLOW_BASE_URL` are set — neither of those steps has been done as
+# part of this stage.
+#
+# RI-BANK-34 connected POST /api/cron/trigger to a bounded persisted plan,
+# but did NOT authorize production activation. The schedule must remain
+# commented until a later mandate explicitly activates and validates it.
+
+name: cron-trigger
+
+on:
+  workflow_dispatch: {}
+  # schedule:
+  #   - cron: "*/15 * * * *"
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call /api/cron/trigger
+        run: |
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.ARCFLOW_BASE_URL }}/api/cron/trigger"
