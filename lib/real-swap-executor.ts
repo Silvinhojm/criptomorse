@@ -17,6 +17,7 @@ import { unifiedBalance } from "./unified-balance";
 import { caixa } from "./caixa";
 import { hasDirectDex, getDirectDexQuote, executeDirectDexSwap, calculateAmountOutMin } from "./direct-dex";
 import { hasSellRoute, recordRouteFailure, hasSufficientPoolDepth } from "./route-verifier";
+import { withRetries, BACKUP_RPCS as SHARED_BACKUP_RPCS } from "./network-resilience";
 
 const BALANCE_STORAGE_KEY_PREFIX = "arcflow_token_balances_"
 
@@ -24,25 +25,6 @@ function buildVercelInternalUrl(path: string): string | null {
   const host = process.env.VERCEL_URL?.trim().toLowerCase()
   if (!host || !/^[a-z0-9.-]+\.vercel\.app$/.test(host)) return null
   return `https://${host}${path}`
-}
-
-// RI-BANK-50 — o RPC público da Arc Testnet falha de forma intermitente em
-// chamadas eth_call individuais (ethers CALL_EXCEPTION "missing revert data"),
-// confirmado por reprodução local com log ao vivo. Sem retry, uma única
-// falha transitória de rede zera o saldo lido inteiro. `attempts` pequeno e
-// `delayMs` curto bastam: o objetivo é absorver um blip pontual do RPC, não
-// mascarar uma falha real e persistente (essa continua propagando o erro).
-async function withRetries<T>(fn: () => Promise<T>, attempts = 4, delayMs = 250): Promise<T> {
-  let lastError: unknown
-  for (let i = 0; i < attempts; i++) {
-    try {
-      return await fn()
-    } catch (e) {
-      lastError = e
-      if (i < attempts - 1) await new Promise(resolve => setTimeout(resolve, delayMs))
-    }
-  }
-  throw lastError
 }
 
 // Decimais conhecidos por token (fallback quando tokenBalances não carregou)
@@ -335,41 +317,10 @@ class RealSwapExecutor {
   private nativeBalanceWei: bigint = 0n;
   private nativeBalanceUSD: number = 0;
   private nativeBalanceLastUpdated: number = 0;
-  private BACKUP_RPCS: Record<string, string[]> = {
-    polygon: [
-      "https://polygon.llamarpc.com",
-      "https://polygon-rpc.com",
-      "https://rpc-mainnet.maticvigil.com",
-      "https://polygon-mainnet.g.alchemy.com/v2/demo",
-      "https://rpc.ankr.com/polygon",
-      "https://polygon.blockpi.network/v1/rpc/public",
-      "https://1rpc.io/matic",
-    ],
-    base: [],
-    // RI-BANK-62 — as duas entradas antigas não eram redundância real: a
-    // primeira era idêntica ao RPC primário (net.rpcUrl), e a segunda
-    // (`testnet.arc.network/rpc`) não resolve mais (DNS falha). Substituídas
-    // pelos 3 provedores documentados oficialmente em docs.arc.io/arc/references/connect-to-arc
-    // (Blockdaemon, dRPC, QuickNode) — validados nesta correção: chainId
-    // 5042002 correto, saldo USDC correto, 6/6 chamadas espaçadas em 3s.
-    arc: [
-      "https://rpc.blockdaemon.testnet.arc.io",
-      "https://rpc.drpc.testnet.arc.io",
-      "https://rpc.quicknode.testnet.arc.io",
-    ],
-    ethereum: [
-      "https://rpc.ankr.com/eth",
-      "https://ethereum-rpc.publicnode.com",
-    ],
-    arbitrum: [
-      "https://rpc.ankr.com/arbitrum",
-      "https://arb1.arbitrum.io/rpc",
-    ],
-    sepolia: [
-      "https://sepolia.gateway.tenderly.co",
-      "https://ethereum-sepolia.publicnode.com",
-    ],
-  }
+  // RI-BANK-72 — movido para lib/network-resilience.ts (junto com
+  // withRetries) para poder ser reaproveitado por route-verifier.ts sem
+  // import circular. Este campo só referencia a constante compartilhada.
+  private BACKUP_RPCS: Record<string, string[]> = SHARED_BACKUP_RPCS
   private priceCache: Map<TokenSymbol, { price: number; timestamp: number }> = new Map();
   private quoteCache: Map<string, { quote: QuoteResult | null; timestamp: number }> = new Map();
   private _refuelingGas = false;
@@ -1284,8 +1235,16 @@ class RealSwapExecutor {
           if (this.provider) {
             const depthCheck = await hasSufficientPoolDepth(this.provider, fromTokenAddr, toTokenAddr, amountUsd, this.networkKey)
             if (!depthCheck.sufficient) {
-              log(`⛔ Gate: liquidez insuficiente para ${fromToken}→${toToken} em ${this.networkKey} — ${depthCheck.reason}`);
-              return this._fail(fromToken, toToken, amountUsd, `Liquidez insuficiente para este valor (${depthCheck.reason})`, timestamp);
+              // RI-BANK-72 — mensagens distintas: "sem liquidez real" (a
+              // rota genuinamente não aguenta o valor) vs. "não conseguimos
+              // verificar" (falha de RPC mesmo após retry+backups) nunca
+              // devem aparecer sob o mesmo rótulo — RI-BANK-71 encontrou
+              // exatamente esse mascaramento bloqueando um trade seguro.
+              const label = depthCheck.kind === "verification_failed"
+                ? `Não foi possível verificar liquidez (falha de RPC): ${depthCheck.reason}`
+                : `Liquidez insuficiente para este valor: ${depthCheck.reason}`
+              log(`⛔ Gate: ${label} — ${fromToken}→${toToken} em ${this.networkKey}`);
+              return this._fail(fromToken, toToken, amountUsd, label, timestamp);
             }
           }
           log(`🧪 Nenhuma rota LI.FI/DEX — executando transação direta na testnet (stress)`);

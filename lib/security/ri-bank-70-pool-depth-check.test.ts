@@ -46,7 +46,9 @@ async function run(): Promise<void> {
   // ── Scenario 1: real risk case — USDC/cirBTC pool ($1 liquidity), $5 trade ──
   const thin = await hasSufficientPoolDepth(provider, CIRBTC, USDC, 5, "arc")
   expect(thin.sufficient === false, `expected the $1-liquidity pool to reject a $5 trade, got sufficient=${thin.sufficient}`)
-  expect(thin.reason.includes("liquidez insuficiente"), `expected a clear 'liquidez insuficiente' reason, got: ${thin.reason}`)
+  // RI-BANK-72 -- kind now distinguishes real insufficient liquidity from
+  // an unverifiable read; a genuine reserve read must report the former.
+  expect(thin.kind === "insufficient_liquidity", `expected kind=insufficient_liquidity, got: ${thin.kind}`)
   expect(thin.stableReserveUsd !== undefined && Math.abs(thin.stableReserveUsd - 1.0) < 0.01, `expected stableReserveUsd ~1.0, got ${thin.stableReserveUsd}`)
   console.log("RI_BANK_70_THIN_POOL_REJECTED=PASS")
 

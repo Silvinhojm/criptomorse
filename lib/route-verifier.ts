@@ -1,5 +1,7 @@
 import { ethers } from "ethers"
 
+import { withRetries, BACKUP_RPCS } from "./network-resilience"
+
 const MULTICALL3_ADDRESS = "0xcA11bde05977b3631167028862bE2a173976CA11"
 
 const MULTICALL3_ABI = [
@@ -151,33 +153,69 @@ const LIQUIDITY_DEPTH_MULTIPLIER = 10
 const RESERVE_CACHE_TTL_MS = 30_000
 const reserveCache: Record<string, { reserve0: bigint; reserve1: bigint; timestamp: number }> = {}
 
+// RI-BANK-72 — `kind` distingue "sem liquidez real" de "não conseguimos
+// nem verificar". RI-BANK-71 encontrou a versão anterior desta função
+// (retry local de 3 tentativas, só contra `provider`) bloqueando um trade
+// genuinamente seguro (pool saudável, ~$17,78) porque o RPC público da Arc
+// Testnet falhou de forma intermitente na leitura de `getReserves()` — a
+// mesma classe de instabilidade já resolvida para saldo (RI-BANK-50/62/63),
+// só que reaplicada aqui de forma mais fraca. A mensagem final também
+// misturava as duas causas sob o mesmo rótulo "Liquidez insuficiente",
+// escondendo que era uma falha de RPC, não de liquidez de verdade — mesmo
+// padrão de mascaramento já corrigido em outro lugar (RI-BANK-46/55).
+export type PoolDepthCheckKind =
+  | "ok"
+  | "insufficient_liquidity"
+  | "verification_failed"
+  | "no_known_pool"
+  | "no_stable_side"
+  | "not_applicable"
+
 export interface PoolDepthCheck {
   sufficient: boolean
+  kind: PoolDepthCheckKind
   reason: string
   poolAddress?: string
   stableReserveUsd?: number
 }
 
-async function getReservesWithRetry(
+async function readReserves(provider: ethers.Provider, poolAddress: string): Promise<{ reserve0: bigint; reserve1: bigint }> {
+  const pool = new ethers.Contract(poolAddress, [GET_RESERVES_ABI], provider)
+  const result = await pool.getReserves()
+  return { reserve0: BigInt(result[0]), reserve1: BigInt(result[1]) }
+}
+
+/** Mesma robustez já validada para leitura de saldo (RI-BANK-50/62/63):
+ *  `withRetries()` no provider principal e, se ele se esgotar, tenta cada
+ *  `BACKUP_RPCS[networkKey]` em sequência (provider dedicado, chainId
+ *  fixado via `staticNetwork` para evitar o problema do RI-BANK-56). */
+async function getReservesResilient(
   provider: ethers.Provider,
   poolAddress: string,
+  networkKey: string,
+  chainId: number,
 ): Promise<{ reserve0: bigint; reserve1: bigint }> {
   const cached = reserveCache[poolAddress]
   if (cached && Date.now() - cached.timestamp < RESERVE_CACHE_TTL_MS) {
     return { reserve0: cached.reserve0, reserve1: cached.reserve1 }
   }
+
+  const attempts: Array<() => Promise<{ reserve0: bigint; reserve1: bigint }>> = [
+    () => withRetries(() => readReserves(provider, poolAddress)),
+    ...(BACKUP_RPCS[networkKey] ?? []).map(rpcUrl => async () => {
+      const backupProvider = new ethers.JsonRpcProvider(rpcUrl, chainId, { staticNetwork: true })
+      return withRetries(() => readReserves(backupProvider, poolAddress))
+    }),
+  ]
+
   let lastError: unknown
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (const attempt of attempts) {
     try {
-      const pool = new ethers.Contract(poolAddress, [GET_RESERVES_ABI], provider)
-      const result = await pool.getReserves()
-      const reserve0 = BigInt(result[0])
-      const reserve1 = BigInt(result[1])
+      const { reserve0, reserve1 } = await attempt()
       reserveCache[poolAddress] = { reserve0, reserve1, timestamp: Date.now() }
       return { reserve0, reserve1 }
     } catch (e) {
       lastError = e
-      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 200))
     }
   }
   throw lastError
@@ -196,7 +234,7 @@ export async function hasSufficientPoolDepth(
   networkKey: string,
 ): Promise<PoolDepthCheck> {
   if (networkKey !== "arc") {
-    return { sufficient: true, reason: "check_not_implemented_outside_arc" }
+    return { sufficient: true, kind: "not_applicable", reason: "check_not_implemented_outside_arc" }
   }
 
   const from = fromToken.toLowerCase()
@@ -205,16 +243,17 @@ export async function hasSufficientPoolDepth(
     p => (p.token0 === from && p.token1 === to) || (p.token0 === to && p.token1 === from),
   )
   if (!pool) {
-    return { sufficient: false, reason: "no_known_pool_for_pair" }
+    return { sufficient: false, kind: "no_known_pool", reason: "nenhum pool conhecido para este par" }
   }
 
   let reserve0: bigint, reserve1: bigint
   try {
-    ;({ reserve0, reserve1 } = await getReservesWithRetry(provider, pool.address))
+    ;({ reserve0, reserve1 } = await getReservesResilient(provider, pool.address, networkKey, ARC_CHAIN_ID))
   } catch (e) {
     return {
       sufficient: false,
-      reason: `reserve_read_failed: ${(e as Error)?.message ?? String(e)}`,
+      kind: "verification_failed",
+      reason: `não foi possível ler as reservas do pool após tentar o RPC primário e ${(BACKUP_RPCS[networkKey] ?? []).length} backups: ${(e as Error)?.message ?? String(e)}`,
       poolAddress: pool.address,
     }
   }
@@ -222,7 +261,7 @@ export async function hasSufficientPoolDepth(
   const stableIsToken0 = STABLECOINS.has(pool.token0)
   const stableIsToken1 = STABLECOINS.has(pool.token1)
   if (!stableIsToken0 && !stableIsToken1) {
-    return { sufficient: false, reason: "no_stable_side_to_measure_depth", poolAddress: pool.address }
+    return { sufficient: false, kind: "no_stable_side", reason: "nenhum lado do pool é uma stablecoin conhecida — sem como medir profundidade em USD", poolAddress: pool.address }
   }
 
   const stableReserveRaw = stableIsToken0 ? reserve0 : reserve1
@@ -232,12 +271,13 @@ export async function hasSufficientPoolDepth(
   if (stableReserveUsd < requiredUsd) {
     return {
       sufficient: false,
-      reason: `liquidez insuficiente: pool tem $${stableReserveUsd.toFixed(4)}, trade de $${amountUsd.toFixed(2)} exige pelo menos $${requiredUsd.toFixed(2)} (${LIQUIDITY_DEPTH_MULTIPLIER}x)`,
+      kind: "insufficient_liquidity",
+      reason: `pool tem $${stableReserveUsd.toFixed(4)}, trade de $${amountUsd.toFixed(2)} exige pelo menos $${requiredUsd.toFixed(2)} (${LIQUIDITY_DEPTH_MULTIPLIER}x)`,
       poolAddress: pool.address,
       stableReserveUsd,
     }
   }
-  return { sufficient: true, reason: "ok", poolAddress: pool.address, stableReserveUsd }
+  return { sufficient: true, kind: "ok", reason: "ok", poolAddress: pool.address, stableReserveUsd }
 }
 
 export async function checkRouteViaMulticall(

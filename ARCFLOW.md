@@ -4797,6 +4797,22 @@ arc: [
 
 **Teste de regressão:** `lib/security/ri-bank-70-pool-depth-check.test.ts` — reproduz os dois cenários reais (endereços de pool e reservas observadas ao vivo durante o RI-BANK-69) contra um provider mockado: pool raso rejeitado (inclusive no valor de fronteira exata, documentando o comportamento de `<` estrito), pool saudável aceito para trade pequeno mas ainda sujeito ao multiplicador para valores maiores, par desconhecido falha fechado, rede fora de `arc` passa (checagem não implementada lá ainda).
 
+### RI-BANK-72 — blindar `hasSufficientPoolDepth()` com a mesma resiliência de rede já validada
+
+**Contexto:** o RI-BANK-71 tentou executar a primeira ordem de uma fila real de 3 ordens (USDC→EURC, $0,10) e o servidor reportou o plano como `failed` com `cron_plan_not_ready:failed`, apesar de o pool ter liquidez real de sobra. A investigação (leitura direta do Redis) mostrou que a checagem de profundidade adicionada em RI-BANK-70 tinha seu próprio retry local, fraco e isolado — 3 tentativas, 200ms, só contra `this.provider` — e bateu na mesma falha intermitente de RPC (`CALL_EXCEPTION: "missing revert data"`) já resolvida para leitura de saldo desde RI-BANK-50/62/63, mas nunca reaproveitada aqui. Um trade seguro foi bloqueado por uma falha de rede transitória, não por falta de liquidez real.
+
+**Correção — resiliência de rede unificada (`lib/network-resilience.ts`, novo arquivo):** `withRetries()` e `BACKUP_RPCS.arc` (Blockdaemon, dRPC, QuickNode — RI-BANK-62/63) foram extraídos de `real-swap-executor.ts` para um módulo neutro, evitando import circular (`real-swap-executor.ts` já importa de `route-verifier.ts`, então o inverso não é possível diretamente). Agora os dois arquivos compartilham a mesma implementação já validada em produção, em vez de `route-verifier.ts` ter sua própria cópia mais fraca.
+
+**`lib/route-verifier.ts`:** `hasSufficientPoolDepth()` agora lê as reservas via `getReservesResilient()` — `withRetries()` contra o provider principal e, se ele se esgotar, tenta cada `BACKUP_RPCS.arc` em sequência (cada um também com seu próprio `withRetries()`), na mesma ordem e com a mesma robustez já usada para saldo. Só falha (`verification_failed`) depois de esgotar o principal **e** todos os backups.
+
+**Mensagens de erro honestas (não mascaradas):** `PoolDepthCheck` ganhou um campo `kind` (`"ok" | "insufficient_liquidity" | "verification_failed" | "no_known_pool" | "no_stable_side" | "not_applicable"`), e `real-swap-executor.ts` usa esse campo para escolher a mensagem exibida — nunca a mesma frase genérica para as duas causas, seguindo o princípio já estabelecido em RI-BANK-44/46/55/70:
+- `insufficient_liquidity` → `"Liquidez insuficiente para este valor: ..."` (a rota genuinamente não aguenta o valor);
+- `verification_failed` → `"Não foi possível verificar liquidez (falha de RPC): ..."` (nem sequer foi possível checar, mesmo depois de retry + todos os backups).
+
+Antes desse ticket, as duas causas caíam sob o mesmo rótulo genérico — exatamente o mascaramento que impediu o diagnóstico rápido do RI-BANK-71.
+
+**Teste de regressão:** `lib/security/ri-bank-72-depth-check-resilience.test.ts` — reproduz o cenário exato do RI-BANK-71: RPC primário falha em toda tentativa (`CALL_EXCEPTION` simulado), um backup específico (`rpc.blockdaemon.testnet.arc.io`, o primeiro de `BACKUP_RPCS.arc`) responde corretamente com as reservas reais do pool USDC/EURC observadas ao vivo em RI-BANK-69, os demais backups também falham (provando que o teste alcança especificamente o backup que funciona, não qualquer um). Confirma que a checagem recupera e reporta `sufficient: true, kind: "ok"` mesmo com o primário indisponível — não apenas retry-e-ainda-falha. `lib/security/ri-bank-70-pool-depth-check.test.ts` foi atualizado para também confirmar `kind === "insufficient_liquidity"` no caso de pool raso genuíno (distinguindo-o de uma falha de verificação).
+
 ### Arquivos principais
 
 - `lib/cron-trading-state.ts`
