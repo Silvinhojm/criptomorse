@@ -9,7 +9,19 @@ const MULTICALL3_ABI = [
 ]
 
 const ERC20_BALANCE_ABI = "function balanceOf(address owner) view returns (uint256)"
-const GET_RESERVES_ABI = "function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)"
+
+// RI-BANK-74 — o pool real (contracts/GenericAMMPair.sol) não é um par
+// Uniswap V2 padrão: não implementa `getReserves()` (seletor 0x0902f1ac).
+// Reservas são duas variáveis públicas separadas, `reserve0`/`reserve1`
+// (uint256, não uint112), cada uma com seu próprio getter auto-gerado.
+// RI-BANK-73 confirmou isso lendo o bytecode on-chain (eth_getCode) e
+// testando os seletores reais (0x443cb4bc/0x5a76f25e) contra o pool
+// USDC/EURC — a checagem de profundidade (RI-BANK-70/72) vinha chamando um
+// seletor que nunca existiu nesse contrato, revertendo sempre, em todo RPC.
+const POOL_RESERVES_ABI = [
+  "function reserve0() view returns (uint256)",
+  "function reserve1() view returns (uint256)",
+]
 
 interface PoolEntry {
   address: string
@@ -180,9 +192,9 @@ export interface PoolDepthCheck {
 }
 
 async function readReserves(provider: ethers.Provider, poolAddress: string): Promise<{ reserve0: bigint; reserve1: bigint }> {
-  const pool = new ethers.Contract(poolAddress, [GET_RESERVES_ABI], provider)
-  const result = await pool.getReserves()
-  return { reserve0: BigInt(result[0]), reserve1: BigInt(result[1]) }
+  const pool = new ethers.Contract(poolAddress, POOL_RESERVES_ABI, provider)
+  const [reserve0, reserve1] = await Promise.all([pool.reserve0(), pool.reserve1()])
+  return { reserve0: BigInt(reserve0), reserve1: BigInt(reserve1) }
 }
 
 /** Mesma robustez já validada para leitura de saldo (RI-BANK-50/62/63):
@@ -298,22 +310,26 @@ export async function checkRouteViaMulticall(
     return { hasRoute: false }
   }
   try {
-    const calls = relevant.map(p => ({
-      target: p.address,
-      allowFailure: true,
-      callData: new ethers.Interface([GET_RESERVES_ABI]).encodeFunctionData("getReserves"),
-    }))
+    // RI-BANK-74 — mesma correção de ABI de readReserves(): reserve0()/
+    // reserve1() são getters separados (uint256), não um getReserves()
+    // combinado. allowFailure:true aqui é o motivo pelo qual esse bug nunca
+    // apareceu como erro visível: uma chamada com o seletor errado
+    // simplesmente virava `success:false` silenciosamente, e o loop abaixo
+    // seguia adiante como se o pool não tivesse rota — nunca lançava
+    // exceção, nunca logava nada.
+    const iface = new ethers.Interface(POOL_RESERVES_ABI)
+    const calls = relevant.flatMap(p => [
+      { target: p.address, allowFailure: true, callData: iface.encodeFunctionData("reserve0") },
+      { target: p.address, allowFailure: true, callData: iface.encodeFunctionData("reserve1") },
+    ])
     const mc = new ethers.Contract(MULTICALL3_ADDRESS, MULTICALL3_ABI, provider)
     const returnData = await mc.aggregate3.staticCall(calls)
-    for (let i = 0; i < returnData.length; i++) {
-      const r = returnData[i]
-      if (r.success) {
-        const decoded = new ethers.AbiCoder().decode(
-          ["uint112", "uint112", "uint32"],
-          r.returnData
-        )
-        const reserve0 = decoded[0] as bigint
-        const reserve1 = decoded[1] as bigint
+    for (let i = 0; i < relevant.length; i++) {
+      const r0 = returnData[i * 2]
+      const r1 = returnData[i * 2 + 1]
+      if (r0.success && r1.success) {
+        const reserve0 = new ethers.AbiCoder().decode(["uint256"], r0.returnData)[0] as bigint
+        const reserve1 = new ethers.AbiCoder().decode(["uint256"], r1.returnData)[0] as bigint
         const r0Min = minReserve0 ?? 1n
         const r1Min = minReserve1 ?? 1n
         if (reserve0 >= r0Min && reserve1 >= r1Min) {

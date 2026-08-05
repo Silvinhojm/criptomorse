@@ -27,14 +27,23 @@ const RESERVES: Record<string, [bigint, bigint]> = {
   [USDC_CIRBTC_POOL.toLowerCase()]: [0xf4240n, 0x2710n],      // 1.00 USDC / 0.0001 cirBTC
 }
 
+// RI-BANK-74 -- the real pool (contracts/GenericAMMPair.sol) exposes
+// reserves via two separate getters, reserve0()/reserve1() (uint256 each),
+// not a combined getReserves(). Mock dispatches by selector to match.
+const RESERVE0_SELECTOR = "0x443cb4bc"
+const RESERVE1_SELECTOR = "0x5a76f25e"
+
 function makeMockProvider(): ethers.Provider {
   const abiCoder = ethers.AbiCoder.defaultAbiCoder()
   return {
-    call: async (tx: { to?: string }) => {
+    call: async (tx: { to?: string; data?: string }) => {
       const to = String(tx.to).toLowerCase()
       const reserves = RESERVES[to]
       if (!reserves) throw new Error(`mock provider: unknown pool ${to}`)
-      return abiCoder.encode(["uint112", "uint112", "uint32"], [reserves[0], reserves[1], 0])
+      const selector = String(tx.data ?? "").slice(0, 10)
+      if (selector === RESERVE0_SELECTOR) return abiCoder.encode(["uint256"], [reserves[0]])
+      if (selector === RESERVE1_SELECTOR) return abiCoder.encode(["uint256"], [reserves[1]])
+      throw new Error(`mock provider: unexpected selector ${selector}`)
     },
     getNetwork: async () => ({ chainId: 5042002n, name: "arc-testnet" }),
   } as unknown as ethers.Provider

@@ -28,13 +28,25 @@ const EURC = "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a"
 const PRIMARY_URL = "https://rpc.testnet.arc.network"
 const GOOD_BACKUP_URL = "https://rpc.blockdaemon.testnet.arc.io" // first entry in BACKUP_RPCS.arc
 
-// Real reserves observed live during RI-BANK-69: 17.78 USDC / 15.551386 EURC.
+// Real reserves observed live during RI-BANK-69, and re-confirmed in
+// RI-BANK-73 by reading reserve0()/reserve1() directly against the real
+// contract (which is what these actually are -- see RI-BANK-74): 17.78
+// USDC / 15.551386 EURC.
 const RESERVE0 = 0x10f4d20n
 const RESERVE1 = 0xed4b9an
 
-function encodeReservesResponse(id: unknown): string {
+// RI-BANK-74 -- the real pool (contracts/GenericAMMPair.sol) has separate
+// reserve0()/reserve1() getters (uint256 each), not a combined
+// getReserves(). The mock must dispatch by selector like the real contract
+// would, since readReserves() now issues two independent eth_call requests.
+const RESERVE0_SELECTOR = "0x443cb4bc"
+const RESERVE1_SELECTOR = "0x5a76f25e"
+
+function encodeReserveResponse(selector: string): string {
   const abiCoder = ethers.AbiCoder.defaultAbiCoder()
-  return abiCoder.encode(["uint112", "uint112", "uint32"], [RESERVE0, RESERVE1, 0])
+  if (selector === RESERVE0_SELECTOR) return abiCoder.encode(["uint256"], [RESERVE0])
+  if (selector === RESERVE1_SELECTOR) return abiCoder.encode(["uint256"], [RESERVE1])
+  throw new Error(`mock: unexpected selector ${selector}`)
 }
 
 async function run(): Promise<void> {
@@ -60,7 +72,10 @@ async function run(): Promise<void> {
       // returns (provider-jsonrpc.ts _drainPayloads). Returning a bare
       // object for the non-batched case throws "result.filter is not a
       // function", which is exactly what happened here before this fix.
-      return items.map((it: any) => ({ id: it.id, jsonrpc: "2.0", result: encodeReservesResponse(it.id) }))
+      return items.map((it: any) => {
+        const selector = String(it.params?.[0]?.data ?? "").slice(0, 10)
+        return { id: it.id, jsonrpc: "2.0", result: encodeReserveResponse(selector) }
+      })
     }
     // Any other BACKUP_RPCS.arc entry -- also fails, proving the check
     // reaches the GOOD backup specifically, not just "some backup, any one".
