@@ -23,10 +23,8 @@ import {
   ARC_BANDIT_PAIRS,
   APPLY_BANDIT_RECALC_SCRIPT,
   banditSoftmax,
-  BANDIT_INITIAL_TRADE_AMOUNT,
-  BANDIT_MAX_TRADE_AMOUNT,
   BANDIT_PHASE_SIZE,
-  BANDIT_TRADE_AMOUNT_STEP,
+  BANDIT_TRADE_AMOUNT,
   ENSURE_BANDIT_STATE_SCRIPT,
   RECORD_BANDIT_RESULT_SCRIPT,
   readBanditState,
@@ -74,7 +72,9 @@ interface ReferencePairState {
 
 class ReferenceBandit {
   totalTrades = 0
-  tradeAmount = BANDIT_INITIAL_TRADE_AMOUNT
+  // RI-BANK-78 -- fixo, sem escalada (era Math.min(50, tradeAmount+5) a
+  // cada fase; a escala real do Bandit portado nunca varia mais).
+  tradeAmount = BANDIT_TRADE_AMOUNT
   currentPhaseTrades = 0
   pairs: ReferencePairState[]
 
@@ -98,7 +98,6 @@ class ReferenceBandit {
     this.currentPhaseTrades++
     if (this.currentPhaseTrades >= BANDIT_PHASE_SIZE) {
       this.currentPhaseTrades = 0
-      this.tradeAmount = Math.min(BANDIT_MAX_TRADE_AMOUNT, this.tradeAmount + BANDIT_TRADE_AMOUNT_STEP)
       this.recalcWeights()
     }
   }
@@ -157,11 +156,9 @@ class FakeBanditRedis implements BanditRedisClient {
       const hash = this.hashes.get(key)
       if (!hash) throw new Error("bandit state not initialized")
       const expectedVersion = values[0]
-      const newTradeAmount = values[1]
       const currentVersion = hash.version ?? "0"
       if (currentVersion !== expectedVersion) return 0 as TData
-      hash.tradeAmount = newTradeAmount
-      for (let i = 2; i < values.length; i += 2) {
+      for (let i = 1; i < values.length; i += 2) {
         hash[values[i]] = values[i + 1]
       }
       hash.version = String(Number(hash.version) + 1)

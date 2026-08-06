@@ -6,12 +6,30 @@
 // planos, NÃO chama cron-plan, NÃO toca em executeCronPlanWithKms — isso é
 // mandato futuro, só depois de validar que este estado funciona sozinho.
 //
+// RI-BANK-78 — a escala original ($5 a $50, herdada de lib/pregao-arc.ts)
+// nunca passaria na checagem real de profundidade de pool (RI-BANK-70/72/
+// 74): o par mais saudável (USDC/EURC) tem ~$18 de reserva, e a margem de
+// 10x exigiria $180 de reserva só para o menor degrau ($5 * 10). Confirmado
+// por teste direto contra reservas reais em RI-BANK-77: nenhum par, em
+// nenhum patamar, passava. `tradeAmount` agora é fixo e pequeno (o mesmo
+// $0,10 já exaustivamente validado na fila real do RI-BANK-71), sem
+// escalada automática — o que também elimina de graça o problema do
+// RI-BANK-69/77 sobre `materialFingerprint` mudar a cada degrau de valor
+// (já que o valor nunca muda, o fingerprint de rota nunca muda por essa
+// causa).
+//
 // Deliberadamente NÃO importa lib/pregao-arc.ts nem lib/real-swap-executor.ts:
 // este módulo fica auto-contido (só Redis + matemática pura), para manter o
 // raio de ação desta etapa isolado do Bandit em memória e de toda a
-// maquinaria de execução real. A lista de pares abaixo espelha
-// TRADING_PAIRS.arc (lib/real-swap-executor.ts) por valor — mantenha as
-// duas em sincronia se um novo par for adicionado.
+// maquinaria de execução real. Importa lib/route-verifier.ts apenas para o
+// critério de elegibilidade (RI-BANK-78 item 2) — módulo igualmente leve,
+// sem KMS/execução, já usado como dependência por real-swap-executor.ts. A
+// lista de pares abaixo espelha TRADING_PAIRS.arc (lib/real-swap-executor.ts)
+// por valor — mantenha as duas em sincronia se um novo par for adicionado.
+
+import type { ethers } from "ethers"
+
+import { hasSufficientPoolDepth, type PoolDepthCheck } from "./route-verifier"
 
 export interface BanditPairInput {
   pair: string
@@ -32,16 +50,43 @@ export interface BanditState {
   pairs: BanditPairState[]
 }
 
+// RI-BANK-78 — cirBTC→EURC removido deliberadamente: não existe pool direto
+// para esse par em KNOWN_POOLS (lib/route-verifier.ts), só USDC/EURC e
+// USDC/cirBTC — e hasSufficientPoolDepth() não faz roteamento multi-hop
+// (cirBTC→USDC→EURC). Confirmado no RI-BANK-77 que essa chamada sempre
+// devolve kind:"no_known_pool", nunca "sufficient". Sem suporte a rota
+// multi-hop na checagem de liquidez, esse par é estruturalmente inviável
+// hoje — não é um caso de "baixa liquidez", é um caso de "sem rota
+// verificável nenhuma". Reintroduzir requer primeiro dar suporte a
+// verificação de profundidade em duas pernas.
 export const ARC_BANDIT_PAIRS: BanditPairInput[] = [
   { pair: "USDC→EURC", fromToken: "USDC", toToken: "EURC" },
   { pair: "EURC→USDC", fromToken: "EURC", toToken: "USDC" },
   { pair: "cirBTC→USDC", fromToken: "cirBTC", toToken: "USDC" },
-  { pair: "cirBTC→EURC", fromToken: "cirBTC", toToken: "EURC" },
 ]
 
-export const BANDIT_INITIAL_TRADE_AMOUNT = 5
-export const BANDIT_MAX_TRADE_AMOUNT = 50
-export const BANDIT_TRADE_AMOUNT_STEP = 5
+// RI-BANK-78 — fixo, sem escalada automática (ver comentário de topo).
+export const BANDIT_TRADE_AMOUNT = 0.10
+
+// hasSufficientPoolDepth() (lib/route-verifier.ts) espera endereços de
+// token, não símbolos -- compara contra KNOWN_POOLS, que é indexado por
+// endereço. Os pares acima usam símbolos (mais legíveis no estado/rota de
+// leitura, mesmo padrão de lib/pregao-arc.ts), então precisamos resolver
+// símbolo → endereço antes de chamar a checagem de profundidade. Mesmos
+// endereços já hardcoded em NETWORKS.arc.tokens (lib/real-swap-executor.ts)
+// e em KNOWN_POOLS (lib/route-verifier.ts) — cópia por valor, não um
+// import, pelo mesmo motivo de isolamento explicado no topo do arquivo.
+const ARC_TOKEN_ADDRESSES: Record<string, string> = {
+  USDC: "0x3600000000000000000000000000000000000000",
+  EURC: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+  cirBTC: "0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF",
+}
+
+function resolveArcTokenAddress(symbol: string): string {
+  const address = ARC_TOKEN_ADDRESSES[symbol]
+  if (!address) throw new Error(`bandit-state-redis: unknown Arc token symbol "${symbol}"`)
+  return address
+}
 export const BANDIT_PHASE_SIZE = 10
 
 export interface BanditRedisClient {
@@ -66,8 +111,42 @@ function computeTemperature(totalTrades: number): number {
   return Math.max(0.1, 1 - totalTrades * 0.01)
 }
 
-function computeNextTradeAmount(current: number): number {
-  return Math.min(BANDIT_MAX_TRADE_AMOUNT, current + BANDIT_TRADE_AMOUNT_STEP)
+// RI-BANK-78 item 2 — mesmo critério que hasSufficientPoolDepth() já aplica
+// internamente (reserva do lado stable >= 10x o valor do trade), exposto
+// aqui como uma checagem explícita de elegibilidade ANTES de escolher um
+// par, em vez de só descobrir depois, no gate de execução, que o par
+// escolhido nunca ia passar. Reaproveita hasSufficientPoolDepth() em vez de
+// duplicar a conta — a mesma matemática, a mesma fonte de verdade.
+export interface BanditPairEligibility {
+  pair: BanditPairInput
+  eligible: boolean
+  check: PoolDepthCheck
+}
+
+export async function evaluateBanditPairEligibility(
+  provider: ethers.Provider,
+  tradeAmount: number,
+  pairs: BanditPairInput[] = ARC_BANDIT_PAIRS,
+): Promise<BanditPairEligibility[]> {
+  const results: BanditPairEligibility[] = []
+  for (const pair of pairs) {
+    const fromAddress = resolveArcTokenAddress(pair.fromToken)
+    const toAddress = resolveArcTokenAddress(pair.toToken)
+    const check = await hasSufficientPoolDepth(provider, fromAddress, toAddress, tradeAmount, "arc")
+    results.push({ pair, eligible: check.sufficient, check })
+  }
+  return results
+}
+
+/** Só os pares que hoje realmente passariam na checagem de profundidade
+ *  para este valor de trade — "vale a pena tentar", não "existe o par". */
+export async function getEligibleBanditPairs(
+  provider: ethers.Provider,
+  tradeAmount: number,
+  pairs: BanditPairInput[] = ARC_BANDIT_PAIRS,
+): Promise<BanditPairInput[]> {
+  const evaluated = await evaluateBanditPairEligibility(provider, tradeAmount, pairs)
+  return evaluated.filter(e => e.eligible).map(e => e.pair)
 }
 
 // ── Nomenclatura de campos na hash ──────────────────────────────────────────
@@ -115,21 +194,21 @@ redis.call('HINCRBY', key, 'version', 1)
 return totalTrades
 `
 
-// ── Lua: aplica pesos recalculados (e um possível novo tradeAmount) de
-// forma atômica, condicionado à versão lida no momento do cálculo (CAS
-// otimista) — preparado para um futuro escritor concorrente, mesmo que
-// hoje só um processo escreva aqui. Se a versão mudou entre a leitura e a
-// escrita, devolve 0 (stale) em vez de sobrescrever um estado mais novo. ───
+// ── Lua: aplica pesos recalculados de forma atômica, condicionado à versão
+// lida no momento do cálculo (CAS otimista) — preparado para um futuro
+// escritor concorrente, mesmo que hoje só um processo escreva aqui. Se a
+// versão mudou entre a leitura e a escrita, devolve 0 (stale) em vez de
+// sobrescrever um estado mais novo. RI-BANK-78: não escreve mais
+// `tradeAmount` — o valor é fixo (ver BANDIT_TRADE_AMOUNT), nunca escalado
+// por este script. ──────────────────────────────────────────────────────
 export const APPLY_BANDIT_RECALC_SCRIPT = `
 local key = KEYS[1]
 local expectedVersion = ARGV[1]
-local newTradeAmount = ARGV[2]
 local currentVersion = redis.call('HGET', key, 'version') or '0'
 if currentVersion ~= expectedVersion then
   return 0
 end
-redis.call('HSET', key, 'tradeAmount', newTradeAmount)
-for i = 3, #ARGV, 2 do
+for i = 2, #ARGV, 2 do
   redis.call('HSET', key, ARGV[i], ARGV[i + 1])
 end
 redis.call('HINCRBY', key, 'version', 1)
@@ -141,7 +220,7 @@ export async function ensureBanditState(
   key: string,
   pairs: BanditPairInput[] = ARC_BANDIT_PAIRS,
 ): Promise<void> {
-  const argv: string[] = [String(BANDIT_INITIAL_TRADE_AMOUNT), String(pairs.length)]
+  const argv: string[] = [String(BANDIT_TRADE_AMOUNT), String(pairs.length)]
   for (const p of pairs) argv.push(p.pair, p.fromToken, p.toToken)
   await redis.eval(ENSURE_BANDIT_STATE_SCRIPT, [key], argv)
 }
@@ -149,7 +228,7 @@ export async function ensureBanditState(
 function parseBanditState(hash: Record<string, unknown>, pairs: BanditPairInput[]): BanditState {
   return {
     totalTrades: Number(hash.totalTrades ?? 0),
-    tradeAmount: Number(hash.tradeAmount ?? BANDIT_INITIAL_TRADE_AMOUNT),
+    tradeAmount: Number(hash.tradeAmount ?? BANDIT_TRADE_AMOUNT),
     version: Number(hash.version ?? 0),
     pairs: pairs.map(p => ({
       pair: p.pair,
@@ -177,7 +256,8 @@ export async function readBanditState(
 // totalTrades), e escreve tudo atomicamente, condicionado à versão lida.
 // Lança em caso de escrita obsoleta (stale write) — hoje impossível de
 // ocorrer de verdade com um único escritor, mas o caminho já existe para
-// quando isso deixar de ser verdade. ───────────────────────────────────────
+// quando isso deixar de ser verdade. RI-BANK-78: não mexe mais em
+// tradeAmount — fixo, sem escalada. ─────────────────────────────────────
 export async function recalcBanditWeights(
   redis: BanditRedisClient,
   key: string,
@@ -187,9 +267,8 @@ export async function recalcBanditWeights(
   const temperature = computeTemperature(state.totalTrades)
   const profits = state.pairs.map(p => p.profit)
   const weights = banditSoftmax(profits, temperature)
-  const newTradeAmount = computeNextTradeAmount(state.tradeAmount)
 
-  const argv: string[] = [String(state.version), String(newTradeAmount)]
+  const argv: string[] = [String(state.version)]
   state.pairs.forEach((p, i) => {
     argv.push(pairWeightField(p.pair), String(weights[i]))
   })
@@ -203,8 +282,9 @@ export async function recalcBanditWeights(
 
 // ── Equivalente a registrarResultadoArc(): registra o resultado de um
 // trade e, ao cruzar um limite de fase (a cada BANDIT_PHASE_SIZE trades),
-// recalcula pesos e aumenta tradeAmount — mesma condição e mesma matemática
-// do original, agora persistida. ────────────────────────────────────────────
+// recalcula pesos — mesma condição e mesma matemática do original, agora
+// persistida. RI-BANK-78: já não aumenta tradeAmount (fixo, sem escalada).
+// ────────────────────────────────────────────────────────────────────────
 export async function recordBanditResult(
   redis: BanditRedisClient,
   key: string,

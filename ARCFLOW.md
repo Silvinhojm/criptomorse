@@ -4836,7 +4836,7 @@ Isso muito provavelmente também explica a *primeira* falha do RI-BANK-71 — na
 **Escrita atômica, preparada para concorrência futura:** três scripts Lua, mesmo padrão de `risk-boxes-redis.ts` —
 - `ENSURE_BANDIT_STATE_SCRIPT`: inicialização idempotente via `HSETNX` por campo (nunca sobrescreve estado já existente, chamável a cada leitura);
 - `RECORD_BANDIT_RESULT_SCRIPT`: registra um resultado de trade atomicamente (`HINCRBYFLOAT`/`HINCRBY` no par + `totalTrades` + `version`), devolvendo o `totalTrades` já incrementado para o chamador decidir sem uma segunda ida-e-volta se cruzou um limite de fase;
-- `APPLY_BANDIT_RECALC_SCRIPT`: aplica pesos recalculados (e um possível novo `tradeAmount`) condicionado à `version` lida no momento do cálculo — CAS otimista: se a versão mudou entre a leitura e a escrita, devolve `0` (stale) em vez de sobrescrever um estado mais novo. Hoje impossível de ocorrer de verdade com um único escritor, mas o caminho já existe para quando isso deixar de ser verdade.
+- `APPLY_BANDIT_RECALC_SCRIPT`: aplica pesos recalculados condicionado à `version` lida no momento do cálculo — CAS otimista: se a versão mudou entre a leitura e a escrita, devolve `0` (stale) em vez de sobrescrever um estado mais novo. Hoje impossível de ocorrer de verdade com um único escritor, mas o caminho já existe para quando isso deixar de ser verdade. (Confirmado por simulação de escrita concorrente no RI-BANK-77 — ver abaixo.)
 
 **Matemática preservada, não reimplementada às cegas:** `banditSoftmax()` é uma cópia deliberada (não um import) da função `softmax()` original — mantém o novo módulo livre de qualquer dependência do Bandit em memória. A função original foi exportada (`lib/pregao-arc.ts`, só a palavra `export` adicionada, nenhuma mudança de comportamento) exatamente para que o teste de regressão pudesse importá-la diretamente e comparar resultado a resultado com a cópia, em vez de confiar que as duas "parecem" iguais.
 
@@ -4847,6 +4847,26 @@ Isso muito provavelmente também explica a *primeira* falha do RI-BANK-71 — na
 2. um modelo de referência em memória, que replica fielmente `registrarResultadoArc()`/`recalcWeights()` usando a função original, é conduzido pela mesma sequência determinística de 37 trades que o módulo Redis-backed (via um Redis falso em memória que interpreta os 3 scripts Lua, mesmo padrão já usado em `ri-bank-13-cross-instance-memory.test.ts`) — os dois convergem para o mesmo `profit`/`trades`/`weight` por par, mesmo `totalTrades`, mesmo `tradeAmount`, a cada passo. Uma terceira checagem estática confirma que o módulo não exporta nada relacionado a `cron-plan`/execução (`executeCronPlanWithKms`, `savePlan`, `generatePlan`, `executeSwap`) — um lembrete vivo do escopo, não só uma afirmação em texto.
 
 **Nada conectado a execução:** nenhuma chamada a `cron-plan`, nenhuma geração de plano, nenhum toque em `executeCronPlanWithKms`. O próximo passo (gerar planos de verdade a partir deste estado) é um mandato separado, condicionado a validar este primeiro.
+
+### RI-BANK-77 — revisão pré-conexão: a escala original nunca passaria na liquidez real
+
+**Achado bloqueante:** testando `hasSufficientPoolDepth()` de verdade contra reservas lidas ao vivo, **nenhum dos 4 pares originais, em nenhum patamar da escala $5–$50, passava.** O par mais saudável (USDC/EURC) tinha ~$18 de reserva — a margem de 10x já exigiria $180 de reserva para o menor degrau ($5). `cirBTC→EURC` nem tinha pool direto conhecido (`kind: "no_known_pool"`) — a checagem não faz roteamento multi-hop (cirBTC→USDC→EURC).
+
+**CAS otimista confirmado por simulação:** duas escritas "concorrentes" simuladas (mesmo processo, sem Redis real) sobre o mesmo estado — uma escrita com versão obsoleta foi corretamente rejeitada pelo script `APPLY_BANDIT_RECALC_SCRIPT`, o estado final preservou só a escrita legítima. Confirma que a preparação para concorrência futura (RI-BANK-76) funciona como projetado.
+
+### RI-BANK-78 — escala do Bandit recalibrada para a liquidez real
+
+**`tradeAmount` fixo, sem escalada:** `BANDIT_TRADE_AMOUNT = 0.10` (o mesmo valor já exaustivamente validado na fila real do RI-BANK-71), substituindo a escalada `$5 → $50` herdada de `lib/pregao-arc.ts`. `APPLY_BANDIT_RECALC_SCRIPT` não escreve mais em `tradeAmount` — o campo continua existindo no estado (informativo, lido pela rota de diagnóstico), mas nunca muda. Isso também resolve de graça o problema do RI-BANK-69/77 sobre `materialFingerprint` mudar a cada degrau de valor: como o valor nunca varia, o fingerprint de rota nunca muda por essa causa.
+
+**Critério de elegibilidade ("vale a pena tentar"), item 2 do RI-BANK-77:** novas funções `evaluateBanditPairEligibility()`/`getEligibleBanditPairs()` em `lib/bandit-state-redis.ts`, que chamam `hasSufficientPoolDepth()` (mesma fonte de verdade da checagem real, não uma cópia da matemática) para cada par **antes** de considerá-lo candidato — evita gastar ciclos tentando um par que já se sabe, de antemão, que vai falhar no gate de execução. Como `hasSufficientPoolDepth()` espera endereços de token e os pares do Bandit usam símbolos (mais legíveis no estado), um pequeno mapa local `ARC_TOKEN_ADDRESSES` resolve símbolo → endereço antes de cada chamada — cópia por valor dos mesmos endereços já hardcoded em `NETWORKS.arc.tokens`/`KNOWN_POOLS`, mesmo padrão de isolamento do resto do módulo.
+
+**`cirBTC→EURC` removido de `ARC_BANDIT_PAIRS`:** não é um caso de baixa liquidez, é um caso de rota inexistente — confirmado no RI-BANK-77 que essa chamada sempre devolve `kind: "no_known_pool"`. Documentado explicitamente no código como estruturalmente inviável até a checagem suportar roteamento em duas pernas.
+
+**Confirmado com dados reais atuais:** `USDC→EURC`/`EURC→USDC` (mesmo pool, ~$18 de reserva) passam com folga em $0,10. Achado extra, não previsto: `cirBTC→USDC` (~$1 de reserva) cai **exatamente** na fronteira dos 10x nesse valor específico ($0,10 × 10 = $1,00 = reserva) — coincidência do pool quase drenado com o novo valor fixo, não um design deliberado. Um trade de $0,11 já reprova esse par; qualquer drenagem futura do pool também reprovaria em $0,10. Vale acompanhar antes de considerar esse par "confiavelmente elegível".
+
+**Teste de regressão:** `lib/security/ri-bank-78-bandit-eligibility.test.ts` — confirma `tradeAmount` fixo, `cirBTC→EURC` removido (3 pares restantes), `USDC→EURC`/`EURC→USDC` elegíveis contra reservas reais observadas, `cirBTC→USDC` na fronteira exata (elegível em $0,10, não em $0,11), e que o antigo mínimo de $5 continuaria reprovando mesmo no pool saudável — confirma que o problema original era real, não um mal-entendido.
+
+**Nada conectado a execução:** mesma restrição do RI-BANK-76 — nenhuma chamada a `cron-plan`, nenhuma geração de plano, nenhum toque em `executeCronPlanWithKms`.
 
 ### Arquivos principais
 
