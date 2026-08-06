@@ -57,12 +57,16 @@ function validatePlan(raw: unknown): CronTradingPlanInput {
   const network = typeof plan.network === "string" ? plan.network : ""
   const config = NETWORKS[network as NetworkKey]
   if (!config) throw new Error("cron_plan_unknown_network")
-  // RI-BANK-83 — resolve para a grafia canônica configurada, tolerando
-  // qualquer caixa na digitação humana (esta rota é acionada manualmente,
-  // via curl/painel) sem nunca armazenar uma grafia que não bate com
-  // TOKEN_DECIMALS/COIN_IDS/PRICE_DIVIDERS (ver comentário em
-  // resolveConfiguredTokenSymbol). O antigo `.toUpperCase() cego só nunca
-  // quebrou porque USDC/EURC/NATIVE já são naturalmente all-caps.
+  // RI-BANK-83/84 — valida (e rejeita cedo, com mensagem clara) que o
+  // token digitado, em qualquer caixa, corresponde a um símbolo
+  // realmente configurado -- mais tolerante a digitação humana que o
+  // antigo `.toUpperCase()` cego (esta rota é acionada manualmente, via
+  // curl/painel). O valor devolvido aqui ainda é reuppercased por
+  // normalizePlanInput() (lib/cron-trading-state.ts) antes de ser
+  // persistido -- essa checagem não determina a grafia final armazenada,
+  // só garante que o token existe de verdade antes de aceitar o plano. A
+  // resolução que de fato importa para a execução vive em
+  // lib/cron-trading-runtime.ts (RI-BANK-84).
   const tokens = config.tokens as Record<string, string>
   const fromToken = typeof plan.fromToken === "string" ? resolveConfiguredTokenSymbol(tokens, plan.fromToken) : undefined
   const toToken = typeof plan.toToken === "string" ? resolveConfiguredTokenSymbol(tokens, plan.toToken) : undefined

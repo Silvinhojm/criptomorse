@@ -9,7 +9,7 @@ import { getRedis, isKvConfigured, banditStateKvKey } from "@/lib/kv"
 import { KmsEthersSigner } from "@/lib/kms/kms-ethers-signer"
 import { KmsEvmSigner } from "@/lib/kms/kms-evm-signer"
 import { createVercelOidcKmsClient, readVercelOidcKmsEnvironment } from "@/lib/kms/vercel-oidc-kms"
-import { NETWORKS, isStable, realSwap, type NetworkKey } from "@/lib/real-swap-executor"
+import { NETWORKS, isStable, realSwap, resolveConfiguredTokenSymbol, type NetworkKey } from "@/lib/real-swap-executor"
 import { authorizeRiskBoxTradeFresh, recordRiskBoxEconomicResult } from "@/lib/risk-boxes"
 import {
   initializeTradingBudgetDailyLimit,
@@ -51,7 +51,25 @@ export function createProductionCronTradingService(): CronTradingService {
 export async function executeCronPlanWithKms(plan: CronTradingPlan) {
   const network = NETWORKS[plan.network as NetworkKey]
   if (!network) throw new Error("cron_plan_unknown_network")
-  if (!(network.tokens as Record<string, string>)[plan.fromToken] || !(network.tokens as Record<string, string>)[plan.toToken]) {
+
+  // RI-BANK-84 — normalizePlanInput() (lib/cron-trading-state.ts, chamada
+  // por store.savePlan()) sempre uppercasea fromToken/toToken ao salvar
+  // QUALQUER cron-plan -- um invariante da camada de persistência que vale
+  // para todo plano de cron, não uma escolha desta rota ou da rota do
+  // Bandit (RI-BANK-83 tentou corrigir isso nas rotas de escrita, mas era
+  // inócuo: normalizePlanInput() desfazia de qualquer forma). "cirBTC"
+  // (mixed-case) é a grafia nativa usada pelo resto de
+  // real-swap-executor.ts (NETWORKS.tokens/TOKEN_DECIMALS/COIN_IDS/
+  // PRICE_DIVIDERS) e pelo caminho separado do navegador (Pregão/
+  // agentes-do-pregão.ts, que nunca passa por normalizePlanInput()).
+  // Resolvemos aqui, uma única vez, na fronteira entre "plano de cron"
+  // (sempre maiúsculo) e "motor de execução compartilhado" (grafia
+  // nativa) -- sem tocar em nenhuma das tabelas em si, então o caminho do
+  // navegador nunca é afetado.
+  const tokens = network.tokens as Record<string, string>
+  const fromToken = resolveConfiguredTokenSymbol(tokens, plan.fromToken)
+  const toToken = resolveConfiguredTokenSymbol(tokens, plan.toToken)
+  if (!fromToken || !toToken) {
     throw new Error("cron_plan_token_not_configured")
   }
 
@@ -73,8 +91,8 @@ export async function executeCronPlanWithKms(plan: CronTradingPlan) {
   if (!initialized) throw new Error("cron_kms_real_swap_initialization_failed")
 
   const result = await realSwap.executeSwap(
-    plan.fromToken,
-    plan.toToken,
+    fromToken,
+    toToken,
     plan.amountUsd,
     message => console.log(`[CRON] ${message}`),
     `cron:${plan.id}`,
@@ -82,7 +100,7 @@ export async function executeCronPlanWithKms(plan: CronTradingPlan) {
 
   if (result.success) {
     await recordTradingSpend(plan.amountUsd)
-    const isBuyOpening = isStable(plan.fromToken) && !isStable(plan.toToken)
+    const isBuyOpening = isStable(fromToken) && !isStable(toToken)
     if (!isBuyOpening) {
       const profit = result.profit ?? 0
       await recordRiskBoxEconomicResult(plan.riskBox, profit)
