@@ -14,6 +14,15 @@ export interface CronExecutionResult {
   settled?: boolean
   canonicalSettlement?: boolean
   settlementStatus?: "synthetic" | "confirmed" | "failed"
+  // RI-BANK-81 — fecha o elo diagnosticado no RI-BANK-80: resultado real
+  // (USD, câmbio externo, não o preço interno do pool) de uma execução
+  // bandit-decision, calculado por signAndExecute() e só presente quando
+  // a estratégia do plano era "bandit-decision" e o lucro pôde ser
+  // calculado (par suportado, câmbio externo disponível). Ausente em
+  // qualquer outro caso -- nunca um valor fabricado/zero por omissão.
+  banditProfitUsd?: number
+  banditPriceSource?: string
+  banditEnvironment?: "testnet" | "mainnet"
 }
 
 export interface CronTradingDependencies {
@@ -24,6 +33,11 @@ export interface CronTradingDependencies {
   isBudgetExceeded(amountUsd: number): boolean
   authorizeRiskBox(box: CronRiskBox, amountUsd: number): Promise<{ allowed: boolean; reason: string }>
   signAndExecute(plan: CronTradingPlan): Promise<CronExecutionResult>
+  // RI-BANK-81 — opcional de propósito: testes existentes (RI-BANK-34) que
+  // não fornecem essa dependência continuam válidos: sem ela, o resultado
+  // de uma execução bandit-decision simplesmente não é registrado de volta
+  // no estado do Bandit, exatamente como já acontecia antes deste ticket.
+  recordBanditResult?(pairLabel: string, profitUsd: number): Promise<void>
   now?: () => number
   invocationId?: () => string
 }
@@ -130,6 +144,27 @@ export class CronTradingService {
         reason, txHash: execution.txHash ?? undefined,
         synthetic,
       })
+
+      // RI-BANK-81 — fecha o elo diagnosticado no RI-BANK-80: só realimenta
+      // o aprendizado do Bandit quando a execução foi real (executed=true,
+      // não synthetic), a estratégia do plano é explicitamente
+      // "bandit-decision" (nunca para planos manuais), e signAndExecute()
+      // conseguiu calcular um lucro real (câmbio externo disponível, par
+      // suportado) -- ausência de qualquer uma dessas condições
+      // simplesmente não registra nada, nunca fabrica um valor.
+      if (executed && claimed.strategy === "bandit-decision" && execution.banditProfitUsd !== undefined && this.dependencies.recordBanditResult) {
+        try {
+          await this.dependencies.recordBanditResult(`${claimed.fromToken}→${claimed.toToken}`, execution.banditProfitUsd)
+        } catch (error) {
+          // O swap já aconteceu e já foi liquidado on-chain (transitionPlan
+          // acima já persistiu "completed") -- uma falha aqui não desfaz
+          // isso nem deve fazer a resposta do cron parecer que a execução
+          // falhou. Só o aprendizado do Bandit fica pendente até a próxima
+          // execução bem-sucedida.
+          console.error("[RI-BANK-81] recordBanditResult failed after a completed execution", error)
+        }
+      }
+
       return {
         executed,
         mode: executed ? "mode_1" : "mode_2",

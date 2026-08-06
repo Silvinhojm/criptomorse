@@ -47,8 +47,20 @@ export interface BanditState {
   totalTrades: number
   tradeAmount: number
   version: number
+  environment: string
   pairs: BanditPairState[]
 }
+
+// RI-BANK-81 — marcador de proveniência, gravado uma vez na inicialização
+// (HSETNX, nunca sobrescrito) e preservado em todo o estado persistido.
+// Mesmo usando câmbio externo real para calcular lucro (não mais o preço
+// distorcido do pool), a LIQUIDEZ continua sendo de testnet -- os pesos
+// aprendidos aqui não devem ser presumidos diretamente aplicáveis a
+// mainnet sem revisão. Hardcoded (não lido de NETWORKS.arc.isTestnet) pelo
+// mesmo motivo de isolamento do resto do módulo: hoje só existe um
+// ambiente real em uso (Arc Testnet); suporte a múltiplos ambientes é
+// trabalho futuro (garimpeiros multi-rede), fora do escopo deste ticket.
+export const BANDIT_ENVIRONMENT = "testnet"
 
 // RI-BANK-78 — cirBTC→EURC removido deliberadamente: não existe pool direto
 // para esse par em KNOWN_POOLS (lib/route-verifier.ts), só USDC/EURC e
@@ -230,9 +242,10 @@ local key = KEYS[1]
 redis.call('HSETNX', key, 'totalTrades', '0')
 redis.call('HSETNX', key, 'tradeAmount', ARGV[1])
 redis.call('HSETNX', key, 'version', '0')
+redis.call('HSETNX', key, 'environment', ARGV[3])
 local numPairs = tonumber(ARGV[2])
 local initialWeight = tostring(1 / numPairs)
-for i = 3, #ARGV, 3 do
+for i = 4, #ARGV, 3 do
   local pair = ARGV[i]
   local fromToken = ARGV[i + 1]
   local toToken = ARGV[i + 2]
@@ -289,7 +302,7 @@ export async function ensureBanditState(
   key: string,
   pairs: BanditPairInput[] = ARC_BANDIT_PAIRS,
 ): Promise<void> {
-  const argv: string[] = [String(BANDIT_TRADE_AMOUNT), String(pairs.length)]
+  const argv: string[] = [String(BANDIT_TRADE_AMOUNT), String(pairs.length), BANDIT_ENVIRONMENT]
   for (const p of pairs) argv.push(p.pair, p.fromToken, p.toToken)
   await redis.eval(ENSURE_BANDIT_STATE_SCRIPT, [key], argv)
 }
@@ -299,6 +312,7 @@ function parseBanditState(hash: Record<string, unknown>, pairs: BanditPairInput[
     totalTrades: Number(hash.totalTrades ?? 0),
     tradeAmount: Number(hash.tradeAmount ?? BANDIT_TRADE_AMOUNT),
     version: Number(hash.version ?? 0),
+    environment: String(hash.environment ?? BANDIT_ENVIRONMENT),
     pairs: pairs.map(p => ({
       pair: p.pair,
       fromToken: p.fromToken,

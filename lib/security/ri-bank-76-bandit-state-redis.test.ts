@@ -124,9 +124,10 @@ class FakeBanditRedis implements BanditRedisClient {
       if (hash.totalTrades === undefined) hash.totalTrades = "0"
       if (hash.tradeAmount === undefined) hash.tradeAmount = values[0]
       if (hash.version === undefined) hash.version = "0"
+      if (hash.environment === undefined) hash.environment = values[2]
       const numPairs = Number(values[1])
       const initialWeight = String(1 / numPairs)
-      for (let i = 2; i < values.length; i += 3) {
+      for (let i = 3; i < values.length; i += 3) {
         const pair = values[i]
         const fromToken = values[i + 1]
         const toToken = values[i + 2]
