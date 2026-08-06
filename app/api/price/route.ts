@@ -1,25 +1,10 @@
 import { NextRequest } from 'next/server';
-import { fetchPrices } from '@/lib/sosovalue-price-agent';
-
-const FALLBACK_PRICES: Record<string, number> = {
-  '1673723677362319866': 68000,  // btc
-  '1673723677362319867': 1850,   // eth
-  '1730847291434274818': 0.078,  // POL
-  '1673723677362319902': 0.55,   // arb
-  '1673723677362319875': 145,    // sol
-  '1673723677362320241': 1.08,   // eurc
-  '1673723677362319870': 1.0,    // USDC
-};
-
-const FALLBACK_CHANGE: Record<string, number> = {
-  '1673723677362319866': 1.5,
-  '1673723677362319867': 2.5,
-  '1730847291434274818': 3.0,
-  '1673723677362319902': 4.0,
-  '1673723677362319875': 3.5,
-  '1673723677362320241': 0.5,
-  '1673723677362319870': 0.1,
-};
+// RI-BANK-86 — tabela de fallback movida para lib/sosovalue-price-agent.ts,
+// reaproveitada agora também pelo caminho server-side (real-swap-executor.ts),
+// que passou a resolver preço em processo em vez de fazer fetch() de volta
+// pra esta mesma rota. Import em vez de definição local evita as duas
+// cópias divergirem.
+import { fetchPrices, FALLBACK_PRICES, FALLBACK_CHANGE } from '@/lib/sosovalue-price-agent';
 
 let priceCache: { prices: Record<string, number>; change24h: Record<string, number>; ts: number } | null = null;
 

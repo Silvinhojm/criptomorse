@@ -316,6 +316,7 @@ export interface BestPairResult {
 
 // ─── Executor principal ───────────────────────────────────────────────────────
 import { COIN_IDS } from "./coin-ids";
+import { resolvePriceWithFallback } from "./sosovalue-price-agent";
 
 const UB_CHAIN: Record<string, string> = {
   arc: "Arc_Testnet",
@@ -368,12 +369,46 @@ class RealSwapExecutor {
       if (isStable(token)) return cached?.price ?? 1.0
       return cached?.price ?? 1.0
     }
+
+    // RI-BANK-86 — caminho server-side (typeof window === "undefined",
+    // exatamente onde executeCronPlanWithKms() roda): resolve o preço EM
+    // PROCESSO, sem fetch() nenhum, sem depender de VERCEL_URL/
+    // buildVercelInternalUrl(). RI-BANK-85 encontrou um plano cirBTC→USDC
+    // real bloqueado por "saldo insuficiente: $0,0000" apesar do saldo real
+    // (0,0002 cirBTC) estar correto -- a causa era o preço vir 0 do
+    // fallback pra ativos não-stable (deliberado, RI-BANK-41), mas a
+    // pergunta que sobrava era POR QUE a busca de preço nunca chegava a
+    // funcionar nesse contexto. Fazer um serverless function chamar a si
+    // mesma via HTTP (usando uma URL montada a partir de VERCEL_URL) é uma
+    // classe inteira de fragilidade -- resolução de URL, timeout ausente no
+    // fetch original, ou o próprio self-call de função pra função no
+    // Vercel -- que este caminho elimina de vez, chamando a mesma lógica
+    // (lib/sosovalue-price-agent.ts's resolvePriceWithFallback(), com o
+    // mesmo fallback FALLBACK_PRICES/$1.00 já usado pela rota /api/price)
+    // diretamente, sem round-trip nenhum. O caminho do navegador
+    // (typeof window !== "undefined") continua usando fetch() relativo pra
+    // /api/price -- isso é correto e necessário lá (código client-side não
+    // pode "chamar em processo" nada do servidor).
+    if (typeof window === "undefined") {
+      try {
+        const { price } = await resolvePriceWithFallback(coinId);
+        const netCfg = NETWORKS[this.networkKey]
+        const divider = netCfg?.isTestnet ? 1 : (PRICE_DIVIDERS[token] ?? 1);
+        const adjustedPrice = price > 0 ? price / divider : 0;
+        if (adjustedPrice > 0) {
+          this.priceCache.set(token, { price: adjustedPrice, timestamp: Date.now() });
+          return adjustedPrice;
+        }
+        console.warn(`[RI-BANK-86] _getTokenPrice(${token}): resolvePriceWithFallback devolveu preço não positivo (${price}) -- caindo no fallback local`);
+        return cached?.price ?? (isStable(token) ? 1.0 : 0);
+      } catch (error) {
+        console.warn(`[RI-BANK-86] _getTokenPrice(${token}): resolvePriceWithFallback lançou exceção -- caindo no fallback local`, error);
+        return cached?.price ?? (isStable(token) ? 1.0 : 0);
+      }
+    }
+
     try {
-      const relativeUrl = `/api/price?ids=${coinId}`;
-      const priceUrl = typeof window === "undefined"
-        ? buildVercelInternalUrl(relativeUrl)
-        : relativeUrl;
-      if (!priceUrl) return cached?.price ?? (isStable(token) ? 1.0 : 0);
+      const priceUrl = `/api/price?ids=${coinId}`;
       const res = await fetch(priceUrl);
       if (!res.ok) return cached?.price ?? (isStable(token) ? 1.0 : 0)
       const body = await res.json();

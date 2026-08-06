@@ -111,6 +111,49 @@ export async function fetchPrices(tokens: string[]): Promise<{ prices: Record<st
   return { prices, change24h };
 }
 
+// RI-BANK-86 — tabela de fallback movida pra cá (era local a
+// app/api/price/route.ts) para que o caminho server-side de preço
+// (real-swap-executor.ts's _getTokenPrice(), chamado durante execução real
+// de cron/KMS) possa usá-la sem depender de um round-trip HTTP até a
+// própria rota. Mesmos valores, mesma fonte de verdade — a rota
+// app/api/price/route.ts (usada pelo navegador) agora importa daqui em vez
+// de duplicar.
+export const FALLBACK_PRICES: Record<string, number> = {
+  "1673723677362319866": 68000,  // btc (também cirBTC/mcirBTC, mapeados pro mesmo id)
+  "1673723677362319867": 1850,   // eth
+  "1730847291434274818": 0.078,  // POL
+  "1673723677362319902": 0.55,   // arb
+  "1673723677362319875": 145,    // sol
+  "1673723677362320241": 1.08,   // eurc
+  "1673723677362319870": 1.0,    // USDC
+};
+
+export const FALLBACK_CHANGE: Record<string, number> = {
+  "1673723677362319866": 1.5,
+  "1673723677362319867": 2.5,
+  "1730847291434274818": 3.0,
+  "1673723677362319902": 4.0,
+  "1673723677362319875": 3.5,
+  "1673723677362320241": 0.5,
+  "1673723677362319870": 0.1,
+};
+
+// RI-BANK-86 — resolve o preço de um coinId em processo, sem HTTP, sem
+// depender de nenhuma URL (relativa ou absoluta). Usado pelo caminho
+// server-side de real-swap-executor.ts's _getTokenPrice() -- ver comentário
+// lá para o contexto completo do bug que isso corrige (RI-BANK-85: a
+// versão anterior montava uma URL via VERCEL_URL e fazia fetch() de volta
+// pra própria rota /api/price; se essa URL não resolvesse, o preço nunca
+// era buscado e caía direto no fallback de $0 pra ativos não-stable, sem
+// nem tentar). Mesma lógica de fallback já usada por app/api/price/route.ts
+// (preço real se disponível, senão FALLBACK_PRICES, senão $1.00).
+export async function resolvePriceWithFallback(coinId: string): Promise<{ price: number; change24h: number }> {
+  const { prices, change24h } = await fetchPrices([coinId])
+  const raw = prices[coinId]
+  const price = (raw !== undefined && raw > 0) ? raw : (FALLBACK_PRICES[coinId] ?? 1.0)
+  return { price, change24h: change24h[coinId] ?? FALLBACK_CHANGE[coinId] ?? 0 }
+}
+
 export async function getMarketSnapshot(token: string): Promise<{
   price: number;
   change24h: number;
