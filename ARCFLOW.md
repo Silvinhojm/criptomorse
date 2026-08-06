@@ -4825,6 +4825,29 @@ Isso muito provavelmente também explica a *primeira* falha do RI-BANK-71 — na
 
 **Teste de regressão:** `lib/security/ri-bank-74-real-pool-abi.test.ts` — usa um provider mockado que reproduz o comportamento real do contrato (só reconhece `reserve0()`/`reserve1()`, reverte em qualquer outro seletor, incluindo o antigo `getReserves()`). Confirma duas coisas: que o seletor antigo genuinamente reverteria contra esse formato de contrato (documentando o bug exato), e que o código corrigido lê os valores reais corretamente (`sufficient: true, kind: "ok", stableReserveUsd≈17.78`). Os mocks de `lib/security/ri-bank-70-pool-depth-check.test.ts` e `ri-bank-72-depth-check-resilience.test.ts` foram atualizados para responder pelos seletores reais em vez do `getReserves()` combinado — sem isso, os dois passariam mesmo com o bug presente, porque nunca exercitavam a ABI real.
 
+### RI-BANK-76 Etapa 1 — estado do Bandit portado para Redis (sem geração automática de planos)
+
+**Contexto:** o RI-BANK-68 mapeou a viabilidade de portar o Bandit (`lib/pregao-arc.ts`) para rodar no servidor, mas apontou que seu estado de decisão (profit/trades/weight por par, `totalTrades`, `tradeAmount`) vive só em memória — perdido a cada reload/redeploy, e invisível para qualquer processo fora da aba do navegador que roda `pregãoEngine` (confirmado em RI-BANK-67 Parte B). Esta etapa é deliberadamente restrita: só persistir esse estado e portar a matemática de recálculo de pesos, sem conectar a nada que gere ou execute um plano de verdade — isso fica para um mandato futuro, só depois de validar que este estado funciona sozinho.
+
+**Novo módulo auto-contido (`lib/bandit-state-redis.ts`):** deliberadamente **não importa** `lib/pregao-arc.ts` nem `lib/real-swap-executor.ts` — a lista de pares (`ARC_BANDIT_PAIRS`) é uma cópia por valor de `TRADING_PAIRS.arc`, mantida em sincronia manualmente se um novo par for adicionado. Isso mantém o raio de ação desta etapa isolado de toda a maquinaria de execução real e do Bandit em memória, que continuam funcionando exatamente como antes, sem nenhuma alteração de comportamento.
+
+**Estado persistido:** uma única hash Redis (`banditStateKvKey()`, `arcflow:{env}:bandit:state`) com campos globais (`totalTrades`, `tradeAmount`, `version`) e, com prefixo `pair:<label>:`, os campos por par (`profit`, `trades`, `weight`) — mesmo padrão de hash única com campos flat já usado por `risk-boxes`/`trading-budget`/`cron-plan`, em vez de uma chave por par.
+
+**Escrita atômica, preparada para concorrência futura:** três scripts Lua, mesmo padrão de `risk-boxes-redis.ts` —
+- `ENSURE_BANDIT_STATE_SCRIPT`: inicialização idempotente via `HSETNX` por campo (nunca sobrescreve estado já existente, chamável a cada leitura);
+- `RECORD_BANDIT_RESULT_SCRIPT`: registra um resultado de trade atomicamente (`HINCRBYFLOAT`/`HINCRBY` no par + `totalTrades` + `version`), devolvendo o `totalTrades` já incrementado para o chamador decidir sem uma segunda ida-e-volta se cruzou um limite de fase;
+- `APPLY_BANDIT_RECALC_SCRIPT`: aplica pesos recalculados (e um possível novo `tradeAmount`) condicionado à `version` lida no momento do cálculo — CAS otimista: se a versão mudou entre a leitura e a escrita, devolve `0` (stale) em vez de sobrescrever um estado mais novo. Hoje impossível de ocorrer de verdade com um único escritor, mas o caminho já existe para quando isso deixar de ser verdade.
+
+**Matemática preservada, não reimplementada às cegas:** `banditSoftmax()` é uma cópia deliberada (não um import) da função `softmax()` original — mantém o novo módulo livre de qualquer dependência do Bandit em memória. A função original foi exportada (`lib/pregao-arc.ts`, só a palavra `export` adicionada, nenhuma mudança de comportamento) exatamente para que o teste de regressão pudesse importá-la diretamente e comparar resultado a resultado com a cópia, em vez de confiar que as duas "parecem" iguais.
+
+**Rota de leitura (`GET /api/internal/ri-bank-76-bandit-state`):** mesmo padrão de autenticação da RI-BANK-51 (bearer `ADMIN_PANIC_KEY`). Só chama `readBanditState()` e devolve o estado atual — nenhuma escrita, nenhuma execução.
+
+**Teste de regressão:** `lib/security/ri-bank-76-bandit-state-redis.test.ts`, duas camadas de prova —
+1. `softmax()` original vs. `banditSoftmax()` portada, mesmos vetores de entrada (incluindo casos de borda: lucros todos zero, temperatura no piso do clamp) — resultado exatamente igual;
+2. um modelo de referência em memória, que replica fielmente `registrarResultadoArc()`/`recalcWeights()` usando a função original, é conduzido pela mesma sequência determinística de 37 trades que o módulo Redis-backed (via um Redis falso em memória que interpreta os 3 scripts Lua, mesmo padrão já usado em `ri-bank-13-cross-instance-memory.test.ts`) — os dois convergem para o mesmo `profit`/`trades`/`weight` por par, mesmo `totalTrades`, mesmo `tradeAmount`, a cada passo. Uma terceira checagem estática confirma que o módulo não exporta nada relacionado a `cron-plan`/execução (`executeCronPlanWithKms`, `savePlan`, `generatePlan`, `executeSwap`) — um lembrete vivo do escopo, não só uma afirmação em texto.
+
+**Nada conectado a execução:** nenhuma chamada a `cron-plan`, nenhuma geração de plano, nenhum toque em `executeCronPlanWithKms`. O próximo passo (gerar planos de verdade a partir deste estado) é um mandato separado, condicionado a validar este primeiro.
+
 ### Arquivos principais
 
 - `lib/cron-trading-state.ts`

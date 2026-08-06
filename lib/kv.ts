@@ -94,3 +94,13 @@ export function cronAuditEntryKvKey(eventId: string): string {
 export function cronManualTestRateLimitKvKey(): string {
   return `arcflow:${kvEnvNamespace()}:cron-manual-test:rate-limit`
 }
+
+// RI-BANK-76 Etapa 1 — estado de decisão do Bandit (lib/pregao-arc.ts),
+// hoje só em memória (perdido a cada reload). Uma única hash guarda os
+// campos globais (totalTrades, tradeAmount, version) e, com prefixo
+// `pair:<label>:`, os campos por par (profit/trades/weight) — mesmo padrão
+// de hash única com campos flat já usado por risk-boxes/trading-budget/
+// cron-plan, em vez de uma chave por par.
+export function banditStateKvKey(): string {
+  return `arcflow:${kvEnvNamespace()}:bandit:state`
+}

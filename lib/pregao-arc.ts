@@ -31,7 +31,10 @@ function log(msg: string) {
   pregão.adicionarLog(msg)
 }
 
-function softmax(profits: number[], temperature: number): number[] {
+// RI-BANK-76 — exportado (comportamento inalterado) para que o módulo de
+// estado do Bandit em Redis possa ser testado por equivalência matemática
+// direta contra esta função original, em vez de uma cópia reimplementada.
+export function softmax(profits: number[], temperature: number): number[] {
   const max = Math.max(...profits, 0)
   const exps = profits.map(p => Math.exp((p - max) / Math.max(temperature, 0.01)))
   const sum = exps.reduce((s, e) => s + e, 0)
