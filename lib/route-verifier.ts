@@ -359,6 +359,12 @@ export function estimateAMMOutput(
 
 export function resetRouteCache(): void {
   cache = {}
+  // RI-BANK-79 -- reserveCache é módulo-escopo (TTL de 30s) e por endereço
+  // de pool, não por provider/chamador: testes que reutilizam o mesmo
+  // endereço de pool real contra reservas mockadas diferentes (ex: pool
+  // saudável vs. drenado) veem o valor cacheado do teste anterior a menos
+  // que isso seja limpo entre execuções.
+  for (const key of Object.keys(reserveCache)) delete reserveCache[key]
 }
 
 export { KNOWN_POOLS, STABLECOINS }

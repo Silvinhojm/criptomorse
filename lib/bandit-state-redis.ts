@@ -149,6 +149,75 @@ export async function getEligibleBanditPairs(
   return evaluated.filter(e => e.eligible).map(e => e.pair)
 }
 
+// RI-BANK-79 — porte fiel de pickPair() (lib/pregao-arc.ts): sorteio
+// ponderado por cumulative sum, mesmo fallback para o último item se `r`
+// exceder a soma acumulada (protege contra imprecisão de ponto flutuante
+// deixando a soma de pesos ligeiramente abaixo de 1). Genérico (não amarrado
+// a BanditPairState) e com fonte de aleatoriedade injetável — o algoritmo é
+// idêntico ao original, só a entropia é parametrizável, para permitir teste
+// determinístico sem mockar Math.random global.
+export function pickBanditPairByWeight<T extends { weight: number }>(
+  weighted: T[],
+  randomFn: () => number = Math.random,
+): T {
+  const r = randomFn()
+  let cumulative = 0
+  for (const item of weighted) {
+    cumulative += item.weight
+    if (r <= cumulative) return item
+  }
+  return weighted[weighted.length - 1]
+}
+
+export interface BanditDecision {
+  decided: boolean
+  pair?: BanditPairInput
+  reason?: string
+  evaluated: BanditPairEligibility[]
+}
+
+// RI-BANK-79 — decisão real do Bandit: lê o estado persistido (pesos
+// aprendidos até agora), avalia elegibilidade de cada par contra a
+// liquidez real (mesma fonte de verdade do gate de execução), e sorteia
+// por peso ENTRE os pares elegíveis apenas — não sorteia primeiro e
+// descobre depois que o par escolhido não valia a pena (RI-BANK-77/78).
+// Os pesos dos elegíveis são renormalizados para somar 1 antes do sorteio,
+// preservando a proporção relativa entre eles sem viés artificial de
+// "sobra" de peso dos pares descartados. Não escreve nada — quem decide
+// escrever o plano é o chamador (a rota), depois de confirmar a decisão.
+export async function decideBanditPair(
+  provider: ethers.Provider,
+  redis: BanditRedisClient,
+  key: string,
+  tradeAmount: number = BANDIT_TRADE_AMOUNT,
+  pairs: BanditPairInput[] = ARC_BANDIT_PAIRS,
+  randomFn: () => number = Math.random,
+): Promise<BanditDecision> {
+  const state = await readBanditState(redis, key, pairs)
+  const evaluated = await evaluateBanditPairEligibility(provider, tradeAmount, pairs)
+
+  const eligiblePairStates = state.pairs.filter(p =>
+    evaluated.find(e => e.pair.pair === p.pair)?.eligible === true,
+  )
+
+  if (eligiblePairStates.length === 0) {
+    return { decided: false, reason: "no_eligible_pair", evaluated }
+  }
+
+  const totalWeight = eligiblePairStates.reduce((sum, p) => sum + p.weight, 0)
+  const normalized = eligiblePairStates.map(p => ({
+    ...p,
+    weight: totalWeight > 0 ? p.weight / totalWeight : 1 / eligiblePairStates.length,
+  }))
+  const chosen = pickBanditPairByWeight(normalized, randomFn)
+
+  return {
+    decided: true,
+    pair: { pair: chosen.pair, fromToken: chosen.fromToken, toToken: chosen.toToken },
+    evaluated,
+  }
+}
+
 // ── Nomenclatura de campos na hash ──────────────────────────────────────────
 function pairProfitField(pair: string): string { return `pair:${pair}:profit` }
 function pairTradesField(pair: string): string { return `pair:${pair}:trades` }

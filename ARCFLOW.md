@@ -4868,6 +4868,22 @@ Isso muito provavelmente também explica a *primeira* falha do RI-BANK-71 — na
 
 **Nada conectado a execução:** mesma restrição do RI-BANK-76 — nenhuma chamada a `cron-plan`, nenhuma geração de plano, nenhum toque em `executeCronPlanWithKms`.
 
+### RI-BANK-79 — rota de decisão manual do Bandit: decide de verdade, escreve o plano, nunca dispara
+
+**Contexto:** com o estado persistido (RI-BANK-76) e a escala calibrada para a liquidez real (RI-BANK-78), o próximo passo era o Bandit decidir de verdade — escolher um par por peso, verificar liquidez, escrever um `cron-plan` — mas ainda sob acionamento manual, no mesmo espírito rigoroso do `test-swap` original (RI-BANK-39): um humano aciona a decisão, e o disparo real continua exigindo autorização manual separada.
+
+**Sorteio ponderado portado (`pickBanditPairByWeight()`):** porte fiel de `pickPair()` (`lib/pregao-arc.ts`) — soma cumulativa de pesos, mesmo fallback para o último item se `r` exceder a soma acumulada. Genérico e com fonte de aleatoriedade injetável (`randomFn`, default `Math.random`) para permitir teste determinístico sem mockar o `Math.random` global — o algoritmo em si é idêntico ao original, só a entropia é parametrizável.
+
+**Decisão completa (`decideBanditPair()`, `lib/bandit-state-redis.ts`):** lê o estado persistido, avalia elegibilidade de cada par contra liquidez real (`evaluateBanditPairEligibility()`, já existente desde RI-BANK-78) e sorteia por peso **entre os pares elegíveis apenas** — não sorteia primeiro e descobre depois que o par escolhido não valia a pena. Os pesos dos elegíveis são renormalizados para somar 1 antes do sorteio, preservando a proporção relativa sem viés artificial da "sobra" de peso dos pares descartados. Não escreve nada — só decide; quem escreve o plano é a rota, depois de confirmar a decisão.
+
+**Rota (`POST /api/internal/ri-bank-79-bandit-decide`):** mesmo padrão de autenticação das rotas internas anteriores (bearer `ADMIN_PANIC_KEY`). Não aceita corpo nenhum na requisição — toda a decisão vem do estado server-side já persistido e da checagem de liquidez ao vivo, sem nenhum input externo para sanitizar. Se um par elegível for encontrado, escreve um `cron-plan` real via `RedisCronTradingStateStore.savePlan()` (o mesmo `plan.upsert` já usado manualmente em toda a sessão): rede `arc`, par escolhido, `amountUsd: 0.10`, Caixa A, `strategy: "bandit-decision"` (diferenciável de planos manuais, que usam `"manual-validated"`). Se nenhum par for elegível, devolve isso claramente (`decided: false, reason: "no_eligible_pair"`, com o detalhe de cada par avaliado) sem escrever plano nenhum — mesmo princípio de honestidade já estabelecido (RI-BANK-44/46/55/70/72).
+
+**Nunca dispara execução:** a rota só chama `savePlan()` — não importa, não referencia e não se aproxima de `executeCronPlanWithKms`. Depois de escrito, o plano ainda precisa de `route.authorize` manual (como sempre) antes que um disparo real (`POST /api/cron/trigger`, sempre humano) possa executá-lo — mesmo checkpoint humano de toda a sessão.
+
+**Achado incidental corrigido:** `hasSufficientPoolDepth()` mantém um cache de reservas por endereço de pool com TTL de 30s (`reserveCache`, módulo-escopo em `lib/route-verifier.ts`), não por provider/chamador. Testes que reutilizam o mesmo endereço de pool real contra reservas mockadas diferentes (pool saudável vs. drenado, no mesmo processo) viam o valor cacheado do teste anterior. `resetRouteCache()` — já existente, mas até então nunca chamada em lugar nenhum — foi estendida para também limpar `reserveCache`, não só o cache de `hasSellRoute()`.
+
+**Teste de regressão:** `lib/security/ri-bank-79-bandit-decide.test.ts` — decisão com estado inicial (pesos uniformes 1/3, todos os 3 pares elegíveis contra reservas reais observadas, `r=0.5` cai no segundo par, confirmando que o sorteio usa os pesos de verdade); nenhum par elegível (reservas drenadas em ambos os pools, `decided: false`, todos os pares reportados como inelegíveis); e um teste extra confirmando que pesos aprendidos (não uniformes) de fato inclinam o sorteio para o par dominante.
+
 ### Arquivos principais
 
 - `lib/cron-trading-state.ts`
