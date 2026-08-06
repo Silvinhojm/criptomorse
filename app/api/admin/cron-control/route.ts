@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 
 import { RedisCronTradingStateStore, type CronTradingPlanInput } from "@/lib/cron-trading-state"
 import { getRedis, isKvConfigured } from "@/lib/kv"
-import { NETWORKS, type NetworkKey } from "@/lib/real-swap-executor"
+import { NETWORKS, resolveConfiguredTokenSymbol, type NetworkKey } from "@/lib/real-swap-executor"
 import { isValidCronAdminRequest } from "@/lib/security/cron-auth"
 
 export const runtime = "nodejs"
@@ -57,9 +57,16 @@ function validatePlan(raw: unknown): CronTradingPlanInput {
   const network = typeof plan.network === "string" ? plan.network : ""
   const config = NETWORKS[network as NetworkKey]
   if (!config) throw new Error("cron_plan_unknown_network")
-  const fromToken = typeof plan.fromToken === "string" ? plan.fromToken.toUpperCase() : ""
-  const toToken = typeof plan.toToken === "string" ? plan.toToken.toUpperCase() : ""
-  if (!(config.tokens as Record<string, string>)[fromToken] || !(config.tokens as Record<string, string>)[toToken]) {
+  // RI-BANK-83 — resolve para a grafia canônica configurada, tolerando
+  // qualquer caixa na digitação humana (esta rota é acionada manualmente,
+  // via curl/painel) sem nunca armazenar uma grafia que não bate com
+  // TOKEN_DECIMALS/COIN_IDS/PRICE_DIVIDERS (ver comentário em
+  // resolveConfiguredTokenSymbol). O antigo `.toUpperCase() cego só nunca
+  // quebrou porque USDC/EURC/NATIVE já são naturalmente all-caps.
+  const tokens = config.tokens as Record<string, string>
+  const fromToken = typeof plan.fromToken === "string" ? resolveConfiguredTokenSymbol(tokens, plan.fromToken) : undefined
+  const toToken = typeof plan.toToken === "string" ? resolveConfiguredTokenSymbol(tokens, plan.toToken) : undefined
+  if (!fromToken || !toToken) {
     throw new Error("cron_plan_token_not_configured")
   }
   return {

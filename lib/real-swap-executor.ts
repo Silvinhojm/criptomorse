@@ -52,6 +52,26 @@ export const GAS_COST_ESTIMATE: Record<string, number> = {
   sepolia: 0.006,
 };
 
+// RI-BANK-83 — resolve um símbolo de token para a grafia canônica
+// configurada em NETWORKS[network].tokens, tolerando qualquer variação de
+// caixa na ENTRADA, mas sempre devolvendo (ou não devolvendo) a grafia
+// exata já configurada -- nunca inventa nem normaliza para uma forma
+// diferente da já usada em TOKEN_DECIMALS/COIN_IDS/PRICE_DIVIDERS/
+// STABLE_TOKENS. Essas tabelas são todas indexadas por chave exata e SEM
+// fallback seguro: TOKEN_DECIMALS, por exemplo, cai silenciosamente para 6
+// casas quando a chave não bate -- incorreto para cirBTC, que tem 8.
+// RI-BANK-82 encontrou exatamente esse mismatch (".toUpperCase()" cego
+// transformando "cirBTC" em "CIRBTC", que não bate com a chave "cirBTC"
+// mixed-case) bloqueando um plano do Bandit antes de qualquer transação.
+export function resolveConfiguredTokenSymbol(
+  tokens: Record<string, string>,
+  input: string,
+): string | undefined {
+  if (Object.prototype.hasOwnProperty.call(tokens, input)) return input
+  const lower = input.toLowerCase()
+  return Object.keys(tokens).find(key => key.toLowerCase() === lower)
+}
+
 export const NETWORKS = {
   arc: {
     chainId: 5042002,

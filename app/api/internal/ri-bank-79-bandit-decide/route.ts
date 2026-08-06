@@ -66,8 +66,18 @@ export async function POST(request: NextRequest): Promise<Response> {
     const planInput: CronTradingPlanInput = {
       id: `cron-plan-arc-bandit-${chosen.fromToken.toLowerCase()}-${chosen.toToken.toLowerCase()}`,
       network: "arc",
-      fromToken: chosen.fromToken.toUpperCase(),
-      toToken: chosen.toToken.toUpperCase(),
+      // RI-BANK-83 — NÃO uppercasear. "cirBTC" (mixed case) é a grafia
+      // canônica usada em todo o resto do sistema (NETWORKS.arc.tokens,
+      // TOKEN_DECIMALS, COIN_IDS, TRADING_PAIRS -- todas em
+      // lib/real-swap-executor.ts/lib/coin-ids.ts) -- USDC/EURC/NATIVE só
+      // "funcionavam" com .toUpperCase() porque já são naturalmente
+      // all-caps, mascarando que a transformação nunca deveria existir.
+      // Aplicá-la a "cirBTC" produzia "CIRBTC", uma chave que não bate com
+      // nenhuma dessas tabelas (RI-BANK-82). `chosen.fromToken`/`toToken`
+      // já vêm com a grafia correta de ARC_BANDIT_PAIRS -- preservar é o
+      // comportamento certo, não uma correção defensiva.
+      fromToken: chosen.fromToken,
+      toToken: chosen.toToken,
       strategy: BANDIT_DECISION_STRATEGY,
       riskBox: BANDIT_RISK_BOX,
       amountUsd: BANDIT_TRADE_AMOUNT,
