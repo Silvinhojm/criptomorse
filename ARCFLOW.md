@@ -4954,7 +4954,6 @@ As mudanças do RI-BANK-83 nas duas rotas de escrita foram mantidas, mas os come
 **Teste de regressão com dados reais (`lib/security/ri-bank-96-bridge-opportunity.test.ts`):** (1) barreira fixa com a taxa real 0,00026 × 3; (2) margem de trânsito com defaults; (3) sinal positivo com 1% de diferença (surplus > 0); (4) sinal negativo com 0,01% (surplus < 0); (5) fronteira: diff logo abaixo da barreira → sinal negativo (comparação estrita `>`). 5/5 PASS, sem rede/Redis.
 
 ### RI-BANK-97 — Cruzamento da análise externa com os números reais (veredito de ciclo bridge→swap→bridge)
-
 **Contexto (RI-BANK-96/95):** análise externa (Copilot, copia8.txt) propôs ciclos repetidos de baixo custo — bridge → swap → bridge de volta — exigindo fee 0,01–0,05%, alta liquidez e slippage ~0. O RI-BANK-97 (copia9.txt) cruzou essa conclusão com os números REAIS do sistema e deu veredito honesto. Análise completa: `C:\Users\silvi\Desktop\ARCFLOW_AI\DEEPSEEK\RI-BANK-97-CRUZAMENTO-ANALISE-EXTERNA.md`.
 
 **Hallazgos (todos com números reais):**
@@ -4966,6 +4965,19 @@ As mudanças do RI-BANK-83 nas duas rotas de escrita foram mantidas, mas os come
 **Veredito honesto:** estratégia de "ciclos repetidos de baixo custo" é **INVIÁVEL hoje**, não por calibração, mas por estrutura de mercado — o mercado já arbitrou a vantagem (análise externa acertou). Único modo de atuação com lucro real comprovado é **direcional em volátil na Polygon** (6 trades, 100% win rate, $18,77 = 28,9% de retorno). Todas as ex-combinações stable→stable (pool próprio e Bandit) perderam.
 
 **Recomendações:** (1) descartar ciclos stable↔stable como fonte de lucro; (2) integrar o DEX de terceiro da Arc ($1,43M) ao `direct-dex.ts`/`route-verifier.ts` como maior alavanca de execução disponível (slippage 7,79% → ~0,03%); (3) usar a ponte CCTP validada em RI-BANK-94 como **transporte de capital** entre redes, não como máquina de lucro.
+
+### RI-BANK-98 — Reformulação: patrimônio distribuído multi-rede, sem "volta obrigatória"
+
+**Contexto (copia10.txt):** as análises RI-BANK-95/96/97 assumiam ciclo simétrico ida+volta. O usuário reformulou a pergunta central: em vez de "vale o ciclo completo?", a pergunta passa a ser "vale mover parte do capital para outra rede, permanentemente ou por tempo indefinido, se lá a oportunidade for melhor — sem nunca precisar voltar?". O capital pode permanecer no destino como "segundo depósito nosso" ("caminhão de frete não precisa voltar vazio pagando outro frete"). **Análise de design apenas — nada implementado.** Análise completa: `C:\Users\silvi\Desktop\ARCFLOW_AI\DEEPSEEK\RI-BANK-98-REFORMULACAO-PATRIMONIO-DISTRIBUIDO.md`.
+
+**Cálculos (dados reais):**
+- **Novo breakeven (só ida):** `(1 − 0,00013) × (1 − 0,003)` = **0,313%** nominal no nosso pool (metade do ciclo simétrico 0,626%; 75% menor que o 1,26% com buffer). Com fee 0,05% (DEX terceiro): **0,063%**.
+- **Viabilidade:** para arbitragem estável→estável continua inviável no pool de $162 (slippage 7,5% domina); no DEX terceiro (~$1,43M) só se desvio FX > ~0,4% (raro). **A reformulação destrava o caso direcional**: todo lucro real do sistema veio de direcional volátil (Polygon 6 trades/$18,77/28,9% ROI) — a ponte vira **logística de abastecimento** de um destino já produtivo e comprovado.
+- **Critério "carga positiva":** permitido atravessar ⟺ `E[ganho_sozinho_destino] > X × custo_ida_completo`, com X ∈ [3,5] (ganho exigido > 0,94–1,57%), par elegível NO destino (`hasSufficientPoolDepth`, RI-BANK-78) e **reavaliação pós-mint** (RI-BANK-95 R2).
+- **Unified Balance (RI-BANK-89):** confirmado nas 4 testnets (Arc/ETH/Base/Arb Sepolia), mas **desabilitado no nosso código** (`lib/caixa.ts:1`, plano demo). Sustenta a visão "um dono, dois depósitos, sem consolidar" mas é pré-requisito de segurança da multi-rede, não do passo atual.
+- **Risco de capital distribuído** (limites conscientes): cap global "fora da rede principal" ≤ 30% do total; cap por rede destino ≤ 20%; máx 1 ponte simultânea; rede principal nunca < 70% do total; gas mínimo nas 2 redes antes de autorizar.
+
+**Conclusão:** a reformulação elimina a segunda travessia do custo (0,626% → 0,313% breakeven) e redesenha corretamente a estratégia para o caso em que **o destino já é produtivo por si** (direcional Polygon, único lucro real registrado). Arbitragem stable→stable continua inviável com os números reais.
 
 ### Arquivos principais
 
