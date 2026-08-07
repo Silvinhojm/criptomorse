@@ -15,6 +15,7 @@
   "dependencies": {
     "@aws-sdk/client-kms": "^3.1101.0",
     "@aws-sdk/credential-providers": "^3.1101.0",
+    "@circle-fin/adapter-ethers-v6": "1.9.4",
     "@circle-fin/adapter-viem-v2": "^1.11.2",
     "@circle-fin/app-kit": "^1.7.0",
     "@circle-fin/user-controlled-wallets": "^10.6.0",
