@@ -44,9 +44,15 @@ const BURN_TX_HASH_ALLOWLIST = new Set([
 ])
 
 function json(body: Record<string, unknown>, status = 200): Response {
-  return Response.json(body, {
+  // RI-BANK-94 — Response.json() lança "Do not know how to serialize a BigInt"
+  // para bigints aninhados (ex: EstimatedGas.gas / .gasPrice do prepared.estimate()).
+  // Serializa manualmente com replacer: bigint → string, sem alterar a lógica.
+  const payload = JSON.stringify(body, (_key, value) =>
+    typeof value === "bigint" ? value.toString() : value,
+  )
+  return new Response(payload, {
     status,
-    headers: { "Cache-Control": "no-store" },
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   })
 }
 
