@@ -4979,6 +4979,17 @@ As mudanças do RI-BANK-83 nas duas rotas de escrita foram mantidas, mas os come
 
 **Conclusão:** a reformulação elimina a segunda travessia do custo (0,626% → 0,313% breakeven) e redesenha corretamente a estratégia para o caso em que **o destino já é produtivo por si** (direcional Polygon, único lucro real registrado). Arbitragem stable→stable continua inviável com os números reais.
 
+### RI-BANK-99 — Observação empírica do spread (coleta periódica read-only)
+
+**Contexto (copia11.txt):** a pergunta residual das análises 95–98 é empírica: o spread entre o nosso pool (USDC/EURC), o caminho App Kit/LI.Fi e o câmbio real (Frankfurter/ECB) supera o breakeven de "ida única" (~0,36%) com frequência suficiente para haver oportunidade estrutural persistente? O RI-BANK-99 coleta observações periódicas **sem executar nenhuma transação**, estatística honesta no final (média/mediana/desvio, frequência > 0,36%, padrões horários) e relatório em `C:\Users\silvi\Desktop\ARCFLOW_AI\DEEPSEEK`.
+
+**Migração para a nuvem (copia12/copia13):** coleta local (script `.tmp`) substituída por rota server-side no Vercel + Redis:
+- `POST /api/internal/ri-bank-99-collect-observation` — uma leitura por chamada (pool via `eth_call` + LI.Fi quote + Frankfurter), persistida no Redis como lista append-only (chave `arcflow:{env}:ri-bank-99:observations`, bounded 5.000 ≈ 52 dias a 15min). Bearer `ADMIN_PANIC_KEY`.
+- `GET /api/internal/ri-bank-99-export-observations` — retorna todas as observações (mais antigas primeiro) para consulta manual.
+- Lógica compartilhada em `lib/ri-bank-99-collector.ts` (readPool/readLifi/readFrankfurter/collectObservation/appendObservation/readObservations).
+- `.github/workflows/ri-bank-99-collect.yml` — schedule `*/15` **ficar comentado** (copia13) até revisão; pré-requisitos: `ARCFLOW_BASE_URL` (existe) + `ADMIN_PANIC_KEY` (adicionar no GitHub antes de ativar).
+- Compromisso: nenhuma transação real em momento algum — todas as leituras são read-only (pool via `eth_call`, LI.FI via `/quote`, ECB via GET público).
+
 ### Arquivos principais
 
 - `lib/cron-trading-state.ts`

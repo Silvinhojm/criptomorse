@@ -1,0 +1,30 @@
+# RI-BANK-99 — coleta automática de observação de spread (read-only).
+#
+# ATIVADO PELO schedule abaixo — ver copia13: aprovado commit+push do CÓDIGO,
+# mas o schedule deve ficar COMENTADO até o usuário revisar a rota e este
+# workflow (mesmo padrão de revisão de automação). Para ativar: descomente o
+# bloco `schedule:` e faça push. Pré-requisitos nos secrets do repo:
+#   - ARCFLOW_BASE_URL  (JÁ EXISTE no repo)
+#   - ADMIN_PANIC_KEY    (NÃO existe ainda — adicionar antes de ativar, com o
+#                         mesmo valor da env var ADMIN_PANIC_KEY no Vercel,
+#                         usada pelas rotas internas /api/internal/*)
+# Enquanto o schedule estiver comentado, o workflow só roda via
+# workflow_dispatch (manual). A rota consultada é exclusivamente de LEITURA:
+# pool (eth_call), LI.Fi quote, Frankfurter GET — nunca dispara transação,
+# nunca move dinheiro.
+name: ri-bank-99-collect
+
+on:
+  workflow_dispatch: {}
+  # schedule:
+  #   - cron: "*/15 * * * *"
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect spread observation (read-only)
+        run: |
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${{ secrets.ADMIN_PANIC_KEY }}" \
+            "${{ secrets.ARCFLOW_BASE_URL }}/api/internal/ri-bank-99-collect-observation"
