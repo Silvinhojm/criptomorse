@@ -1,10 +1,9 @@
-﻿# RI-BANK-99 ÔÇö coleta autom├ítica de observa├º├úo de spread (read-only).
+# RI-BANK-99 — coleta automática de observação de spread (read-only).
 #
-# ATIVADO (copia14) ÔÇö schedule `*/15` em produ├º├úo. Pr├®-requisitos nos secrets
-# do repo conferidos e presentes: ARCFLOW_BASE_URL e ADMIN_PANIC_KEY.
-# Enquanto o schedule rodar, dispare manual tamb├®m ├® poss├¡vel (workflow_dispatch).
-# A rota consultada ├® exclusivamente de LEITURA: pool (eth_call), LI.Fi quote,
-# Frankfurter GET ÔÇö nunca dispara transa├º├úo, nunca move dinheiro.
+# ATIVADO — schedule `*/15` em produção. Secrets requeridos e presentes no
+# repo: ARCFLOW_BASE_URL e ADMIN_PANIC_KEY.
+# A rota consultada é exclusivamente de LEITURA: pool (eth_call), LI.Fi quote,
+# Frankfurter GET — nunca dispara transação, nunca move dinheiro.
 name: ri-bank-99-collect
 
 on:
