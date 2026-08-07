@@ -1,6 +1,6 @@
 import { EthersAdapter } from "@circle-fin/adapter-ethers-v6"
 import { CCTPV2BridgingProvider } from "@circle-fin/provider-cctp-v2"
-import { AppKit } from "@circle-fin/app-kit"
+import { ArcTestnet, BaseSepolia } from "@circle-fin/bridge-kit"
 import { Contract, JsonRpcProvider, formatEther, formatUnits } from "ethers"
 
 import { KmsEthersSigner } from "@/lib/kms/kms-ethers-signer"
@@ -108,15 +108,8 @@ export async function POST(request: Request): Promise<Response> {
     const address = await arcSigner.getAddress()
 
     // --- Definições canônicas de chain (com config CCTP v2) ---
-    const kit = new AppKit()
-    const bridgeChains = kit.getSupportedChains("bridge")
-    const baseChain = bridgeChains.find(
-      (c) => c.type === "evm" && c.chainId === BASE_SEPOLIA_CHAIN_ID,
-    )
-    const arcChain = bridgeChains.find((c) => c.type === "evm" && c.chainId === ARC_CHAIN_ID)
-    if (!baseChain || !arcChain) {
-      throw new Error("SDK não expõe Base_Sepolia ou Arc_Testnet como bridge chain")
-    }
+    const baseChain = BaseSepolia
+    const arcChain = ArcTestnet
 
     const baseAdapter = new EthersAdapter(
       { signer: baseSigner, getProvider: () => baseProvider },
