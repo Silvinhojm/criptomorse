@@ -4953,6 +4953,20 @@ As mudanças do RI-BANK-83 nas duas rotas de escrita foram mantidas, mas os come
 
 **Teste de regressão com dados reais (`lib/security/ri-bank-96-bridge-opportunity.test.ts`):** (1) barreira fixa com a taxa real 0,00026 × 3; (2) margem de trânsito com defaults; (3) sinal positivo com 1% de diferença (surplus > 0); (4) sinal negativo com 0,01% (surplus < 0); (5) fronteira: diff logo abaixo da barreira → sinal negativo (comparação estrita `>`). 5/5 PASS, sem rede/Redis.
 
+### RI-BANK-97 — Cruzamento da análise externa com os números reais (veredito de ciclo bridge→swap→bridge)
+
+**Contexto (RI-BANK-96/95):** análise externa (Copilot, copia8.txt) propôs ciclos repetidos de baixo custo — bridge → swap → bridge de volta — exigindo fee 0,01–0,05%, alta liquidez e slippage ~0. O RI-BANK-97 (copia9.txt) cruzou essa conclusão com os números REAIS do sistema e deu veredito honesto. Análise completa: `C:\Users\silvi\Desktop\ARCFLOW_AI\DEEPSEEK\RI-BANK-97-CRUZAMENTO-ANALISE-EXTERNA.md`.
+
+**Hallazgos (todos com números reais):**
+- **Fee do GenericAMMPair = 0,3%** (`contracts/GenericAMMPair.sol:411`, `997/1000`) — 6x–30x ACIMA da faixa exigida. NÃO é limitação do modelo x*y=k (Uniswap V3 opera 0,01%/0,05%/0,3%/1% no mesmo modelo) — é constante hardcoded, reduzir exige redeploy.
+- **Liquidez do pool próprio ≈ $162 TVL** (reservas 92,548 USDC / 69,932 EURC); DEX de terceiro na Arc tem ~$1,43M TVL mas NÃO integrado ao roteador (`route-verifier.ts`/`direct-dex.ts` sem entrada para Arc).
+- **Slippage real validado:** swap $7 → 5,705081 EURC (dado do copia9) bate com x*y=k (5,706669, diff 0,03%). SLIPPAGE TOTAL (fee incl) **7,79%** / ex‑fee **7,54%** — impacto puro de pool de $162 (85,55 USDC + 75,64 EURC = ~$161 à época). 150x–780x acima do alvo.
+- **Simulação Ciclo completo:** pool próprio → −2,83% ($1) a −14,48% ($7) — todo ciclo é perda garantida; DEX terceiro (fee 0,3%) → −0,54% ($7); DEX terceiro + fee 0,05% hipotético → breakeven ~0,19% vs desvios reais de stables 0,01–0,10% — ainda na fronteira.
+
+**Veredito honesto:** estratégia de "ciclos repetidos de baixo custo" é **INVIÁVEL hoje**, não por calibração, mas por estrutura de mercado — o mercado já arbitrou a vantagem (análise externa acertou). Único modo de atuação com lucro real comprovado é **direcional em volátil na Polygon** (6 trades, 100% win rate, $18,77 = 28,9% de retorno). Todas as ex-combinações stable→stable (pool próprio e Bandit) perderam.
+
+**Recomendações:** (1) descartar ciclos stable↔stable como fonte de lucro; (2) integrar o DEX de terceiro da Arc ($1,43M) ao `direct-dex.ts`/`route-verifier.ts` como maior alavanca de execução disponível (slippage 7,79% → ~0,03%); (3) usar a ponte CCTP validada em RI-BANK-94 como **transporte de capital** entre redes, não como máquina de lucro.
+
 ### Arquivos principais
 
 - `lib/cron-trading-state.ts`
