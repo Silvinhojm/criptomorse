@@ -1,5 +1,5 @@
-import { Blockchain, EthersAdapter } from "@circle-fin/adapter-ethers-v6"
-import { AppKit } from "@circle-fin/app-kit"
+import { EthersAdapter } from "@circle-fin/adapter-ethers-v6"
+import { AppKit, Blockchain } from "@circle-fin/app-kit"
 import { JsonRpcProvider, Contract } from "ethers"
 
 import { KmsEthersSigner } from "@/lib/kms/kms-ethers-signer"
@@ -34,12 +34,14 @@ function json(body: Record<string, unknown>, status = 200): Response {
 
 // Chain definition registrada manualmente para a Arc Testnet, espelhando os
 // campos que o SDK espera (EVMChainDefinition). Mantida local para que esta
-// rota de prova não dependa de nenhum registry global do kit.
+// rota de prova não dependa de nenhum registry global do kit. O `chain` usa o
+// enum Blockchain do app-kit (que o adapter-ethers-v6 também consome em
+// runtime), pois o repo agora roda app-kit@1.11.0.
 function arcTestnetChain() {
   return {
-    chain: "Arc_Testnet" as Blockchain,
+    chain: Blockchain.Arc_Testnet,
     name: "Arc Testnet",
-    type: "evm",
+    type: "evm" as const,
     chainId: ARC_CHAIN_ID,
     nativeCurrency: { name: "Arc", symbol: "ARC", decimals: 18 },
     isTestnet: true,
