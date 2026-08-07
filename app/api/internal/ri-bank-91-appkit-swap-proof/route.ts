@@ -137,11 +137,17 @@ export async function POST(request: Request): Promise<Response> {
 
     const kit = new AppKit()
 
+    // RI-BANK-91 v2 — allowanceStrategy: "approve" forçado. O default do SDK é
+    // "permit" (EIP-2612, assinatura de mensagem), que o KmsEthersSigner NÃO
+    // suporta por design (só assina transações EVM completas). Ajuste
+    // documentado no relatório: incompatibilidade real achado → approve
+    // on-chain tradicional (tx de approve + tx de swap).
     const result = await kit.swap({
       from: { adapter, chain: "Arc_Testnet" },
       tokenIn,
       tokenOut,
       amountIn,
+      config: { allowanceStrategy: "approve" },
     })
 
     const txHash = (result as any)?.steps?.[0]?.values?.txHash ?? (result as any)?.txHash
