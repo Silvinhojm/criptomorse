@@ -4989,6 +4989,7 @@ As mudanças do RI-BANK-83 nas duas rotas de escrita foram mantidas, mas os come
 - Lógica compartilhada em `lib/ri-bank-99-collector.ts` (readPool/readLifi/readFrankfurter/collectObservation/appendObservation/readObservations).
 - `.github/workflows/ri-bank-99-collect.yml` — schedule `*/15` **ficar comentado** (copia13) até revisão; pré-requisitos: `ARCFLOW_BASE_URL` (existe) + `ADMIN_PANIC_KEY` (adicionar no GitHub antes de ativar).
 - Compromisso: nenhuma transação real em momento algum — todas as leituras são read-only (pool via `eth_call`, LI.FI via `/quote`, ECB via GET público).
+- **Lição (migração schedule):** a primeira tentativa de ativar o `schedule` do workflow falhou silenciosamente por 2 causas): (1) o arquivo foi comitado originalmente em encoding **UTF-16** (via `Out-File` no PowerShell), bytes `FF FE` — o GitHub Actions monta YAML como UTF-8 e ignorou o bloco; corrigido no PR #3 (UTF-8 sem BOM). (2) mesmo com o YAML correto e no default branch, **workflows de schedule novos podem levar até 2–3 horas para registrar e disparar** (delay documentado do GitHub; recomendação: "give it a solid 2–3 hours, then look for a run with a clock icon labeled 'Scheduled'"). Verificar runs via `GET /repos/{owner}/{repo}/actions/workflows/ri-bank-99-collect.yml/runs` procurando `event: schedule`.
 
 ### Arquivos principais
 
