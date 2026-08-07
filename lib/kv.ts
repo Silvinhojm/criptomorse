@@ -104,3 +104,10 @@ export function cronManualTestRateLimitKvKey(): string {
 export function banditStateKvKey(): string {
   return `arcflow:${kvEnvNamespace()}:bandit:state`
 }
+
+// RI-BANK-102 — auditoria do cofre de lucros: cada movimento A→B e B→A
+// (manual, ADMIN_PANIC_KEY) é auditado com valor, timestamp, operação de
+// origem e lado. Lista Redis (LPUSH), um nodo por movimento.
+export function cofreAuditKvKey(): string {
+  return `arcflow:${kvEnvNamespace()}:ri-bank-102:cofre-audit`
+}

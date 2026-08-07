@@ -38,6 +38,12 @@ export interface CronTradingDependencies {
   // de uma execução bandit-decision simplesmente não é registrado de volta
   // no estado do Bandit, exatamente como já acontecia antes deste ticket.
   recordBanditResult?(pairLabel: string, profitUsd: number): Promise<void>
+  // RI-BANK-102 — cofre de lucros: callback opcional disparado com o MESMO
+  // lucro confirmado que alimenta recordBanditResult (câmbio externo real,
+  // RI-BANK-81). Quando presente, o serviço move 50% para a Caixa B e
+  // reinveste 50% na Caixa A. Ausente → comportamento RI-BANK-12 antigo
+  // (lucro integral na B, nada na A) preservado para testes legados.
+  registrarLucroCofre?(lucroUsd: number, origemOperacao: string): Promise<void>
   now?: () => number
   invocationId?: () => string
 }
@@ -162,6 +168,27 @@ export class CronTradingService {
           // falhou. Só o aprendizado do Bandit fica pendente até a próxima
           // execução bem-sucedida.
           console.error("[RI-BANK-81] recordBanditResult failed after a completed execution", error)
+        }
+      }
+
+      // RI-BANK-102 — cofre de lucros: disparo automático A→B. Mesmo critério
+      // e mesmo valor do RI-BANK-81 (câmbio externo real confirmado). Só
+      // ocorre com lucro POSITIVO confirmado (perda nunca move; quem decide
+      // devolver do cofre é o operador humano, rota ADMIN_PANIC_KEY).
+      if (
+        executed &&
+        claimed.strategy === "bandit-decision" &&
+        execution.banditProfitUsd !== undefined &&
+        execution.banditProfitUsd > 0 &&
+        this.dependencies.registrarLucroCofre
+      ) {
+        try {
+          await this.dependencies.registrarLucroCofre(execution.banditProfitUsd, `cron:${claimed.id}`)
+        } catch (error) {
+          // Mesma filosofia defética: a execução já liquidou on-chain; um
+          // erro de contabilidade de cofre não deve reverter nem parecer
+          // falha do cron — segue log, fica visível.
+console.error("[RI-BANK-102] registrarLucroCofre failed after a completed execution", error)
         }
       }
 

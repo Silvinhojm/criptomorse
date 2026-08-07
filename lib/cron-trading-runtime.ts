@@ -10,7 +10,7 @@ import { KmsEthersSigner } from "@/lib/kms/kms-ethers-signer"
 import { KmsEvmSigner } from "@/lib/kms/kms-evm-signer"
 import { createVercelOidcKmsClient, readVercelOidcKmsEnvironment } from "@/lib/kms/vercel-oidc-kms"
 import { NETWORKS, isStable, realSwap, resolveConfiguredTokenSymbol, type NetworkKey } from "@/lib/real-swap-executor"
-import { authorizeRiskBoxTradeFresh, recordRiskBoxEconomicResult } from "@/lib/risk-boxes"
+import { authorizeRiskBoxTradeFresh, recordRiskBoxEconomicResult, registrarLucroCofre } from "@/lib/risk-boxes"
 import {
   initializeTradingBudgetDailyLimit,
   isBudgetExceeded,
@@ -45,6 +45,16 @@ export function createProductionCronTradingService(): CronTradingService {
     async recordBanditResult(pairLabel, profitUsd) {
       await recordBanditResultRedis(getRedis(), banditStateKvKey(), pairLabel, profitUsd, ARC_BANDIT_PAIRS)
     },
+    // RI-BANK-102 — cofre de lucros: lucro externo real do Bandit (o mesmo
+    // valor do recordBanditResult, RI-BANK-81) vira 50% na Caixa B e 50%
+    // reinvestidos no valorPrincipal da Caixa A. OFF por padrão: o flag
+    // `RI_BANK_102_COFRE_ENABLED=1` precisa ser ativado explicitamente
+    // (copia10: "não conectar a execução real sem testar primeiro").
+    registrarLucroCofre: process.env.RI_BANK_102_COFRE_ENABLED === "1"
+      ? async (lucroUsd, origem) => {
+          await registrarLucroCofre(lucroUsd, origem)
+        }
+      : undefined,
   })
 }
 

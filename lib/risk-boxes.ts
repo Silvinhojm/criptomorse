@@ -8,8 +8,19 @@
 //   picos de saldo. Esse trade-off é consciente: simplifica a explicação e
 //   dá mais margem operacional, sem travar lucro intermediário como um
 //   high-water mark faria.
+//
+// RI-BANK-102 (07/08/2026) — a Caixa B ganhou o propósito de COFRE de
+// lucros (cofreira): quando uma operação do Bandit fecha com lucro positivo
+// confirmado (câmbio externo real, RI-BANK-81), 50% desse lucro é movido
+// automaticamente para a Caixa B (proteção/guardiã) e os outros 50% são
+// reinvestidos no valorPrincipal da Caixa A (copia11). A base de drawdown
+// da Caixa A, portanto, CRESCE conforme o reinvestimento — acompanhamento
+// futuro documentado, não bloqueio. Perdas nunca geram movimento automático,
+// e todo e qualquer movimento B→A é MANUAL, exclusivo da rota
+// administrativa com ADMIN_PANIC_KEY. Cada movimento fica auditado com
+// valor, timestamp, operação de origem e Lado (A→B / B→A).
 
-import { getRedis, isKvConfigured, riskBoxesKvKey } from "./kv"
+import { cofreAuditKvKey, getRedis, isKvConfigured, riskBoxesKvKey } from "./kv"
 import {
   mutateRiskBoxesHash,
   readRiskBoxesHash,
@@ -174,7 +185,7 @@ export function configureRiskBoxes(config: RiskBoxesConfiguration): Promise<Risk
     if (config.caixaB.riscoPercentual === null || config.caixaB.riscoPercentual === undefined) {
       throw new Error("Caixa B com investir=true exige riscoPercentual explícito")
     }
-    validateRisk(config.caixaB.riscoPercentual, 2, 50, "Risco da Caixa B")
+    validateRisk(config.caixaB.riscoPercentual, 0, 50, "Risco da Caixa B")
   }
 
   return serialize(() => mutateAndReturn("configure", [
@@ -225,7 +236,10 @@ export function setCaixaBInvestir(investir: boolean): Promise<RiskBoxesState> {
 }
 
 export function setCaixaBRisco(percentual: number): Promise<RiskBoxesState> {
-  validateRisk(percentual, 2, 50, "Risco da Caixa B")
+  // RI-BANK-102: 0 é aceito para a Caixa B — o cofre só recebe/guarda lucros;
+  // risco 0 expressa justamente isso ("não investe"). >0 só faz sentido com
+  // investir=true; o gate pré-trade decide com base no desenho atual.
+  validateRisk(percentual, 0, 50, "Risco da Caixa B")
   return serialize(() => mutateAndReturn("set_b_risk", [percentual], () => {
     state.caixaB.riscoPercentual = percentual
     state.caixaB.baseline = state.caixaB.saldo
@@ -346,6 +360,114 @@ export function recordRiskBoxEconomicResult(box: RiskBoxId, profit: number): Pro
   if (!Number.isFinite(profit)) throw new RangeError(`profit inválido: ${profit}`)
   if (profit >= 0) return registrarLucroCaixaB(profit)
   return box === "A" ? registrarPerdaCaixaA(Math.abs(profit)) : registrarPerdaCaixaB(Math.abs(profit))
+}
+
+// ============================================================================
+// RI-BANK-102 — COFRE DE LUCROS (Caixa B)
+// ============================================================================
+// Modelo confirmado em 07/08/2026 (copia10 + copia11):
+// - Lucro positivo CONFIRMADO do Bandit (mesmo cálculo de RI-BANK-81, câmbio
+//   externo real, nunca o preço distorcido do pool) → 50% vai para a Caixa B
+//   (cofre) e 50% são somados ao valorPrincipal da Caixa A (reinvestimento
+//   parcial confirmado — opção 2). NOTA FUTURA: a base de drawdown da A
+//   cresce junto com o reinvestimento; acompanhar quando revisitar limites.
+// - Perda NUNCA gera movimento automático.
+// - B→A é 100% MANUAL: apenas a rota administrativa com ADMIN_PANIC_KEY.
+// - Cada movimento é auditado (valor, timestamp, operação de origem).
+
+export type CofreMovimentoTipo = "A_TO_B_LUCRO" | "B_TO_A_MANUAL"
+
+export type CofreMovimento = {
+  id: string
+  tipo: CofreMovimentoTipo
+  valor: number
+  origemOperacao: string
+  timestamp: number
+}
+
+const COFRE_AUDIT_MAX = 500
+
+// Auditoria do cofre: memória local (sobrevive ao processo; teste-friendly)
+// + espelho em Redis (lista LPUSH, cap) quando Upstash está configurado.
+let cofreAuditMemory: CofreMovimento[] = []
+
+export function getCofreMovimentos(): CofreMovimento[] {
+  return [...cofreAuditMemory]
+}
+
+async function appendCofreAudit(movimento: CofreMovimento): Promise<void> {
+  cofreAuditMemory.unshift(movimento)
+  if (cofreAuditMemory.length > COFRE_AUDIT_MAX) cofreAuditMemory = cofreAuditMemory.slice(0, COFRE_AUDIT_MAX)
+  if (!persistenceDisabledForTests && isKvConfigured()) {
+    try {
+      await getRedis().lpush(cofreAuditKvKey(), JSON.stringify(movimento))
+      await getRedis().ltrim(cofreAuditKvKey(), 0, COFRE_AUDIT_MAX - 1)
+    } catch (e) {
+      console.error("[risk-boxes] cofre audit Redis append failed:", e)
+    }
+  }
+}
+
+/** Destino de um lucro real: A_TO_B com split 50/50 confirmado. */
+export function registrarLucroCofre(lucroTotal: number, origemOperacao: string): Promise<RiskBoxesState> {
+  if (!Number.isFinite(lucroTotal) || lucroTotal <= 0) {
+    throw new RangeError(`lucro do cofre deve ser finito > 0 — recebido ${lucroTotal}`)
+  }
+  return serialize(async () => {
+    const estado = await mutateAndReturn("cofre_profit", [lucroTotal], () => {
+      // Espelho local (sem Upstash): A += 50%, B += 50%.
+      const metade = lucroTotal / 2
+      state.caixaA.valorPrincipal += metade
+      const recomeçando = state.caixaB.saldo === 0
+      state.caixaB.saldo += metade
+      if (recomeçando) {
+        state.caixaB.baseline = state.caixaB.saldo
+        state.caixaB.perdaAcumulada = 0
+      }
+    })
+    await appendCofreAudit({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      tipo: "A_TO_B_LUCRO",
+      valor: lucroTotal / 2,
+      origemOperacao,
+      timestamp: Date.now(),
+    })
+    return estado
+  })
+}
+
+/**
+ * Movimento MANUAL B→A: se o valor for undefined, move todo o saldo de B.
+ * Apenas a rota administrativa (ADMIN_PANIC_KEY) chama isso — nunca um
+ * gatilho automatizado (regra RI-BANK-102).
+ */
+export function moverCofreParaPrincipalManual(valor?: number): Promise<RiskBoxesState> {
+  if (valor !== undefined && (!Number.isFinite(valor) || valor < 0)) {
+    throw new RangeError(`valor B→A deve ser finito >= 0 — recebido ${valor}`)
+  }
+  return serialize(async () => {
+    await getRiskBoxesStateFresh()
+    if (state.caixaB.saldo <= 0) return getRiskBoxesState()
+    const quantia = valor === undefined ? state.caixaB.saldo : Math.min(valor, state.caixaB.saldo)
+    if (quantia <= 0) return getRiskBoxesState()
+    const result = await mutateAndReturn("cofre_b_to_a", [quantia], () => {
+      state.caixaA.valorPrincipal += quantia
+      state.caixaB.saldo = Math.max(0, state.caixaB.saldo - quantia)
+    })
+    await appendCofreAudit({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      tipo: "B_TO_A_MANUAL",
+      valor: quantia,
+      origemOperacao: "admin:manual-b-to-a",
+      timestamp: Date.now(),
+    })
+    return result
+  })
+}
+
+/** Test hook: zera o espelho de auditoria do cofre junto com o resto. */
+export function resetCofreAuditForTests(): void {
+  cofreAuditMemory = []
 }
 
 /** Test hook protegido: impede qualquer acesso a Redis e restaura memória. */

@@ -19,6 +19,13 @@ export type RiskBoxesRedisOperation =
   | "loss_a"
   | "loss_b"
   | "profit_b"
+  // RI-BANK-102 — cofre de lucros. `cofre_profit` aplica um lucro real
+  // confirmado dividido em 50/50 (metade reinvestida no principal da A,
+  // metade custodiada na B); `cofre_b_to_a` é o movimento MANUAL B→A,
+  // disparado exclusivamente pela rota administrativa (ADMIN_PANIC_KEY),
+  // nunca automação.
+  | "cofre_profit"
+  | "cofre_b_to_a"
 
 const ENSURE_HASH_SCRIPT = `
 local key = KEYS[1]
@@ -127,6 +134,38 @@ elseif op == 'profit_b' then
   local saldo = redis.call('HINCRBYFLOAT', key, 'b.saldo', ARGV[2])
   if wasZero and tonumber(ARGV[2]) > 0 then
     redis.call('HSET', key, 'b.baseline', tostring(saldo), 'b.perdaAcumulada', '0')
+  end
+elseif op == 'cofre_profit' then
+  -- RI-BANK-102: lucro total confirmado > 0 entra em 50/50:
+  -- a.valorPrincipal += total/2  (reinvestimento na base de capital A)
+  -- b.saldo            += total/2  (cofre de lucros protegido)
+  -- b.baseline acompanha o saldo somente quando B estava zerada
+  -- (recomeço), preservando a regra de baseline fixo do RI-BANK-12.
+  local total = tonumber(ARGV[2])
+  local half = total / 2
+  local aPrinc = redis.call('HINCRBYFLOAT', key, 'a.valorPrincipal', tostring(half))
+  local wasZero = getnum('b.saldo') == 0
+  local bSaldo = redis.call('HINCRBYFLOAT', key, 'b.saldo', tostring(half))
+  if wasZero and half > 0 then
+    redis.call('HSET', key, 'b.baseline', tostring(bSaldo), 'b.perdaAcumulada', '0')
+  end
+  if tonumber(aPrinc) < 0 or tonumber(bSaldo) < 0 then
+    return redis.error_reply('cofre_profit resultou em saldo negativo')
+  end
+elseif op == 'cofre_b_to_a' then
+  -- RI-BANK-102: movimento manual e auditável B→A (cofre → principal).
+  -- Única forma de dinheiro sair do cofre: invocação explícita da rota
+  -- administrativa com ADMIN_PANIC_KEY; nunca chame por automação.
+  local valor = tonumber(ARGV[2])
+  local bSaldo = getnum('b.saldo')
+  local movido = math.min(valor, bSaldo)
+  if movido < 0 then return redis.error_reply('cofre_b_to_a valor negativo') end
+  redis.call('HINCRBYFLOAT', key, 'a.valorPrincipal', tostring(movido))
+  redis.call('HINCRBYFLOAT', key, 'b.saldo', tostring(-movido))
+  if getnum('b.saldo') < 0 then
+    redis.call('HINCRBYFLOAT', key, 'b.saldo', tostring(movido))
+    redis.call('HINCRBYFLOAT', key, 'a.valorPrincipal', tostring(-movido))
+    return redis.error_reply('cofre_b_to_a saldo negativo')
   end
 else
   return redis.error_reply('unknown risk-boxes operation: ' .. op)

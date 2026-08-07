@@ -740,6 +740,7 @@ MIN_BALANCE_THRESHOLD = 0.50  // $0.50 — saldos abaixo disso são ignorados no
 | Chave | Conteúdo | Módulo |
 |-------|----------|--------|
 | `arcflow:<ambiente>:risk-boxes:state` | Hash das Caixas A/B; configuração, teto por trade, versão, principal, saldo, baselines e perdas acumuladas | `lib/risk-boxes.ts`, `lib/risk-boxes-redis.ts` |
+| `arcflow:<ambiente>:risk-boxes:cofre-audit` | Lista append-only (LPUSH, cap 500) de movimentos do cofre de lucros RI-BANK-102 (A→B lucro / B→A manual), com valor, origem e timestamp | `lib/risk-boxes.ts`, `lib/kv.ts` |
 | `arcflow:<ambiente>:trading-budget:state` | Hash do orçamento por janela manual; limite opcional, gasto acumulado e último reset | `lib/trading-budget.ts` |
 
 No RI-BANK-13, deltas (`spentToday`, saldos e perdas) passaram a ser aplicados atomicamente no Redis. As caixas usam um script Lua único para preservar campos acoplados e incrementar `version`; configurações do orçamento usam `HSET` somente dos campos pertencentes à operação. O valor legado JSON das caixas é migrado atomicamente para Hash na primeira leitura/mutação. Sem KV configurado, os módulos mantêm apenas o espelho em memória e registram aviso explícito. A suíte RI-BANK-12 ativa `ARCFLOW_RISK_BOXES_TEST_MODE=1`, remove as credenciais KV antes do import e bloqueia toda persistência para garantir testes exclusivamente em memória.
@@ -5013,3 +5014,25 @@ As mudanças do RI-BANK-83 nas duas rotas de escrita foram mantidas, mas os come
 - adaptador ethers delega ao `KmsEvmSigner` sem modificá-lo;
 - `npx tsc --noEmit` e `npm run build`: aprovados;
 - execução real, Redis real, AWS, RPC, cron produtivo e deploy: não realizados.
+
+## 64. RI-BANK-102 — Cofre de Lucros (Caixa B)
+
+**Contexto (confirmado em copia10/copia11, 07/08/2026):** a Caixa B deixa de ser "lucro reinvestido" e passa a ser um *cofre de lucros*. Quando uma operação do Bandit fecha com **lucro positivo confirmado** (o mesmo valor de câmbio externo real já usado por `recordBanditResult()`, RI-BANK-81), a divisão é 50/50:
+
+- **50%** → Caixa B (cofre/guardiã) — dinheiro protegido, não investido;
+- **50%** → somados ao `valorPrincipal` da Caixa A (reinvestimento — opção 2);
+- Perda **NUNCA** gera movimento automático;
+- B→A é **100% MANUAL**: únicarota administrativa com `ADMIN_PANIC_KEY` (`POST /api/internal/ri-bank-102-cofre-b-to-a`); jamais acionado por automação;
+- riscoPercentual da B pode ser **0%** (cofre só recebe/guarda — mínimo documentado).
+
+**Implementação:**
+- `lib/risk-boxes.ts`: `registrarLucroCofre(lucroTotal, origemOperacao)` (split 50/50 + auditoria), `moverCofreParaPrincipalManual(valor?)` (B→A manual), `getCofreMovimentos()` e auditoria com teto 500 (memória + Redis `cofreAuditKvKey()`).
+- `lib/risk-boxes-redis.ts`: operações Lua `cofre_profit` e `cofre_b_to_a` (atômicas, HINCRBYFLOAT, guarda de saldo negativo).
+- `lib/kv.ts`: `cofreAuditKvKey()`.
+- `lib/cron-trading-service.ts`: dependência opcional `registrarLucroCofre` — disparada APENAS com `banditProfitUsd > 0` (nunca em perda).
+- `lib/cron-trading-runtime.ts`: injeta o callback em produção somente com env `RI_BANK_102_COFRE_ENABLED=1` (OFF por padrão até aprovação).
+- `app/api/internal/ri-bank-102-cofre-b-to-a/route.ts`: POST manual protegido por `isValidCronAdminRequest` (ADMIN_PANIC_KEY), sem corpo → move todo o saldo; com `{ valorUsd }` → move no máximo esse valor.
+
+**Testes:** `lib/security/ri-bank-102-cofre-lucros.test.ts` — execução 100% em memória (mesmo test hook do RI-BANK-12), verificando: risco 0 configurável, lucro 50/50 A/B com auditoria, perda não move nada, B→A parcial e total com auditoria, lucro negativo rejeitado, e leitura estrutural dos gates (callbacks e rota). Passa com `npx tsx lib/security/ri-bank-102-cofre-lucros.test.ts`. Validação subiram: `ALL_RI_BANK_102_COFRE_ASSERTIONS_PASSED=YES`.
+
+**Nota futura:** com o reinvestimento da metade lucrada no `valorPrincipal` da A, a base de drawdown cresce; reavaliar limites quando o reinvestimento acumular (anotado também no próprio `risk-boxes.ts`).
