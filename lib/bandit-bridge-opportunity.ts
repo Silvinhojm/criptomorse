@@ -128,7 +128,7 @@ export function evaluateBridgeOpportunity(input: BridgeOpportunityInput): Bridge
     fixedCostUsd: fixedCost,
     barrierUsd,
     transitWindowHours: input.transitWindowHours ?? DEFAULT_TRANSIT_WINDOW_HOURS,
-    transitDriftRate: input.transitDriftRate ?? DEFAULT_TRANSIT_DRIFT_RATE,
+    transitDriftRate: input.transitDriftRatePerHour ?? DEFAULT_TRANSIT_DRIFT_RATE,
     transitMarginUsd,
     totalBarrierUsd,
     surplusUsd,
